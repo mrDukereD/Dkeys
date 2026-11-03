@@ -5,4 +5,5 @@ for /f "usebackq delims=" %%i in (`"%VSW%" -latest -products * -requires Microso
 call "%VCV%" >nul || exit /b 1
 cd /d "%~dp0"
 if not exist obj mkdir obj
-cl /nologo /utf-8 /O1 /Os /GS- /Gs1048576 /GR- /W3 /Zl /DDKDEBUG /Fo:obj\ /Fe:obj\DKeysDbg.exe src\dkeys.cpp /link /SUBSYSTEM:WINDOWS /ENTRY:start /OPT:REF /OPT:ICF /FILEALIGN:512 /MERGE:.rdata=.text /NOLOGO
+rc /nologo /i src /fo obj\dkeys.res src\dkeys.rc || exit /b 1
+cl /nologo /utf-8 /O1 /Os /GS- /Gs1048576 /GR- /W3 /Zl /DDKDEBUG /Fo:obj\ /Fe:obj\DKeysDbg.exe src\dkeys.cpp obj\dkeys.res /link /SUBSYSTEM:WINDOWS /ENTRY:start /OPT:REF /OPT:ICF /FILEALIGN:512 /MERGE:.rdata=.text /NOLOGO

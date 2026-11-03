@@ -1697,27 +1697,6 @@ static DWORD WINAPI HookThread(LPVOID ev) {
 
 /* ---------- tray ---------- */
 static NOTIFYICONDATAW g_nid;
-static HICON MakeIcon(int sz) {
-    HDC sdc = GetDC(NULL), dc = CreateCompatibleDC(sdc);
-    HBITMAP color = CreateCompatibleBitmap(sdc, sz, sz), mask = CreateBitmap(sz, sz, 1, 1, NULL);
-    HGDIOBJ old = SelectObject(dc, color);
-    HBRUSH br = CreateSolidBrush(RGB(45, 108, 223)); RECT r = {0, 0, sz, sz};
-    FillRect(dc, &r, br); DeleteObject(br);
-    HFONT f = CreateFontW(-MulDiv(sz, 3, 4), 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, L"Segoe UI");
-    HGDIOBJ of = SelectObject(dc, f);
-    SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255, 255, 255));
-    DrawTextW(dc, L"K", 1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    SelectObject(dc, of); DeleteObject(f);
-    SelectObject(dc, mask);
-    PatBlt(dc, 0, 0, sz, sz, WHITENESS);
-    SelectObject(dc, GetStockObject(BLACK_BRUSH)); SelectObject(dc, GetStockObject(NULL_PEN));
-    RoundRect(dc, 0, 0, sz + 1, sz + 1, sz / 3, sz / 3);
-    SelectObject(dc, old);
-    ICONINFO ii; ii.fIcon = TRUE; ii.xHotspot = ii.yHotspot = 0; ii.hbmMask = mask; ii.hbmColor = color;
-    HICON ic = CreateIconIndirect(&ii);
-    DeleteObject(color); DeleteObject(mask); DeleteDC(dc); ReleaseDC(NULL, sdc);
-    return ic;
-}
 static void TrayAdd(void) {
     memset(&g_nid, 0, sizeof g_nid);
     g_nid.cbSize = sizeof g_nid; g_nid.hWnd = g_hwnd; g_nid.uID = 1;
@@ -1912,7 +1891,7 @@ static int Run(void) {
     if (!g_hwnd) return 1;
     InitFormats();
     g_msgTaskbar = RegisterWindowMessageW(L"TaskbarCreated");
-    g_icon = MakeIcon(GetSystemMetrics(SM_CXSMICON));
+    g_icon = (HICON)LoadImageW(g_inst, MAKEINTRESOURCEW(1), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR);
     TrayAdd();
     g_caps = GetKeyState(VK_CAPITAL) & 1;
     HANDLE ev = CreateEventW(NULL, TRUE, FALSE, NULL);
