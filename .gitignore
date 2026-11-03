@@ -1,0 +1,8 @@
+# сборка
+obj/
+dist/
+*.bak
+
+# чужая программа и личные настройки
+WireKeys/
+wkbackup.wkb3
