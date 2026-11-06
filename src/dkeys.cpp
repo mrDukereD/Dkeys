@@ -213,12 +213,14 @@ X(L_D_TT9, "draw.tip_eraser", L"Ластик (убирает фигуру цел
 X(L_D_TT10, "draw.tip_spot", L"Выделить область: всё остальное затемняется") \
 X(L_D_TT11, "draw.tip_crop", L"Область сохранения: в буфер и в файл попадёт только она") \
 X(L_D_TT12, "draw.tip_loupe", L"Лупа: увеличивает круг (радиус - до курсора, толщина - степень)") \
-X(L_D_TT13, "draw.tip_undo", L"Отменить") \
-X(L_D_TT14, "draw.tip_redo", L"Вернуть") \
-X(L_D_TT15, "draw.tip_mode", L"Режим: снимок экрана / поверх живого экрана") \
-X(L_D_TT16, "draw.tip_copy", L"Копировать в буфер и закрыть") \
-X(L_D_TT17, "draw.tip_save", L"Сохранить в PNG и закрыть") \
-X(L_D_TT18, "draw.tip_close", L"Закрыть без сохранения") \
+X(L_D_TT13, "draw.tip_move", L"Переместить готовую фигуру") \
+X(L_D_TT14, "draw.tip_undo", L"Отменить") \
+X(L_D_TT15, "draw.tip_redo", L"Вернуть") \
+X(L_D_TT16, "draw.tip_mode", L"Режим: снимок экрана / поверх живого экрана") \
+X(L_D_TT17, "draw.tip_monitor", L"Следующий монитор, с Shift - предыдущий (рисунки очищаются)") \
+X(L_D_TT18, "draw.tip_copy", L"Копировать в буфер и закрыть") \
+X(L_D_TT19, "draw.tip_save", L"Сохранить в PNG и закрыть") \
+X(L_D_TT20, "draw.tip_close", L"Закрыть без сохранения") \
 X(L_D_TTHALO, "draw.tip_halo", L"Подсветка курсора (для показа экрана)") \
 X(L_D_TTCOL, "draw.tip_color", L"Цвет") \
 X(L_D_TTWID, "draw.tip_width", L"Толщина") \
@@ -2595,9 +2597,9 @@ namespace DrawNs {
 using namespace Gdiplus;
 using namespace Gdiplus::DllExports;
 
-enum { T_PEN, T_MARK, T_ARROW, T_LINE, T_RECT, T_ELL, T_TEXT, T_NUM, T_BLUR, T_ERASE, T_SPOT, T_CROP, T_LOUPE, NTOOL, S_DEL = 20 };
+enum { T_PEN, T_MARK, T_ARROW, T_LINE, T_RECT, T_ELL, T_TEXT, T_NUM, T_BLUR, T_ERASE, T_SPOT, T_CROP, T_LOUPE, T_MOVE, NTOOL, S_DEL = 20, S_MOVE };
 // кнопки панели: 0..NTOOL-1 инструменты, дальше действия, цвета, толщины, подсветка мыши
-enum { B_UNDO = NTOOL, B_REDO, B_MODE, B_COPY, B_SAVE, B_CLOSE, B_COL, B_WID = B_COL + 8, B_HALO = B_WID + 3, NIT };
+enum { B_UNDO = NTOOL, B_REDO, B_MODE, B_MON, B_COPY, B_SAVE, B_CLOSE, B_COL, B_WID = B_COL + 8, B_HALO = B_WID + 3, NIT };
 struct Shp { int t; unsigned col; float w, x1, y1, x2, y2; PointF *pts; int n, cap; wchar_t *txt; int num, ref; BOOL hid; };
 struct Surf { HBITMAP hb; DWORD *bits; HDC dc; GpBitmap *bmp; GpGraphics *g; };
 struct FR { float x, y, w, h; };
@@ -2802,7 +2804,7 @@ static void Rebuild(BOOL withBg) {
     for (int i = 0; i < shN; i++) if (shp[i]->t == T_BLUR && !shp[i]->hid) Pixelate(&base, shp[i]);
     for (int i = 0; i < shN; i++) if (shp[i]->t == T_LOUPE && !shp[i]->hid) Lens(&base, shp[i]);
     Dim(&base);
-    for (int i = 0; i < shN; i++) if (!shp[i]->hid && shp[i]->t != T_BLUR && shp[i]->t != S_DEL && shp[i]->t != T_SPOT && shp[i]->t != T_CROP) DrawShape(base.g, shp[i]);
+    for (int i = 0; i < shN; i++) if (!shp[i]->hid && shp[i]->t != T_BLUR && shp[i]->t != S_DEL && shp[i]->t != T_SPOT && shp[i]->t != T_CROP && shp[i]->t != S_MOVE) DrawShape(base.g, shp[i]);
 }
 
 /* --- панель --- */
@@ -2847,6 +2849,10 @@ static void Icon(GpGraphics *g, int i, FR *r, unsigned ic) {
                    c[0].X = PX(.18f); c[0].Y = PY(.3f); c[1].X = PX(.7f); c[1].Y = PY(.3f); c[2].X = PX(.7f); c[2].Y = PY(.82f);
                    GdipDrawLines(g, p, a, 3); GdipDrawLines(g, p, c, 3); break; }
     case T_LOUPE: GdipDrawEllipse(g, p, PX(.18f), PY(.18f), r->w * .44f, r->h * .44f); GdipDrawLine(g, p, PX(.58f), PY(.58f), PX(.8f), PY(.8f)); break;
+    case T_MOVE: { PointF q[7]; const float c[7][2] = {{.3f, .2f}, {.3f, .78f}, {.45f, .64f}, {.56f, .84f}, {.66f, .79f}, {.55f, .6f}, {.74f, .6f}};
+                   for (int k = 0; k < 7; k++) { q[k].X = PX(c[k][0]); q[k].Y = PY(c[k][1]); }
+                   GdipFillPolygon2(g, b, q, 7); break; }
+    case B_MON: GdipDrawRectangle(g, p, PX(.14f), PY(.26f), r->w * .44f, r->h * .34f); GdipDrawRectangle(g, p, PX(.46f), PY(.42f), r->w * .4f, r->h * .34f); break;
     case B_UNDO: Text(g, L"\x21B6", r->x, r->y, r->w, r->h, r->h * .62f, 0, ic, TRUE, L"Segoe UI Symbol"); break;
     case B_REDO: Text(g, L"\x21B7", r->x, r->y, r->w, r->h, r->h * .62f, 0, ic, TRUE, L"Segoe UI Symbol"); break;
     case B_MODE: Text(g, g_dLive ? L"LIVE" : Tr(L_D_STATIC), r->x, r->y, r->w, r->h, r->h * .3f, 1, ic, TRUE, L"Segoe UI"); break;
@@ -2883,7 +2889,7 @@ static void DrawToolbar(GpGraphics *g) {
 
 /* --- подсказка над кнопкой панели --- */
 static int hov = -1; static DWORD hovTick; static BOOL tipOn;
-static const wchar_t *const kTipKey[NIT] = {L"P", L"M", L"A", L"L", L"R", L"O", L"T", L"N", L"B", L"E", L"S", L"C", L"Z", L"Ctrl+Z", L"Ctrl+Y", L"Tab",
+static const wchar_t *const kTipKey[NIT] = {L"P", L"M", L"A", L"L", L"R", L"O", L"T", L"N", L"B", L"E", L"S", L"C", L"Z", L"V", L"Ctrl+Z", L"Ctrl+Y", L"Tab", L"D / Shift+D",
     L"Enter / Ctrl+C", L"Ctrl+S", L"Esc", NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, L"1", L"2", L"3", L"H"};
 static float MeasureW(GpGraphics *g, const wchar_t *t, float px) {
     GpFontFamily *ff = NULL; GpFont *f = NULL; float w = 0;
@@ -3012,6 +3018,47 @@ static void EraseAt(int x, int y) {
     }
 }
 
+// Сдвиг фигуры (координаты правятся на месте; запись S_MOVE хранит смещение для undo/redo).
+static void ShiftShp(Shp *s, float dx, float dy) {
+    s->x1 += dx; s->x2 += dx; s->y1 += dy; s->y2 += dy;
+    for (int i = 0; i < s->n; i++) { s->pts[i].X += dx; s->pts[i].Y += dy; }
+}
+static int TopAt(int x, int y) {
+    for (int i = shN - 1; i >= 0; i--)
+        if (!shp[i]->hid && shp[i]->t != S_DEL && shp[i]->t != S_MOVE && HitShp(shp[i], (float)x, (float)y)) return i;
+    return -1;
+}
+// Распознавание: штрих пера, на конце которого задержали мышь, превращается в линию / прямоугольник / овал.
+static void Recognize(Shp *s) {
+    int n = s->n; if (n < 8) return;
+    float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+    for (int i = 0; i < n; i++) {
+        float px = s->pts[i].X, py = s->pts[i].Y;
+        if (px < x0) x0 = px; if (px > x1) x1 = px; if (py < y0) y0 = py; if (py > y1) y1 = py;
+    }
+    float w = x1 - x0, h = y1 - y0, ax = s->pts[0].X, ay = s->pts[0].Y, bx = s->pts[n - 1].X, by = s->pts[n - 1].Y;
+    float de = Sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay)), big = w > h ? w : h;
+    if (de > 25) {
+        float dev = 0;
+        for (int i = 0; i < n; i++) { float d = SegD(s->pts[i].X, s->pts[i].Y, ax, ay, bx, by); if (d > dev) dev = d; }
+        if (dev < 8 + 0.06f * de) {
+            s->t = T_LINE; s->x1 = ax; s->y1 = ay; s->x2 = bx; s->y2 = by; Free(s->pts); s->pts = NULL; s->n = s->cap = 0; return;
+        }
+    }
+    if (w < 20 || h < 20 || de > 0.35f * big) return;                 // незамкнутая линия - оставляем пером
+    float a = w / 2, b = h / 2, cx = x0 + a, cy = y0 + b, ee = 0, er = 0;
+    for (int i = 0; i < n; i++) {
+        float px = s->pts[i].X, py = s->pts[i].Y, nx = (px - cx) / a, ny = (py - cy) / b, r = Sqrt(nx * nx + ny * ny);
+        ee += r > 1 ? r - 1 : 1 - r;
+        float d = px - x0; if (x1 - px < d) d = x1 - px; if (py - y0 < d) d = py - y0; if (y1 - py < d) d = y1 - py;
+        er += d;
+    }
+    ee = ee / n * (a + b) / 2; er = er / n;
+    if ((ee < er ? ee : er) > 0.14f * big) return;
+    s->t = ee < er ? T_ELL : T_RECT; s->x1 = x0; s->y1 = y0; s->x2 = x1; s->y2 = y1;
+    Free(s->pts); s->pts = NULL; s->n = s->cap = 0;
+}
+
 /* --- результат --- */
 static void Close(void) { if (hw) DestroyWindow(hw); }
 static void PrepExport(void) {
@@ -3058,10 +3105,39 @@ static void DoSave(void) {
 }
 static void Undo(void) {
     if (typing) { typing = FALSE; FreeShp(act); act = NULL; }
-    else if (shN > 0) shN--;
+    else if (shN > 0) { shN--; if (shp[shN]->t == S_MOVE) ShiftShp(shp[shp[shN]->ref], -shp[shN]->x1, -shp[shN]->y1); }
     Rebuild(FALSE); Present();
 }
-static void Redo(void) { CommitText(); if (shN < shTot) shN++; Rebuild(FALSE); Present(); }
+static void Redo(void) {
+    CommitText();
+    if (shN < shTot) { if (shp[shN]->t == S_MOVE) ShiftShp(shp[shp[shN]->ref], shp[shN]->x1, shp[shN]->y1); shN++; }
+    Rebuild(FALSE); Present();
+}
+static BOOL CALLBACK MonEnum(HMONITOR, HDC, LPRECT r, LPARAM l) {
+    RECT *a = (RECT *)l; for (int i = 0; i < 8; i++) if (a[i].right == a[i].left) { a[i] = *r; break; }
+    return TRUE;
+}
+// Следующий монитор: снимок заново, рисунки очищаются (координаты старого экрана).
+static void NextMonitor(int dir) {
+    RECT m[8]; memset(m, 0, sizeof m); EnumDisplayMonitors(NULL, NULL, MonEnum, (LPARAM)m);
+    int n = 0, cur = 0; while (n < 8 && m[n].right != m[n].left) { if (m[n].left == OX && m[n].top == OY) cur = n; n++; }
+    if (n < 2) return;
+    CommitText();
+    RECT nr = m[(cur + n + dir) % n];
+    ShowWindow(hw, SW_HIDE); Sleep(150);
+    FreeShp(act); act = NULL;
+    for (int i = 0; i < shTot; i++) FreeShp(shp[i]);
+    shN = shTot = 0;
+    SurfFree(&bg); SurfFree(&base); SurfFree(&back);
+    OX = nr.left; OY = nr.top; W = nr.right - nr.left; H = nr.bottom - nr.top;
+    if (!SurfNew(&bg) || !SurfNew(&base) || !SurfNew(&back)) { Close(); return; }
+    Capture();
+    SetWindowPos(hw, HWND_TOPMOST, OX, OY, W, H, SWP_NOACTIVATE);
+    sc = GetDpiForWindow(hw) / 96.0f;
+    tbX = 0; tbY = 0; TbLayout(); tbX = (W - tbW) / 2; tbY = 16 * sc; TbLayout();
+    Rebuild(FALSE); Present();
+    ShowWindow(hw, SW_SHOW); ForceFg(hw);
+}
 static void ToggleLive(void) {
     CommitText();
     if (g_dLive) {                                         // живой -> статика: снять экран без оверлея
@@ -3076,6 +3152,7 @@ static void TbClick(int hit) {
     else if (hit == B_UNDO) { Undo(); return; }
     else if (hit == B_REDO) { Redo(); return; }
     else if (hit == B_MODE) { ToggleLive(); return; }
+    else if (hit == B_MON) { NextMonitor((GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1); return; }
     else if (hit == B_COPY) { DoCopy(); return; }
     else if (hit == B_SAVE) { DoSave(); return; }
     else if (hit == B_CLOSE) { Close(); return; }
@@ -3086,15 +3163,18 @@ static void TbClick(int hit) {
 }
 
 /* --- ввод --- */
+static int mvIdx = -1; static float mvX, mvY, mvDX, mvDY; static DWORD lastMove;
 static void OnDown(int x, int y) {
     int hit = HitTb(x, y); hov = -1;
     if (hit == 99) { tbDrag = TRUE; tbDX = x - tbX; tbDY = y - tbY; SetCapture(hw); return; }
     if (hit >= 0) { TbClick(hit); return; }
     CommitText();
     if (tool == T_ERASE) { drag = TRUE; SetCapture(hw); EraseAt(x, y); return; }
+    if (tool == T_MOVE) { mvIdx = TopAt(x, y); if (mvIdx >= 0) { mvX = (float)x; mvY = (float)y; mvDX = mvDY = 0; drag = TRUE; SetCapture(hw); } return; }
     if (tool == T_NUM) { Shp *s = NewShp(T_NUM); s->x1 = (float)x; s->y1 = (float)y; s->num = nextNum; AddShp(s); Rebuild(FALSE); Present(); return; }
     Shp *s = NewShp(tool); s->x1 = s->x2 = (float)x; s->y1 = s->y2 = (float)y;
     if (tool == T_PEN || tool == T_MARK) AddPt(s, x, y);
+    lastMove = GetTickCount();
     act = s;
     if (tool == T_TEXT) { typing = TRUE; s->y1 = y - TxtPx(s->w) / 2; }
     else { drag = TRUE; SetCapture(hw); }
@@ -3113,13 +3193,19 @@ static void OnMove(int x, int y) {
         return;
     }
     if (tool == T_ERASE) { EraseAt(x, y); return; }
+    if (tool == T_MOVE) {
+        if (mvIdx < 0) return;
+        float dx = x - mvX, dy = y - mvY; if (!dx && !dy) return;
+        ShiftShp(shp[mvIdx], dx, dy); mvX = (float)x; mvY = (float)y; mvDX += dx; mvDY += dy;
+        Rebuild(FALSE); Present(); return;
+    }
     if (!act) return;
     BOOL shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
     if (act->t == T_PEN || act->t == T_MARK) {
         if (shift) act->n = 1;                                   // Shift: прямая линия от начала штриха
         PointF *l = &act->pts[act->n - 1]; float dx = x - l->X, dy = y - l->Y;
         if (dx * dx + dy * dy < 4) return;
-        AddPt(act, x, y);
+        AddPt(act, x, y); lastMove = GetTickCount();
     } else {
         float dx = x - act->x1, dy = y - act->y1, ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
         if (shift && (act->t == T_RECT || act->t == T_ELL)) { float m = ax > ay ? ax : ay; dx = dx < 0 ? -m : m; dy = dy < 0 ? -m : m; }   // квадрат / круг
@@ -3134,6 +3220,10 @@ static void OnUp(void) {
     if (tbDrag) { tbDrag = FALSE; ReleaseCapture(); return; }
     if (!drag) return;
     drag = FALSE; ReleaseCapture();
+    if (tool == T_MOVE) {
+        if (mvIdx >= 0 && (mvDX || mvDY)) { Shp *m = (Shp *)Alloc(sizeof(Shp)); m->t = S_MOVE; m->ref = mvIdx; m->x1 = mvDX; m->y1 = mvDY; AddShp(m); }
+        mvIdx = -1; Rebuild(FALSE); Present(); return;
+    }
     if (act) {
         float dx = act->x2 - act->x1, dy = act->y2 - act->y1;
         BOOL tiny = (dx < 3 && dx > -3 && dy < 3 && dy > -3) && act->t != T_PEN && act->t != T_MARK;
@@ -3157,7 +3247,8 @@ static void OnKey(WPARAM k) {
         return;
     }
     if (typing) return;
-    static const char keys[] = "PMALROTNBESCZ";
+    if (k == 'D') { NextMonitor(shift ? -1 : 1); return; }
+    static const char keys[] = "PMALROTNBESCZV";
     for (int i = 0; i < NTOOL; i++) if (k == (WPARAM)keys[i]) { tool = i; Present(); return; }
     if (k == 'H') { halo = !halo; Present(); }
     else if (k >= '1' && k <= '3') { g_dWid = (int)k - '1'; Present(); }
@@ -3168,10 +3259,12 @@ static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_ERASEBKGND: return 1;
     case WM_SETCURSOR: {
         POINT p; GetCursorPos(&p); ScreenToClient(h, &p);
-        SetCursor(LoadCursorW(NULL, HitTb(p.x, p.y) >= 0 ? IDC_ARROW : tool == T_TEXT ? IDC_IBEAM : IDC_CROSS));
+        SetCursor(LoadCursorW(NULL, HitTb(p.x, p.y) >= 0 ? IDC_ARROW : tool == T_TEXT ? IDC_IBEAM : tool == T_MOVE ? IDC_SIZEALL : IDC_CROSS));
         return TRUE;
     }
-    case WM_TIMER: { BOOL v = TipVisible(); if (v != tipOn) { tipOn = v; Present(); } return 0; }
+    case WM_TIMER: {
+        if (drag && act && act->t == T_PEN && act->n >= 8 && GetTickCount() - lastMove >= 500) { Recognize(act); if (act->t != T_PEN) Present(); }
+        BOOL v = TipVisible(); if (v != tipOn) { tipOn = v; Present(); } return 0; }
     case WM_LBUTTONDOWN: OnDown((short)LOWORD(l), (short)HIWORD(l)); return 0;
     case WM_MOUSEMOVE: OnMove((short)LOWORD(l), (short)HIWORD(l)); return 0;
     case WM_LBUTTONUP: OnUp(); return 0;
