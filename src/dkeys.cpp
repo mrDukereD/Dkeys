@@ -74,6 +74,7 @@ enum {
 #define TID_LAYOUT 3
 #define TID_POPFG 4
 #define TID_TRAY 5
+#define TID_NAV 6
 #define VISROWS 10
 
 struct Bind { UINT mods, key; int act, n, n2; wchar_t *arg, *dir; };
@@ -106,8 +107,9 @@ static int g_mouseSlow = 4;   // [General] MouseSlow: во сколько раз
 static volatile LONG g_pickActive;
 static BOOL g_rNoTb = TRUE, g_rCur = TRUE; static int g_rFps = 30, g_rPos[2] = {-99999, -99999}, g_rScr;   // g_rScr: 0 - монитор с кнопкой, -1 - весь рабочий стол, N - монитор N
 static BOOL g_rDummy;
-struct OvCfg { wchar_t stem[64]; int mode, x, y, sc; };      // mode: 0 выкл, 1 на видео, 2 отдельный файл, 3 оба; x,y - доля кадра в ‰; sc - масштаб в %
-static OvCfg g_ovc[24]; static int g_novc; static BOOL g_rPwd = TRUE;
+struct OvCfg { wchar_t stem[64]; int mode, x, y, sc; };      // mode: 0 выкл, 1 на видео, 2 отдельный файл; x,y - доля кадра в ‰; sc - масштаб в %
+static OvCfg g_ovc[24]; static int g_novc; static BOOL g_rPwd = TRUE, g_rShow;
+static void RecShowSync(void);
 static volatile BYTE g_ioKey[65536], g_ioMouse[8]; static volatile DWORD g_ioHit[65536], g_ioMHit[8]; static volatile DWORD g_ioWheelT; static volatile int g_ioWheelD;   // состояние ввода для оверлея (из хуков)
 static OvCfg *OvCfgGet(const wchar_t *stem, BOOL create) {
     for (int i = 0; i < g_novc; i++) if (!lstrcmpiW(g_ovc[i].stem, stem)) return &g_ovc[i];
@@ -165,13 +167,15 @@ X(L_REC_OV, "rec.ov", L"Оверлей ввода (клавиши, мышь)") \
 X(L_REC_OV_OFF, "rec.ov_off", L"Выключен") \
 X(L_REC_OV_VID, "rec.ov_video", L"На видео") \
 X(L_REC_OV_FILE, "rec.ov_file", L"Отдельным файлом (зелёный фон)") \
-X(L_REC_OV_BOTH, "rec.ov_both", L"На видео и отдельным файлом") \
-X(L_REC_OV_CFG, "rec.ov_config", L"Настроить положение и размер…") \
+X(L_REC_OV_CFG, "rec.ov_cfgall", L"Настроить положение и размер всех…") \
+X(L_REC_OV_SHOW, "rec.ov_show", L"Показывать на экране") \
+X(L_REC_OV_NOSEL, "rec.ov_nosel", L"Нет включённых оверлеев - выберите режим «На видео» или «Отдельным файлом»") \
+X(L_REC_OV_TAG, "rec.ov_tag", L"файл") \
 X(L_REC_OV_PWD, "rec.ov_pwd", L"Не показывать клавиши в полях пароля") \
 X(L_REC_OV_DIR, "rec.ov_dir", L"Папка overlays") \
 X(L_REC_OV_NONE, "rec.ov_none", L"Пресетов нет (папка overlays)") \
 X(L_REC_OV_BAD, "rec.ov_bad", L"Не удалось загрузить пресет") \
-X(L_REC_OV_HINT, "rec.ov_hint", L"Тянуть - перенос, углы или колесо - масштаб, Enter или правый клик - готово, Esc - отмена") \
+X(L_REC_OV_HINT, "rec.ov_hint2", L"Тянуть - перенос, углы или колесо - масштаб, Enter или правый клик - готово, Esc - отмена. Все включённые оверлеи показаны сразу") \
 X(L_REC_OV_WARN, "rec.ov_warn", L"Внимание: нажатые клавиши видны в видео - не вводите пароли") \
 X(L_PK_COPIED, "picker.copied", L"Цвет %s скопирован в буфер") \
 X(L_TRAY_TIMER, "tray.timer", L"Секундомер и таймер") \
@@ -682,9 +686,11 @@ PowerShell=powershell.exe
 
 [Overlay]
 ; Оверлей ввода при записи (пресеты input-overlay: папка overlays\*\имя.json + имя.png). Строка на пресет: имя=режим,x,y,масштаб
-;   режим: 0 выкл | 1 на видео | 2 отдельный mp4 на зелёном фоне (хромакей) | 3 то и другое; x,y - положение в промилле кадра; масштаб в %
-;   x,y и масштаб задаются в меню "Настроить"
+;   режим: 0 выкл | 1 на видео | 2 отдельный mp4 на зелёном фоне (хромакей); x,y - положение в промилле кадра; масштаб в %
+;   x,y и масштаб задаются в меню "Настроить положение и размер всех" (все включённые оверлеи сразу)
 ;имя_пресета=1,700,650,100
+; Show: 1 пока на экране кнопка записи, показывать на экране оверлеи "на видео" (в запись не попадают) - видно, что они перекрывают | 0 нет
+;Show=0
 ; HidePasswords: 1 не показывать клавиши в поле пароля | 0 показывать. ВНИМАНИЕ: нажатые клавиши видны в видео - не вводите пароли
 ;HidePasswords=1
 
@@ -873,7 +879,8 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
         else if (!lstrcmpiW(k, L"Pos")) { const wchar_t *q = v; g_rPos[0] = ToInt(q); while (*q && *q != L',') q++; g_rPos[1] = *q ? ToInt(q + 1) : -99999; }
     } else if (!lstrcmpiW(s, L"Overlay")) {
         if (!lstrcmpiW(k, L"HidePasswords")) g_rPwd = ToInt(v) != 0;
-        else { OvCfg *c = OvCfgGet(k, TRUE); if (c) { const wchar_t *q = v; c->mode = ToInt(q) & 3; int *f[3] = {&c->x, &c->y, &c->sc};
+        else if (!lstrcmpiW(k, L"Show")) g_rShow = ToInt(v) != 0;
+        else { OvCfg *c = OvCfgGet(k, TRUE); if (c) { const wchar_t *q = v; c->mode = ToInt(q) & 3; if (c->mode == 3) c->mode = 1; int *f[3] = {&c->x, &c->y, &c->sc};
             for (int i = 0; i < 3; i++) { while (*q && *q != L',') q++; if (!*q) break; q++; *f[i] = ToInt(q); }
             if (c->sc < 10) c->sc = 10; if (c->sc > 600) c->sc = 600; } }
     } else if (!lstrcmpiW(s, L"Timer")) {
@@ -2278,6 +2285,7 @@ static void Reload(void) {
     LoadConfig();
     if (g_histOn != was) { if (g_histOn) AddClipboardFormatListener(g_hwnd); else RemoveClipboardFormatListener(g_hwnd); }
     PostThreadMessageW(g_hookTid, TM_REHOOK, 0, 0);
+    RecShowSync();
     Toast(Tr(L_T_RELOADED));
 }
 /* ---------- веб-камера (DirectShow): предпросмотр в окне ---------- */
@@ -3816,6 +3824,7 @@ static BOOL MouseOn(int c) { return g_ioMouse[c] || GetTickCount() - g_ioMHit[c]
 struct OvPre { wchar_t grp[48], stem[64], json[MAX_PATH], png[MAX_PATH]; };
 struct OvEl { int t, code, px, py, mx, my, mw, mh; };
 struct Ov { OvPre *pr; OvCfg *c; int cw, ch, n; OvEl *el; GpImage *img; };
+#define NOVL 6                                                       // сколько оверлеев одновременно
 static OvPre pre[24]; static int npre;
 
 static const char *JFind(const char *s, const char *e, const char *key) {      // значение по ключу "key": -> указатель после ':'
@@ -4046,13 +4055,13 @@ static DWORD WINAPI Worker(LPVOID) {
     ULONG_PTR gtok = 0; GdiplusStartupInput gin; BOOL gp = GdiplusStartup(&gtok, &gin, NULL) == Ok;
     BOOL started = FALSE, mf = SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_LITE)), audio = FALSE; HANDLE ath = NULL, pth = NULL;
     int w = cr.right - cr.left, h = cr.bottom - cr.top;
-    Ov ov[4]; OvOut oo[4]; int nov = 0; memset(ov, 0, sizeof ov); memset(oo, 0, sizeof oo);
+    Ov ov[NOVL]; OvOut oo[NOVL]; int nov = 0; memset(ov, 0, sizeof ov); memset(oo, 0, sizeof oo);
     HDC sdc = GetDC(NULL);
     swr = NULL; aStream = -1;
     if (mf) {
         DWORD si = 0;
         audio = AudioInit();
-        if (gp) for (int i = 0; i < npre && nov < 4; i++) { OvCfg *c = OvCfgGet(pre[i].stem, FALSE); if (c && c->mode && OvLoad(&pre[i], c, &ov[nov])) nov++; }
+        if (gp) for (int i = 0; i < npre && nov < NOVL; i++) { OvCfg *c = OvCfgGet(pre[i].stem, FALSE); if (c && c->mode && OvLoad(&pre[i], c, &ov[nov])) nov++; }
         if (SUCCEEDED(MFCreateSinkWriterFromURL(path, NULL, NULL, &swr)) && AddVid(swr, w, h, &si)) {
             started = TRUE;
             if (audio) {                                               // звук - вторая дорожка (AAC); не получилось - пишем без звука
@@ -4125,7 +4134,7 @@ static DWORD WINAPI Worker(LPVOID) {
             DeleteDC(mdc); DeleteObject(hb);
         }
     }
-    for (int k = 0; k < 4; k++) {
+    for (int k = 0; k < NOVL; k++) {
         if (oo[k].wr) { if (started) oo[k].wr->Finalize(); oo[k].wr->Release(); }
         if (oo[k].g) GdipDeleteGraphics(oo[k].g); if (oo[k].bmp) GdipDisposeImage((GpImage *)oo[k].bmp);
         if (oo[k].dc) DeleteDC(oo[k].dc); if (oo[k].hb) DeleteObject(oo[k].hb);
@@ -4243,76 +4252,163 @@ static void SelectArea(void) {
     SetLayeredWindowAttributes(selw, RGB(255, 0, 255), 130, LWA_COLORKEY | LWA_ALPHA);
     ShowWindow(hw, SW_HIDE); ShowWindow(selw, SW_SHOW); ForceFg(selw); SetFocus(selw);
 }
-/* --- настройка положения и масштаба оверлея: окно с оверлеем на экране, тянуть - перенос, углы / колесо - масштаб --- */
-static Ov oc; static OvCfg *ocfg; static RECT ocr; static float osc; static ULONG_PTR otok; static int ox, oy, ocorner; static POINT odn; static RECT orc0;
-static void OvPaint(void) {
-    int W = (int)(oc.cw * osc + 0.5f), H = (int)(oc.ch * osc + 0.5f); if (W < 40) W = 40; if (H < 40) H = 40;
+/* --- оверлеи на экране ("Показывать на экране"): не попадают в запись, клики проходят насквозь --- */
+struct ShowW { HWND h; Ov o; HDC dc; HBITMAP hb; void *bits; GpBitmap *bmp; GpGraphics *g; int W, H, X, Y; };
+static ShowW sw[NOVL]; static int nsw; static ULONG_PTR stok; static BOOL stokOn;
+static void ShowFree(void) {
+    for (int i = 0; i < nsw; i++) {
+        ShowW *s = &sw[i]; HWND h = s->h; s->h = NULL; if (h) DestroyWindow(h);
+        if (s->g) GdipDeleteGraphics(s->g); if (s->bmp) GdipDisposeImage((GpImage *)s->bmp);
+        if (s->dc) DeleteDC(s->dc); if (s->hb) DeleteObject(s->hb);
+        OvFree(&s->o);
+    }
+    memset(sw, 0, sizeof sw); nsw = 0;
+    if (stokOn) { GdiplusShutdown(stok); stokOn = FALSE; }
+}
+static void ShowPaint(ShowW *s) {
+    GdipGraphicsClear(s->g, 0);
+    DrawOv(s->g, &s->o, 0, 0, s->o.c->sc / 100.f, 0); GdipFlush(s->g, FlushIntentionSync);
+    POINT pt = {s->X, s->Y}, p0 = {0, 0}; SIZE sz = {s->W, s->H}; BLENDFUNCTION bf = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+    UpdateLayeredWindow(s->h, NULL, &pt, &sz, s->dc, &p0, 0, &bf, ULW_ALPHA);
+}
+static LRESULT CALLBACK ShowProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    if (m == WM_TIMER) { for (int i = 0; i < nsw; i++) if (sw[i].h == h && sw[i].g) { ShowPaint(&sw[i]); break; } return 0; }
+    if (m == WM_NCHITTEST) return HTTRANSPARENT;
+    if (m == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
+    return DefWindowProcW(h, m, w, l);
+}
+static void ShowSync(void) {                                  // пересоздаёт окна по текущим настройкам (включены только режимом "на видео")
+    ShowFree();
+    if (!g_rShow || ow || !hw) return;                        // только пока кнопка записи на экране
+    ScanOv();
+    GdiplusStartupInput in; if (GdiplusStartup(&stok, &in, NULL) != Ok) return;
+    stokOn = TRUE;
+    RECT r; CalcCr(&r);
+    RegClass(L"DKRecShow", ShowProc, 0);
+    HDC sd = GetDC(NULL);
+    for (int i = 0; i < npre && nsw < NOVL; i++) {
+        OvCfg *c = OvCfgGet(pre[i].stem, FALSE); if (!c || c->mode != 1) continue;
+        ShowW *s = &sw[nsw]; memset(s, 0, sizeof *s);
+        if (!OvLoad(&pre[i], c, &s->o)) continue;
+        s->W = (int)(s->o.cw * c->sc / 100.f + 0.5f); s->H = (int)(s->o.ch * c->sc / 100.f + 0.5f); if (s->W < 8) s->W = 8; if (s->H < 8) s->H = 8;
+        s->X = r.left + MulDiv(r.right - r.left, c->x, 1000); s->Y = r.top + MulDiv(r.bottom - r.top, c->y, 1000);
+        if (!MkDib(sd, s->W, s->H, &s->dc, &s->hb, &s->bits) || !MkGp(s->bits, s->W, s->H, PixelFormat32bppPARGB, &s->bmp, &s->g)) { nsw++; continue; }
+        s->h = CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"DKRecShow", L"", WS_POPUP, s->X, s->Y, s->W, s->H, NULL, NULL, g_inst, NULL);
+        nsw++;
+        if (!s->h) continue;
+        SetWindowDisplayAffinity(s->h, 0x11);                  // WDA_EXCLUDEFROMCAPTURE: экранная копия в видео не попадает
+        ShowPaint(s); ShowWindow(s->h, SW_SHOWNOACTIVATE); SetTimer(s->h, 1, 33, NULL);
+    }
+    ReleaseDC(NULL, sd);
+}
+/* --- настройка положения и масштаба: все включённые оверлеи сразу, у каждого своё окно; тянуть - перенос, углы / колесо - масштаб --- */
+struct OvWin { HWND h; Ov o; OvCfg *c; int x, y; float sc; };
+static OvWin ocw[NOVL]; static int ncw; static RECT ocr; static ULONG_PTR otok; static int ocorner; static POINT odn; static RECT orc0;
+static void OvPaint(int i) {
+    OvWin *z = &ocw[i];
+    int W = (int)(z->o.cw * z->sc + 0.5f), H = (int)(z->o.ch * z->sc + 0.5f); if (W < 40) W = 40; if (H < 40) H = 40;
     HDC sd = GetDC(NULL), md = NULL; HBITMAP hb = NULL; void *bits = NULL; GpBitmap *bmp = NULL; GpGraphics *g = NULL;
     if (MkDib(sd, W, H, &md, &hb, &bits) && MkGp(bits, W, H, PixelFormat32bppPARGB, &bmp, &g)) {
         GdipGraphicsClear(g, 0x70101820);                                    // полупрозрачная подложка: за неё можно схватить
-        DrawOv(g, &oc, 0, 0, osc, 2);                                        // все клавиши показаны нажатыми - видна вся раскладка
-        GpPen *pen = NULL; GpSolidFill *br = NULL;
-        GdipCreatePen1(0xFFFFFFFF, 2, UnitPixel, &pen); GdipCreateSolidFill(0xFFFF3B30, &br);
+        DrawOv(g, &z->o, 0, 0, z->sc, 2);                                    // все клавиши показаны нажатыми - видна вся раскладка
+        GpPen *pen = NULL; GpSolidFill *br = NULL, *tb = NULL, *lb = NULL;
+        GdipCreatePen1(z->c->mode == 2 ? 0xFF34C759 : 0xFFFFFFFF, 2, UnitPixel, &pen); GdipCreateSolidFill(0xFFFF3B30, &br);
         GdipDrawRectangleI(g, pen, 1, 1, W - 3, H - 3);
         GdipFillRectangleI(g, br, 0, 0, 12, 12); GdipFillRectangleI(g, br, W - 12, 0, 12, 12); GdipFillRectangleI(g, br, 0, H - 12, 12, 12); GdipFillRectangleI(g, br, W - 12, H - 12, 12, 12);
+        wchar_t nm[100]; if (z->c->mode == 2) wsprintfW(nm, L"%s [%s]", z->c->stem, Tr(L_REC_OV_TAG)); else lstrcpynW(nm, z->c->stem, 100);     // подпись: чей это оверлей
+        GpFontFamily *ff = NULL; GpFont *f = NULL;
+        GdipCreateFontFamilyFromName(L"Segoe UI", NULL, &ff);
+        if (ff) GdipCreateFont(ff, 14, 1, UnitPixel, &f);
+        if (f) {
+            GdipCreateSolidFill(0xFFFFFFFF, &tb); GdipCreateSolidFill(0xD0101820, &lb);
+            RectF lay(0, 0, 4000, 200), bb; GdipMeasureString(g, nm, -1, f, &lay, NULL, &bb, NULL, NULL);
+            GdipFillRectangleI(g, lb, 16, 14, (int)bb.Width + 6, (int)bb.Height + 2);
+            RectF tr(19, 15, bb.Width + 4, bb.Height); GdipDrawString(g, nm, -1, f, &tr, NULL, tb);
+            GdipDeleteFont(f);
+        }
+        if (ff) GdipDeleteFontFamily(ff);
+        if (tb) GdipDeleteBrush(tb); if (lb) GdipDeleteBrush(lb);
         GdipDeletePen(pen); GdipDeleteBrush(br); GdipFlush(g, FlushIntentionSync);
-        POINT pt = {ox, oy}, ps0 = {0, 0}; SIZE sz = {W, H}; BLENDFUNCTION bf = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
-        UpdateLayeredWindow(ow, sd, &pt, &sz, md, &ps0, 0, &bf, ULW_ALPHA);
+        POINT pt = {z->x, z->y}, ps0 = {0, 0}; SIZE sz = {W, H}; BLENDFUNCTION bf = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+        UpdateLayeredWindow(z->h, sd, &pt, &sz, md, &ps0, 0, &bf, ULW_ALPHA);
     }
     if (g) GdipDeleteGraphics(g); if (bmp) GdipDisposeImage((GpImage *)bmp);
     if (md) DeleteDC(md); if (hb) DeleteObject(hb); ReleaseDC(NULL, sd);
 }
 static void OvSave(void) {
-    int W = ocr.right - ocr.left, H = ocr.bottom - ocr.top; if (W < 1 || H < 1 || !ocfg) return;
-    ocfg->x = MulDiv(ox - ocr.left, 1000, W); ocfg->y = MulDiv(oy - ocr.top, 1000, H); ocfg->sc = (int)(osc * 100 + 0.5f);
-    if (!ocfg->mode) ocfg->mode = 1;
-    OvCfgSave(ocfg);
+    int W = ocr.right - ocr.left, H = ocr.bottom - ocr.top; if (W < 1 || H < 1) return;
+    for (int i = 0; i < ncw; i++) {
+        OvWin *z = &ocw[i];
+        z->c->x = MulDiv(z->x - ocr.left, 1000, W); z->c->y = MulDiv(z->y - ocr.top, 1000, H); z->c->sc = (int)(z->sc * 100 + 0.5f);
+        OvCfgSave(z->c);
+    }
+}
+static void OvClose(void) {
+    for (int i = 0; i < ncw; i++) { HWND h = ocw[i].h; ocw[i].h = NULL; if (h) DestroyWindow(h); OvFree(&ocw[i].o); }
+    ncw = 0; ow = NULL; GdiplusShutdown(otok);
+    if (hw) { ShowWindow(hw, SW_SHOWNOACTIVATE); Repaint(); }
+    ShowSync();
 }
 static LRESULT CALLBACK OvProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    int i = (int)GetWindowLongPtrW(h, GWLP_USERDATA) - 1;
+    if (i < 0 || i >= ncw || ocw[i].h != h) return DefWindowProcW(h, m, w, l);
+    OvWin *z = &ocw[i];
     switch (m) {
     case WM_ERASEBKGND: return 1;
     case WM_LBUTTONDOWN: {
         RECT r; GetClientRect(h, &r); int x = (short)LOWORD(l), y = (short)HIWORD(l), W = r.right, H = r.bottom;
         ocorner = 0;
         if (x < 16 && y < 16) ocorner = 1; else if (x > W - 16 && y < 16) ocorner = 2; else if (x < 16 && y > H - 16) ocorner = 3; else if (x > W - 16 && y > H - 16) ocorner = 4;
+        SetWindowPos(h, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);     // выбранный оверлей наверх - видно, что кого перекрывает
         GetCursorPos(&odn); GetWindowRect(h, &orc0); SetCapture(h); return 0;
     }
     case WM_MOUSEMOVE:
         if (GetCapture() == h) {
             POINT p; GetCursorPos(&p);
-            if (!ocorner) { ox = orc0.left + p.x - odn.x; oy = orc0.top + p.y - odn.y; SetWindowPos(h, NULL, ox, oy, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE); }
+            if (!ocorner) { z->x = orc0.left + p.x - odn.x; z->y = orc0.top + p.y - odn.y; SetWindowPos(h, NULL, z->x, z->y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE); }
             else {
                 BOOL lf = ocorner == 1 || ocorner == 3, tp = ocorner == 1 || ocorner == 2;
                 int ax = lf ? orc0.right : orc0.left, ay = tp ? orc0.bottom : orc0.top;
                 int dx = p.x > ax ? p.x - ax : ax - p.x, dy = p.y > ay ? p.y - ay : ay - p.y;
-                float s1 = (float)dx / oc.cw, s2 = (float)dy / oc.ch, s = s1 > s2 ? s1 : s2;
+                float s1 = (float)dx / z->o.cw, s2 = (float)dy / z->o.ch, s = s1 > s2 ? s1 : s2;
                 if (s < 0.2f) s = 0.2f; if (s > 6.f) s = 6.f;
-                osc = s; int W = (int)(oc.cw * s + 0.5f), H = (int)(oc.ch * s + 0.5f);
-                ox = lf ? ax - W : ax; oy = tp ? ay - H : ay; OvPaint();
+                z->sc = s; int W = (int)(z->o.cw * s + 0.5f), H = (int)(z->o.ch * s + 0.5f);
+                z->x = lf ? ax - W : ax; z->y = tp ? ay - H : ay; OvPaint(i);
             }
         }
         return 0;
     case WM_LBUTTONUP: if (GetCapture() == h) ReleaseCapture(); return 0;
-    case WM_MOUSEWHEEL: osc *= (short)HIWORD(w) > 0 ? 1.05f : 1.f / 1.05f; if (osc < 0.2f) osc = 0.2f; if (osc > 6.f) osc = 6.f; OvPaint(); return 0;
-    case WM_RBUTTONUP: OvSave(); DestroyWindow(h); return 0;
-    case WM_KEYDOWN: if (w == VK_RETURN) { OvSave(); DestroyWindow(h); } else if (w == VK_ESCAPE) DestroyWindow(h); return 0;
-    case WM_DESTROY: ow = NULL; OvFree(&oc); GdiplusShutdown(otok); if (hw) { ShowWindow(hw, SW_SHOWNOACTIVATE); Repaint(); } return 0;
+    case WM_MOUSEWHEEL: {                                                     // колесо приходит окну в фокусе - берём то, что под курсором
+        POINT p; GetCursorPos(&p); HWND uh = WindowFromPoint(p); int j = i;
+        for (int k = 0; k < ncw; k++) if (ocw[k].h == uh) j = k;
+        OvWin *q = &ocw[j]; q->sc *= (short)HIWORD(w) > 0 ? 1.05f : 1.f / 1.05f; if (q->sc < 0.2f) q->sc = 0.2f; if (q->sc > 6.f) q->sc = 6.f; OvPaint(j); return 0;
+    }
+    case WM_RBUTTONUP: OvSave(); OvClose(); return 0;
+    case WM_KEYDOWN: if (w == VK_RETURN) { OvSave(); OvClose(); } else if (w == VK_ESCAPE) OvClose(); return 0;
     }
     return DefWindowProcW(h, m, w, l);
 }
-static void OvConfig(int i) {
-    if (ow || recording || i < 0 || i >= npre) return;
-    OvCfg *c = OvCfgGet(pre[i].stem, TRUE); if (!c) return;
+static void OvConfig(void) {
+    if (ow || recording) return;
+    ScanOv();
     GdiplusStartupInput in;
     if (GdiplusStartup(&otok, &in, NULL) != Ok) { Toast(Tr(L_D_GDIFAIL)); return; }
-    if (!OvLoad(&pre[i], c, &oc)) { GdiplusShutdown(otok); Toast(Tr(L_REC_OV_BAD)); return; }
-    ocfg = c; CalcCr(&ocr);
-    osc = c->sc / 100.f; ox = ocr.left + MulDiv(ocr.right - ocr.left, c->x, 1000); oy = ocr.top + MulDiv(ocr.bottom - ocr.top, c->y, 1000);
+    ShowFree(); CalcCr(&ocr); ncw = 0; memset(ocw, 0, sizeof ocw);
     RegClass(L"DKRecOv", OvProc, 0);
-    ow = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW, L"DKRecOv", L"", WS_POPUP, ox, oy, 100, 100, NULL, NULL, g_inst, NULL);
-    if (!ow) { OvFree(&oc); GdiplusShutdown(otok); return; }
+    for (int i = 0; i < npre && ncw < NOVL; i++) {
+        OvCfg *c = OvCfgGet(pre[i].stem, FALSE); if (!c || !c->mode) continue;
+        OvWin *z = &ocw[ncw];
+        if (!OvLoad(&pre[i], c, &z->o)) continue;
+        z->c = c; z->sc = c->sc / 100.f; z->x = ocr.left + MulDiv(ocr.right - ocr.left, c->x, 1000); z->y = ocr.top + MulDiv(ocr.bottom - ocr.top, c->y, 1000);
+        z->h = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW, L"DKRecOv", L"", WS_POPUP, z->x, z->y, 100, 100, NULL, NULL, g_inst, NULL);
+        if (!z->h) { OvFree(&z->o); continue; }
+        SetWindowLongPtrW(z->h, GWLP_USERDATA, ncw + 1); ncw++;
+    }
+    if (!ncw) { GdiplusShutdown(otok); ShowSync(); Toast(Tr(L_REC_OV_NOSEL)); return; }
+    ow = ocw[0].h;
     if (hw) ShowWindow(hw, SW_HIDE);
-    OvPaint(); ShowWindow(ow, SW_SHOW); ForceFg(ow); SetFocus(ow); Toast(Tr(L_REC_OV_HINT));
+    for (int i = 0; i < ncw; i++) { OvPaint(i); ShowWindow(ocw[i].h, SW_SHOW); }
+    ForceFg(ocw[ncw - 1].h); SetFocus(ocw[ncw - 1].h); Toast(Tr(L_REC_OV_HINT));
 }
 static void SavePos(void) {
     RECT r; if (!hw || !GetWindowRect(hw, &r)) return;
@@ -4351,7 +4447,7 @@ static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
         return 0;
     case WM_RBUTTONUP: if (!recording) DestroyWindow(h); return 0;
-    case WM_DESTROY: Stop(); SavePos(); hw = NULL; return 0;
+    case WM_DESTROY: Stop(); SavePos(); hw = NULL; ShowFree(); return 0;
     }
     return DefWindowProcW(h, m, w, l);
 }
@@ -4369,6 +4465,7 @@ static void Open(void) {
     SetWindowRgn(hw, CreateEllipticRgn(0, 0, S + 1, S + 1), TRUE);
     SetWindowDisplayAffinity(hw, 0x11);                      // WDA_EXCLUDEFROMCAPTURE: кнопка не попадает в видео
     ShowWindow(hw, SW_SHOWNOACTIVATE);
+    ShowSync();
 }
 static wchar_t micList[16][80];
 static HMENU MicMenu(void) {
@@ -4404,10 +4501,8 @@ static HMENU OvMenu(void) {
             if (done[i] || lstrcmpiW(pre[i].grp, pre[g].grp)) continue;
             done[i] = TRUE;
             OvCfg *c = OvCfgGet(pre[i].stem, FALSE); int md = c ? c->mode : 0; HMENU s = CreatePopupMenu();
-            const wchar_t *nm[4] = {Tr(L_REC_OV_OFF), Tr(L_REC_OV_VID), Tr(L_REC_OV_FILE), Tr(L_REC_OV_BOTH)};
-            for (int j = 0; j < 4; j++) AppendMenuW(s, MF_STRING | (md == j ? MF_CHECKED : 0), 300 + i * 8 + j, nm[j]);
-            AppendMenuW(s, MF_SEPARATOR, 0, NULL);
-            AppendMenuW(s, MF_STRING, 300 + i * 8 + 4, Tr(L_REC_OV_CFG));
+            const wchar_t *nm[3] = {Tr(L_REC_OV_OFF), Tr(L_REC_OV_VID), Tr(L_REC_OV_FILE)};
+            for (int j = 0; j < 3; j++) AppendMenuW(s, MF_STRING | (md == j ? MF_CHECKED : 0), 300 + i * 8 + j, nm[j]);
             wchar_t e[140]; int o = 0; for (int j = 0; pre[i].stem[j] && o < 130; j++) { if (pre[i].stem[j] == L'&') e[o++] = L'&'; e[o++] = pre[i].stem[j]; } e[o] = 0;
             if (md) { e[o++] = L' '; e[o++] = 0x2713; e[o] = 0; }               // галочка у включённых
             AppendMenuW(gm, MF_POPUP, (UINT_PTR)s, e);
@@ -4418,6 +4513,8 @@ static HMENU OvMenu(void) {
         }
     }
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(m, MF_STRING, 63, Tr(L_REC_OV_CFG));
+    AppendMenuW(m, MF_STRING | (g_rShow ? MF_CHECKED : 0), 62, Tr(L_REC_OV_SHOW));
     AppendMenuW(m, MF_STRING | (g_rPwd ? MF_CHECKED : 0), 60, Tr(L_REC_OV_PWD));
     AppendMenuW(m, MF_STRING, 61, Tr(L_REC_OV_DIR));
     return m;
@@ -4457,19 +4554,48 @@ static void Cmd(int c) {
         IniSet(L"Record", L"Mic", g_rMic);
     }
     else if (c == 60) { g_rPwd = !g_rPwd; IniSet(L"Overlay", L"HidePasswords", g_rPwd ? L"1" : L"0"); }
+    else if (c == 62) { g_rShow = !g_rShow; IniSet(L"Overlay", L"Show", g_rShow ? L"1" : L"0"); ShowSync(); }
+    else if (c == 63) OvConfig();
     else if (c == 61) { wchar_t d[MAX_PATH]; lstrcpynW(d, g_dir, MAX_PATH); Cat(d, MAX_PATH, L"\\overlays"); CreateDirectoryW(d, NULL); ShellExecuteW(NULL, L"open", d, NULL, NULL, SW_SHOWNORMAL); }
     else if (c >= 300 && c < 500) {
         int i = (c - 300) / 8, j = (c - 300) % 8;
-        if (i < npre && j < 4) { OvCfg *g = OvCfgGet(pre[i].stem, TRUE); if (g) { g->mode = j; OvCfgSave(g); if (j) Toast(Tr(L_REC_OV_WARN)); } }
-        else if (i < npre && j == 4) OvConfig(i);
+        if (i < npre && j < 3) { OvCfg *g = OvCfgGet(pre[i].stem, TRUE); if (g) { g->mode = j; OvCfgSave(g); ShowSync(); if (j) Toast(Tr(L_REC_OV_WARN)); } }
     }
     else if (c == 25) { wchar_t d[MAX_PATH]; Dir(d); CreateDirectoryW(d, NULL); ShellExecuteW(NULL, L"open", d, NULL, NULL, SW_SHOWNORMAL); }
 }
 }   // namespace RecNs
 static void RecOpen(void) { RecNs::Open(); }
+static void RecShowSync(void) { RecNs::ShowSync(); }
 
-static void TrayMenu(void) {
-    POINT pt; GetCursorPos(&pt);
+static int g_nav[8], g_navN;                                  // путь к пункту: номера (без разделителей) по уровням
+static BOOL FindPath(HMENU m, UINT id, int depth) {            // ищет пункт id в дереве меню
+    int n = GetMenuItemCount(m), k = 0;
+    for (int i = 0; i < n && depth < 8; i++) {
+        MENUITEMINFOW mi; memset(&mi, 0, sizeof mi); mi.cbSize = sizeof mi; mi.fMask = MIIM_ID | MIIM_SUBMENU | MIIM_FTYPE;
+        if (!GetMenuItemInfoW(m, i, TRUE, &mi)) continue;
+        if (mi.fType & MFT_SEPARATOR) continue;
+        g_nav[depth] = k++;
+        if (mi.hSubMenu) { if (FindPath(mi.hSubMenu, id, depth + 1)) return TRUE; }
+        else if (mi.wID == id) { g_navN = depth + 1; return TRUE; }
+    }
+    return FALSE;
+}
+static void NavKey(WORD vk) {
+    keybd_event((BYTE)vk, 0, KEYEVENTF_EXTENDEDKEY, 0);
+    keybd_event((BYTE)vk, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0);
+}
+static void NavRun(void) {                                      // клавишами проходим к пункту, как после ручного открытия
+    for (int d = 0; d < g_navN; d++) {
+        if (d) NavKey(VK_RIGHT);
+        for (int i = 0; i < g_nav[d] + (d == 0); i++) NavKey(VK_DOWN);
+    }
+}
+static BOOL KeepMenu(int c) {                                   // настройки: меню остаётся открытым после выбора
+    return (c >= 20 && c < 58 && c != 25) || c == 60 || c == 62 || (c >= 300 && c < 500 && (c - 300) % 8 < 4) || (c >= TM_ID + 12 && c < TM_ID + 40);
+}
+static void TrayMenuAt(POINT pt, int again);
+static void TrayMenu(void) { POINT pt; GetCursorPos(&pt); TrayMenuAt(pt, 0); }
+static void TrayMenuAt(POINT pt, int again) {
     HMENU m = CreatePopupMenu(), hm = NULL;
     AddHk(m, MF_STRING, 1, Tr(L_TRAY_BUF), A_BUFFER);
     AddHk(m, g_histOn ? MF_STRING : MF_STRING | MF_GRAYED, 2, Tr(L_TRAY_HIST), A_HIST);
@@ -4505,9 +4631,17 @@ static void TrayMenu(void) {
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING, 16, Tr(L_TRAY_EXIT));
     SetForegroundWindow(g_hwnd);
+    g_navN = 0;
+    if (again && FindPath(m, again, 0) && g_navN) SetTimer(g_hwnd, TID_NAV, 40, NULL);
     int c = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, g_hwnd, NULL);
+    KillTimer(g_hwnd, TID_NAV);
     PostMessageW(g_hwnd, WM_NULL, 0, 0);
     DestroyMenu(m);
+    if (KeepMenu(c)) {
+        if (c >= TM_ID) TmCommand(c); else RecNs::Cmd(c);
+        TrayMenuAt(pt, c);
+        return;
+    }
     switch (c) {
     case 1: PopupOpen(PM_BUF); break;
     case 2: PopupOpen(PM_HIST); break;
@@ -4555,6 +4689,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         else if (w == TID_LAYOUT) OnLayoutTimer();
         else if (w == TID_POPFG) OnPopFg();
         else if (w == TID_TRAY) TrayAdd();
+        else if (w == TID_NAV) { KillTimer(h, TID_NAV); NavRun(); }
         return 0;
     case WM_CLIPBOARDUPDATE: OnClip(); return 0;
     case WM_APP_RENDERED: if (g_psPending) SetTimer(g_hwnd, TID_RESTORE, g_pasteDelay, NULL); return 0;
@@ -4618,6 +4753,7 @@ static int Run(void) {
     WaitForSingleObject(ev, 3000); CloseHandle(ev);
     SetThreadPriority(ht, THREAD_PRIORITY_ABOVE_NORMAL);
     if (g_histOn) AddClipboardFormatListener(g_hwnd);
+    RecShowSync();
     MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0) > 0) { TranslateMessage(&msg); DispatchMessageW(&msg); }
     for (int i = 0; i < g_nhid; i++) if (IsWindow(g_hid[i])) ShowWindow(g_hid[i], SW_SHOW);
