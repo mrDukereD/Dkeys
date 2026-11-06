@@ -1653,6 +1653,17 @@ static void FixLayout(void) {
         if (n) { SendKeysN(VK_END, 1, 0); SendKeysN(VK_HOME, 2, VK_SHIFT); }
     }
     if (!sel || !*sel) { Free(sel); Toast(Tr(L_T_NOLAYTXT)); return; }
+    int up = 0, letters = 0;
+    for (wchar_t *p = sel; *p; p++) { if (IsCharUpperW(*p)) { up++; letters++; } else if (IsCharLowerW(*p)) letters++; }
+    if (letters >= 2 && up * 2 > letters) {   // больше половины букв заглавные (CapsLock): сначала только регистр, раскладку - вторым нажатием
+        CharLowerBuffW(sel, lstrlenW(sel));
+        int cl = CaretLen(sel);
+        PasteText(sel);
+        SendKeysN(VK_LEFT, cl, VK_SHIFT);       // снова выделить, чтобы повторное нажатие поменяло раскладку
+        InterlockedExchange(&g_lastValid, 0);
+        Free(sel);
+        return;
+    }
     int cyr = 0, lat = 0;
     for (wchar_t *p = sel; *p; p++) { if (*p >= 0x400 && *p <= 0x4FF) cyr++; else if ((*p | 32) >= L'a' && (*p | 32) <= L'z') lat++; }
     HKL from = cyr > lat ? ru : en, to = cyr > lat ? en : ru;
