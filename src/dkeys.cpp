@@ -13,6 +13,7 @@
 #include <gdiplus.h>
 #define NO_DSHOW_STRSAFE
 #include <dshow.h>
+#include <uiautomation.h>
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
@@ -62,8 +63,8 @@ void *memmove(void *d, const void *s, size_t n) {
 
 #define DKMARK ((ULONG_PTR)0x444B4559)
 enum { DM_CTRL = 1, DM_ALT = 2, DM_SHIFT = 4, DM_WIN = 8 };
-enum { A_NONE, A_COPY, A_PASTE, A_BUFFER, A_HIST, A_LAUNCH, A_RUN, A_ADMIN, A_PY, A_PYRUN, A_TOPMOST, A_TOTRAY, A_LAYOUT, A_PAUSE, A_WEBCAM, A_STOPWATCH, A_TIMER, A_DRAW, A_PICKER, A_RECORD };
-enum { PM_BUF, PM_HIST, PM_LAUNCH };
+enum { A_NONE, A_COPY, A_PASTE, A_BUFFER, A_HIST, A_LAUNCH, A_RUN, A_ADMIN, A_PY, A_PYRUN, A_TOPMOST, A_TOTRAY, A_LAYOUT, A_PAUSE, A_WEBCAM, A_STOPWATCH, A_TIMER, A_DRAW, A_PICKER, A_RECORD, A_SCRIPTS };
+enum { PM_BUF, PM_HIST, PM_LAUNCH, PM_SCRIPTS };
 enum {
     WM_APP_HOT = WM_APP + 1, WM_APP_KEY, WM_APP_CLOSE, WM_APP_PCLICK, WM_APP_PTAB, WM_TRAY, WM_APP_RENDERED,
     TM_MOUSE = WM_APP + 20, TM_REHOOK
@@ -104,7 +105,15 @@ static HICON g_icon;
 static int g_mouseSlow = 4;   // [General] MouseSlow: во сколько раз замедлять мышь при зажатом Alt в пипетке (0/1 - выкл)
 static volatile LONG g_pickActive;
 static BOOL g_rNoTb = TRUE, g_rCur = TRUE; static int g_rFps = 30, g_rPos[2] = {-99999, -99999}, g_rScr;   // g_rScr: 0 - монитор с кнопкой, -1 - весь рабочий стол, N - монитор N
-static BOOL g_rDummy; static wchar_t g_rMic[80];   // [Record] в ini: без панели задач, курсор, кадры/с, позиция кнопки
+static BOOL g_rDummy;
+struct OvCfg { wchar_t stem[64]; int mode, x, y, sc; };      // mode: 0 выкл, 1 на видео, 2 отдельный файл, 3 оба; x,y - доля кадра в ‰; sc - масштаб в %
+static OvCfg g_ovc[24]; static int g_novc; static BOOL g_rPwd = TRUE;
+static volatile BYTE g_ioKey[65536], g_ioMouse[8]; static volatile DWORD g_ioHit[65536], g_ioMHit[8]; static volatile DWORD g_ioWheelT; static volatile int g_ioWheelD;   // состояние ввода для оверлея (из хуков)
+static OvCfg *OvCfgGet(const wchar_t *stem, BOOL create) {
+    for (int i = 0; i < g_novc; i++) if (!lstrcmpiW(g_ovc[i].stem, stem)) return &g_ovc[i];
+    if (!create || g_novc >= 24) return NULL;
+    OvCfg *c = &g_ovc[g_novc++]; lstrcpynW(c->stem, stem, 64); c->mode = 0; c->x = 700; c->y = 650; c->sc = 100; return c;
+} static wchar_t g_rMic[80], g_rDir[MAX_PATH];   // [Record] в ini: без панели задач, курсор, кадры/с, позиция кнопки
 static BOOL g_dLive; static int g_dCol, g_dWid = 1; static wchar_t g_dSaveDir[MAX_PATH];   // [Draw] в ini: режим, цвет, толщина, папка
 static COLORREF g_tmFg = RGB(255, 255, 255), g_tmBg = RGB(0, 0, 0);               // [Timer] в ini
 static int g_tmFav[10], g_tmNFav;                                                  // избранное: секунды
@@ -152,6 +161,18 @@ X(L_REC_MICOFF, "rec.mic_off", L"Без звука") \
 X(L_REC_DIR, "rec.open_dir", L"Папка с видео") \
 X(L_REC_SAVED, "rec.saved", L"Видео сохранено: %s") \
 X(L_REC_FAIL, "rec.fail", L"Не удалось начать запись") \
+X(L_REC_OV, "rec.ov", L"Оверлей ввода (клавиши, мышь)") \
+X(L_REC_OV_OFF, "rec.ov_off", L"Выключен") \
+X(L_REC_OV_VID, "rec.ov_video", L"На видео") \
+X(L_REC_OV_FILE, "rec.ov_file", L"Отдельным файлом (зелёный фон)") \
+X(L_REC_OV_BOTH, "rec.ov_both", L"На видео и отдельным файлом") \
+X(L_REC_OV_CFG, "rec.ov_config", L"Настроить положение и размер…") \
+X(L_REC_OV_PWD, "rec.ov_pwd", L"Не показывать клавиши в полях пароля") \
+X(L_REC_OV_DIR, "rec.ov_dir", L"Папка overlays") \
+X(L_REC_OV_NONE, "rec.ov_none", L"Пресетов нет (папка overlays)") \
+X(L_REC_OV_BAD, "rec.ov_bad", L"Не удалось загрузить пресет") \
+X(L_REC_OV_HINT, "rec.ov_hint", L"Тянуть - перенос, углы или колесо - масштаб, Enter или правый клик - готово, Esc - отмена") \
+X(L_REC_OV_WARN, "rec.ov_warn", L"Внимание: нажатые клавиши видны в видео - не вводите пароли") \
 X(L_PK_COPIED, "picker.copied", L"Цвет %s скопирован в буфер") \
 X(L_TRAY_TIMER, "tray.timer", L"Секундомер и таймер") \
 X(L_TRAY_HISTON, "tray.history_on", L"Своя история буфера") \
@@ -167,6 +188,10 @@ X(L_TRAY_EXIT, "tray.exit", L"Выход") \
 X(L_TRAY_TIPADM, "tray.tip_admin", L"DKeys (администратор)") \
 X(L_TAB_HIST, "popup.tab_history", L"История") \
 X(L_TAB_LAUNCH, "popup.tab_launch", L"Запуск") \
+X(L_TAB_SCR, "popup.tab_scripts", L"Скрипты") \
+X(L_INFO_SCR, "popup.info_scripts", L"T - tmp.py, 1-9 - остальные, Enter - запустить   Tab - режим   Esc - закрыть") \
+X(L_EMPTY_SCR, "popup.scripts_empty", L"В папке py нет скриптов (*.py)") \
+X(L_TRAY_SCR, "tray.scripts", L"Скрипты…") \
 X(L_SEARCH, "popup.search", L"Введите для поиска…") \
 X(L_INFO_LAUNCH, "popup.info_launch", L"Enter - запустить   Tab - режим   Esc - закрыть") \
 X(L_INFO_BUF, "popup.info_buffer", L"%d симв.   цифра/Enter - вставить   Del - удалить   F2 - правка   Ins - новая   ←→ - буфер") \
@@ -498,48 +523,7 @@ static void IniSet(const wchar_t *sect, const wchar_t *key, const wchar_t *val) 
 
 static const char *kIni1 = u8R"INI(; DKeys - настройки. Комментарии - только на отдельных строках (начинаются с ; или #).
 ; После правки: значок в трее -> "Перечитать настройки".
-;
-; [Hotkeys]  Клавиши = действие
-;   Модификаторы: Win Ctrl Alt Shift
-;   Клавиши: A-Z 0-9 F1-F24 Num0-Num9 NumDot NumMul NumAdd NumSub NumDiv Space Enter Tab Esc Back
-;            Ins Del Home End PgUp PgDn Left Right Up Down Tilde Minus Equals Comma Period Slash
-;            Backslash Semicolon Quote LBracket RBracket PrintScreen Pause Apps
-;   Действия:
-;     copy N                    выделенное - в буфер N (1-9), записью наверх; основной буфер Windows не трогается
-;     buffer [N]                меню буфера N (без N - последний): цифра 1-9,0 или Enter вставляет запись
-;     paste N M                 сразу вставить запись M (1-10) буфера N
-;     history                   меню истории (работает при HistoryEnabled=1, иначе клавиша уходит системе)
-;     launcher                  меню быстрого запуска (секция [Launcher])
-;     layout                    исправить раскладку: последний набранный текст, а если его нет - выделенный (строка, если выделения нет);
-;                               повторное нажатие сразу после этого возвращает текст обратно
-;     run КОМАНДА [@ ПАПКА]     запустить программу/файл/ссылку (ПАПКА - рабочая папка)
-;     admin КОМАНДА [@ ПАПКА]   то же от администратора
-;     py СКРИПТ [арг] [@ ПАПКА] скрипт из папки py. Выделенный текст: переменные окружения DKEYS_SEL и DKEYS_SEL_FILE
-;     pyrun                     выделенный текст выполнить как скрипт Python (py\tmp.py)
-;     topmost                   окно "поверх всех" вкл/выкл
-;     totray                    спрятать окно (вернуть - из меню значка в трее)
-;     pause                     пауза/продолжить хоткеи
-;     webcam                    окно предпросмотра веб-камеры (есть и в меню значка)
-;     stopwatch / timer         секундомер / таймер: старт-пауза (настройки - в меню значка, секция [Timer])
-;     colorpicker               пипетка: клик - цвет пикселя (#RRGGBB) в буфер, стрелки - сдвиг на 1 пиксель, Esc - отмена
-;     picker                    то же, что colorpicker
-;     draw                      рисовалка на экране (пометки, стрелки, номера, скрытие; стоп-кадр или поверх живого экрана; секция [Draw])
-;     record                    запись экрана в mp4 (папка videos): кнопка-кружок: клик - старт/стоп, Ctrl+клик - пауза (на паузе клик - продолжить, Ctrl+клик - стоп), Shift+клик - выбрать область
-;                               (Shift при рисовании - пропорции экрана; клик без рамки - сбросить область); хоткей при записи = стоп
-;
-; Внутри рисовалки (draw): P перо, M маркер, A стрелка, L линия, R прямоугольник, O овал, T текст (Enter - готово), N номер, B размытие, E ластик,
-;   S затемнить всё кроме области, C область сохранения, Z лупа, 1-3 толщина, H подсветка курсора, Tab живой экран / снимок,
-;   D и Shift+D - следующий / предыдущий монитор, Ctrl+мышь - двигать, менять размер и поворачивать готовую фигуру,
-;   Ctrl+Z / Ctrl+Y - отмена / возврат, Enter или Ctrl+C - в буфер и закрыть, Ctrl+S - PNG в папку shots, Esc - закрыть.
-; Настройки модулей (правятся и из меню значка, руками - по желанию):
-;   [Draw]    Mode=live|static  Color=0-7  Width=0-2  SaveDir=папка для PNG
-;   [Record]  NoTaskbar=1|0 (не снимать панель задач)  Cursor=1|0  Fps=15|30|60  Screen=0 (монитор с кнопкой)|1-8 (номер монитора)|all (весь рабочий стол)
-;             Mic= пусто - микрофон по умолчанию, "-" - без звука, иначе имя устройства  Pos=x,y (кнопка)
-;   [Timer]   FontColor BgColor (RRGGBB)  BgAlpha 0-100  Size  EndAction 0 сигнал|1 выключить|2 перезагрузить  Favorites=секунды,...  Pos=x,y
-;   [Camera]  Device  Resolution=ШxВ  Window=x,y,ш,в
-; Win+цифры буферов перекрывают запуск закреплённых программ на панели задач.
-; В меню буфера: Del - удалить, F2 - править, Ins - новая запись, Ctrl+Вверх/Вниз - переставить,
-; Влево/Вправо или Win+цифра - другой буфер, Ctrl+цифра - скопировать запись в буфер, Tab - история/запуск.
+; Описание - у каждой секции ниже. Секции модулей ([Draw] [Record] [Overlay] [Timer] [Camera]) правятся и из меню значка.
 
 [General]
 ; Своя история буфера (Win+V). 0 - выключена и Win+V работает как в Windows. Переключается из меню в трее.
@@ -557,7 +541,7 @@ LayoutWord=0
 LayoutSwitch=1
 ; Чем запускать py-макросы: python.exe, pythonw.exe (без окна) или полный путь
 Python=python.exe
-; 1 - после pyrun окно остаётся открытым (pause)
+; 1 - после pyrun и запуска из меню скриптов окно остаётся открытым (pause)
 PyRunPause=1
 ; Всплывающие подсказки внизу экрана
 Toasts=1
@@ -567,6 +551,35 @@ MouseSlow=4
 Language=ru
 
 [Hotkeys]
+; Клавиши = действие
+;   Модификаторы: Win Ctrl Alt Shift
+;   Клавиши: A-Z 0-9 F1-F24 Num0-Num9 NumDot NumMul NumAdd NumSub NumDiv Space Enter Tab Esc Back
+;            Ins Del Home End PgUp PgDn Left Right Up Down Tilde Minus Equals Comma Period Slash
+;            Backslash Semicolon Quote LBracket RBracket PrintScreen Pause Apps
+;   Действия:
+;     copy N                    выделенное - в буфер N (1-9), записью наверх; основной буфер Windows не трогается
+;     buffer [N]                меню буфера N (без N - последний): цифра 1-9,0 или Enter вставляет запись
+;     paste N M                 сразу вставить запись M (1-10) буфера N
+;     history                   меню истории (работает при HistoryEnabled=1, иначе клавиша уходит системе)
+;     launcher                  меню быстрого запуска (секция [Launcher])
+;     scripts                   меню скриптов из папки py (*.py): имя - первая строка-комментарий "# Имя", иначе имя файла; T - tmp.py, цифры - остальные, Enter - запустить
+;     layout                    исправить раскладку: последний набранный текст, а если его нет - выделенный (строка, если выделения нет);
+;                               повторное нажатие сразу после этого возвращает текст обратно
+;     run КОМАНДА [@ ПАПКА]     запустить программу/файл/ссылку (ПАПКА - рабочая папка)
+;     admin КОМАНДА [@ ПАПКА]   то же от администратора
+;     py СКРИПТ [арг] [@ ПАПКА] скрипт из папки py. Выделенный текст: переменные окружения DKEYS_SEL и DKEYS_SEL_FILE
+;     pyrun                     выделенный текст выполнить как скрипт Python (py\tmp.py)
+;     topmost                   окно "поверх всех" вкл/выкл
+;     totray                    спрятать окно (вернуть - из меню значка в трее)
+;     pause                     пауза/продолжить хоткеи
+;     webcam                    окно предпросмотра веб-камеры (секция [Camera])
+;     stopwatch / timer         секундомер / таймер: старт-пауза (секция [Timer])
+;     colorpicker / picker      пипетка: клик - цвет пикселя (#RRGGBB) в буфер, стрелки - сдвиг на 1 пиксель, Esc - отмена
+;     draw                      рисовалка на экране (секция [Draw])
+;     record                    запись экрана в mp4 (секции [Record] и [Overlay])
+; Win+цифры буферов перекрывают запуск закреплённых программ на панели задач.
+; В меню буфера: Del - удалить, F2 - править, Ins - новая запись, Ctrl+Вверх/Вниз - переставить,
+; Влево/Вправо или Win+цифра - другой буфер, Ctrl+цифра - скопировать запись в буфер, Tab - история/запуск.
 Ctrl+Num1=copy 1
 Ctrl+Num2=copy 2
 Ctrl+Num3=copy 3
@@ -588,6 +601,7 @@ Win+Num9=buffer 9
 Win+Num0=buffer
 Win+V=history
 Win+Tilde=launcher
+Win+P=scripts
 Ctrl+Tilde=layout
 Win+C=run calc.exe
 Win+O=topmost
@@ -601,6 +615,7 @@ Win+Shift+R=record
 )INI";
 static const char *kIni2 = u8R"INI(
 [Launcher]
+; Меню быстрого запуска (действие launcher): Название=команда (те же команды, что в run / admin)
 Калькулятор=calc.exe
 Блокнот=notepad.exe
 Диспетчер задач=taskmgr.exe
@@ -631,6 +646,70 @@ PowerShell=powershell.exe
 Параметры: Обновление Windows=ms-settings:windowsupdate
 Автозагрузка (папка)=shell:startup
 Папка SendTo=shell:sendto
+
+[Draw]
+; Рисовалка на экране (действие draw). Закомментированные строки - параметры со значением по умолчанию, уберите ; чтобы изменить.
+; Внутри: P перо, M маркер, A стрелка, L линия, R прямоугольник, O овал, T текст (Enter - готово), N номер, B размытие, E ластик,
+;   S затемнить всё кроме области, C область сохранения, Z лупа, 1-3 толщина, H подсветка курсора, Tab живой экран / снимок,
+;   D и Shift+D - следующий / предыдущий монитор, Ctrl+мышь - двигать, менять размер и поворачивать готовую фигуру,
+;   Ctrl+Z / Ctrl+Y - отмена / возврат, Enter или Ctrl+C - в буфер и закрыть, Ctrl+S - PNG в папку shots, Esc - закрыть.
+; Mode: static - стоп-кадр экрана | live - поверх живого экрана
+;Mode=static
+; Color: 0-7 - номер цвета в палитре панели
+;Color=0
+; Width: 0 тонкая | 1 средняя | 2 толстая
+;Width=1
+; SaveDir: папка для PNG (пусто - shots рядом с exe)
+;SaveDir=D:\Screens
+
+[Record]
+; Запись экрана в mp4 (действие record): кнопка-кружок - клик старт/стоп, Ctrl+клик - пауза (на паузе клик - продолжить, Ctrl+клик - стоп),
+;   Shift+клик - выбрать область (Shift при рисовании - пропорции экрана; клик без рамки - сбросить область); хоткей при записи = стоп.
+; NoTaskbar: 1 не снимать панель задач | 0 снимать весь монитор
+;NoTaskbar=1
+; Cursor: 1 снимать курсор мыши | 0 нет
+;Cursor=1
+; Fps: 15 | 30 | 60
+;Fps=30
+; Screen: 0 монитор с кнопкой | 1-8 монитор по номеру | all весь рабочий стол
+;Screen=0
+; Dir: папка для видео (пусто - стандартная "Видео" пользователя)
+;Dir=D:\Videos
+; Mic: пусто - микрофон по умолчанию | - без звука | точное имя устройства (проще выбрать в меню)
+;Mic=
+; Pos: положение кнопки записи x,y
+;Pos=100,100
+
+[Overlay]
+; Оверлей ввода при записи (пресеты input-overlay: папка overlays\*\имя.json + имя.png). Строка на пресет: имя=режим,x,y,масштаб
+;   режим: 0 выкл | 1 на видео | 2 отдельный mp4 на зелёном фоне (хромакей) | 3 то и другое; x,y - положение в промилле кадра; масштаб в %
+;   x,y и масштаб задаются в меню "Настроить"
+;имя_пресета=1,700,650,100
+; HidePasswords: 1 не показывать клавиши в поле пароля | 0 показывать. ВНИМАНИЕ: нажатые клавиши видны в видео - не вводите пароли
+;HidePasswords=1
+
+[Timer]
+; Секундомер и таймер (действия stopwatch, timer)
+; FontColor, BgColor: цвета цифр и фона, RRGGBB
+;FontColor=FFFFFF
+;BgColor=000000
+; BgAlpha: непрозрачность фона 0-100 %
+;BgAlpha=60
+; Size: высота шрифта 12-300
+;Size=48
+; EndAction по окончании таймера: 0 сигнал | 1 выключить компьютер | 2 перезагрузить
+;EndAction=0
+; Favorites: избранные времена в секундах через запятую (до 10)
+;Favorites=60,300,600
+; Pos: положение окна x,y
+;Pos=80,80
+
+[Camera]
+; Веб-камера (действие webcam)
+; Device: имя камеры | Resolution: ШxВ | Window: положение и размер окна x,y,ширина,высота
+;Device=Integrated Camera
+;Resolution=1920x1080
+;Window=100,100,800,450
 )INI";
 
 /* ---------- hotkey/config parsing ---------- */
@@ -727,7 +806,7 @@ static BOOL ParseAction(const wchar_t *v, Bind *b) {
     while (*v == L' ') v++;
     struct Act { const wchar_t *n; int a, kind; };
     static const Act T[] = {
-        {L"copy", A_COPY, 1}, {L"paste", A_PASTE, 3}, {L"buffer", A_BUFFER, 4}, {L"slots", A_BUFFER, 4}, {L"layout", A_LAYOUT, 0}, {L"history", A_HIST, 0}, {L"launcher", A_LAUNCH, 0},
+        {L"copy", A_COPY, 1}, {L"paste", A_PASTE, 3}, {L"buffer", A_BUFFER, 4}, {L"slots", A_BUFFER, 4}, {L"layout", A_LAYOUT, 0}, {L"history", A_HIST, 0}, {L"launcher", A_LAUNCH, 0}, {L"scripts", A_SCRIPTS, 0},
         {L"run", A_RUN, 2}, {L"admin", A_ADMIN, 2}, {L"py", A_PY, 2}, {L"pyrun", A_PYRUN, 0}, {L"topmost", A_TOPMOST, 0},
         {L"totray", A_TOTRAY, 0}, {L"pause", A_PAUSE, 0}, {L"webcam", A_WEBCAM, 0}, {L"stopwatch", A_STOPWATCH, 0}, {L"timer", A_TIMER, 0}, {L"draw", A_DRAW, 0}, {L"record", A_RECORD, 0}, {L"colorpicker", A_PICKER, 0}, {L"picker", A_PICKER, 0},
     };
@@ -789,8 +868,14 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
         else if (!lstrcmpiW(k, L"AllScreens")) { if (ToInt(v)) g_rScr = -1; }
         else if (!lstrcmpiW(k, L"Screen")) g_rScr = !lstrcmpiW(v, L"all") ? -1 : ToInt(v) > 0 && ToInt(v) <= 8 ? ToInt(v) : 0;
         else if (!lstrcmpiW(k, L"Mic")) lstrcpynW(g_rMic, v, 80);
+        else if (!lstrcmpiW(k, L"Dir")) lstrcpynW(g_rDir, v, MAX_PATH);
         else if (!lstrcmpiW(k, L"Fps")) { g_rFps = ToInt(v); if (g_rFps != 15 && g_rFps != 60) g_rFps = 30; }
         else if (!lstrcmpiW(k, L"Pos")) { const wchar_t *q = v; g_rPos[0] = ToInt(q); while (*q && *q != L',') q++; g_rPos[1] = *q ? ToInt(q + 1) : -99999; }
+    } else if (!lstrcmpiW(s, L"Overlay")) {
+        if (!lstrcmpiW(k, L"HidePasswords")) g_rPwd = ToInt(v) != 0;
+        else { OvCfg *c = OvCfgGet(k, TRUE); if (c) { const wchar_t *q = v; c->mode = ToInt(q) & 3; int *f[3] = {&c->x, &c->y, &c->sc};
+            for (int i = 0; i < 3; i++) { while (*q && *q != L',') q++; if (!*q) break; q++; *f[i] = ToInt(q); }
+            if (c->sc < 10) c->sc = 10; if (c->sc > 600) c->sc = 600; } }
     } else if (!lstrcmpiW(s, L"Timer")) {
         if (!lstrcmpiW(k, L"FontColor")) g_tmFg = HexRgb(v);
         else if (!lstrcmpiW(k, L"BgColor")) g_tmBg = HexRgb(v);
@@ -1207,11 +1292,12 @@ static void SetHistory(BOOL on) {
 struct Pal { COLORREF bg, hdr, fg, dim, sel, acc, bd; };
 static const Pal kDark = {RGB(32, 32, 32), RGB(40, 40, 40), RGB(230, 230, 230), RGB(140, 140, 140), RGB(38, 79, 120), RGB(90, 170, 250), RGB(85, 85, 85)};
 static const Pal kLight = {RGB(250, 250, 250), RGB(240, 240, 240), RGB(28, 28, 28), RGB(125, 125, 125), RGB(204, 228, 247), RGB(0, 95, 184), RGB(170, 170, 170)};
-// вкладки: 0..8 - буферы 1..9, 9 - история, 10 - запуск
-#define NTABS 11
-#define kTabName(i) Tr((i) ? L_TAB_LAUNCH : L_TAB_HIST)
+// вкладки: 0..8 - буферы 1..9, 9 - история, 10 - запуск, 11 - скрипты (режим = номер - 8)
+#define NTABS 12
+#define kTabName(i) Tr((i) == 0 ? L_TAB_HIST : (i) == 1 ? L_TAB_LAUNCH : L_TAB_SCR)
 
 static Row *g_rows; static int g_nrows;
+static wchar_t **g_scrNames; static int g_nscr;      // файлы вкладки "Скрипты" (ref строки - индекс сюда)
 static int *g_vis, g_nvis, g_sel, g_top, g_pmode;
 static wchar_t g_filt[64]; static int g_nfilt;
 static int g_dpi = 96, g_pw, g_ph, g_rh, g_hh, g_prh, g_pad;
@@ -1236,6 +1322,8 @@ static wchar_t *Collapse(const wchar_t *s) {
 static void FreeRows(void) {
     for (int i = 0; i < g_nrows; i++) { Free(g_rows[i].label); Free(g_rows[i].title); Free(g_rows[i].text); }
     Free(g_rows); Free(g_vis);
+    for (int i = 0; i < g_nscr; i++) Free(g_scrNames[i]);
+    Free(g_scrNames); g_scrNames = NULL; g_nscr = 0;
     g_rows = NULL; g_vis = NULL; g_nrows = g_nvis = 0;
 }
 static void Refilter(void) {
@@ -1247,9 +1335,54 @@ static void Refilter(void) {
     if (g_top > g_sel) g_top = g_sel;
     if (g_top < 0) g_top = 0;
 }
+// имя скрипта: первая строка-комментарий (не shebang и не "coding"), иначе имя файла
+static void ScrName(const wchar_t *t, wchar_t *out, int cap) {
+    out[0] = 0;
+    for (int ln = 0; ln < 4 && *t; ln++) {
+        const wchar_t *e = t; while (*e && *e != L'\n') e++;
+        const wchar_t *s = t; while (s < e && (*s == L' ' || *s == L'\t' || *s == L'\r')) s++;
+        t = *e ? e + 1 : e;
+        if (s >= e) continue;
+        if (*s != L'#') return;
+        s++;
+        if (s < e && *s == L'!') continue;
+        while (s < e && (*s == L' ' || *s == L'\t')) s++;
+        const wchar_t *x = e; while (x > s && (x[-1] == L'\r' || x[-1] == L' ' || x[-1] == L'\t')) x--;
+        int n = (int)(x - s); if (n <= 0) continue;
+        if (n >= cap) n = cap - 1;
+        memcpy(out, s, n * sizeof(wchar_t)); out[n] = 0;
+        if (ContainsI(out, L"coding:") || ContainsI(out, L"coding=")) { out[0] = 0; continue; }
+        return;
+    }
+}
+static wchar_t **ScrList(int *cnt) {
+    wchar_t pat[MAX_PATH]; lstrcpynW(pat, g_pyDir, MAX_PATH); Cat(pat, MAX_PATH, L"*.py");
+    wchar_t **a = NULL; int n = 0;
+    WIN32_FIND_DATAW fd; HANDLE h = FindFirstFileW(pat, &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || n >= 200) continue;
+            a = (wchar_t **)Realloc(a, (n + 1) * sizeof(wchar_t *)); a[n++] = Dup(fd.cFileName);
+            if (!lstrcmpiW(fd.cFileName, L"tmp.py") && n > 1) { wchar_t *x = a[n - 1]; memmove(a + 1, a, (n - 1) * sizeof(wchar_t *)); a[0] = x; }      // tmp.py - первым (клавиша T)
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    *cnt = n; return a;
+}
+static void ScrRow(Row *r, const wchar_t *file, const wchar_t *label) {
+    wchar_t path[MAX_PATH]; lstrcpynW(path, g_pyDir, MAX_PATH); Cat(path, MAX_PATH, file);
+    DWORD sz = 0; BYTE *raw = ReadAll(path, &sz);
+    if (sz > 6000) sz = 6000;
+    wchar_t *txt = raw ? FromUtf8((char *)raw, sz) : Dup(L"");
+    Free(raw);
+    wchar_t nm[100]; ScrName(txt, nm, 100);
+    r->label = Dup(label); r->title = Dup(nm[0] ? nm : file); r->text = txt;
+}
 static void BuildRows(void) {
     FreeRows();
-    int n = g_pmode == PM_BUF ? g_bufN[g_curBuf] : g_pmode == PM_HIST ? g_nhist : g_nlaunch;
+    wchar_t **sf = NULL; int ns = 0;
+    if (g_pmode == PM_SCRIPTS) { sf = ScrList(&ns); g_scrNames = sf; g_nscr = ns; }
+    int n = g_pmode == PM_BUF ? g_bufN[g_curBuf] : g_pmode == PM_HIST ? g_nhist : g_pmode == PM_SCRIPTS ? ns : g_nlaunch;
     g_rows = (Row *)Alloc(sizeof(Row) * (n ? n : 1)); g_vis = (int *)Alloc(sizeof(int) * (n ? n : 1));
     for (int i = 0; i < n; i++) {
         Row *r = &g_rows[i];
@@ -1259,6 +1392,10 @@ static void BuildRows(void) {
             r->label = Dup(l); r->text = Dup(g_buf[g_curBuf][i]); r->title = Collapse(r->text);
         } else if (g_pmode == PM_HIST) {
             r->label = Dup(L""); r->text = Dup(g_hist[i]); r->title = Collapse(r->text);
+        } else if (g_pmode == PM_SCRIPTS) {
+            BOOL tmp = !lstrcmpiW(sf[i], L"tmp.py"); int k = i - (ns && !lstrcmpiW(sf[0], L"tmp.py") ? 1 : 0);
+            wchar_t lb[2] = {(wchar_t)(tmp ? L'T' : k < 9 ? L'1' + k : k == 9 ? L'0' : 0), 0};     // T - tmp.py, остальные по цифрам 1-9,0
+            ScrRow(r, sf[i], lb);
         } else {
             r->label = Dup(L""); r->title = Dup(g_launch[i].k); r->text = Dup(g_launch[i].v);
         }
@@ -1285,7 +1422,7 @@ static void PopupPaint(HWND h) {
     for (int i = NTABS - 1; i >= 0; i--) {
         SetRectEmpty(&g_tabRc[i]);
         if (i == 9 && !g_histOn) continue;
-        BOOL cur = i < 9 ? (g_pmode == PM_BUF && g_curBuf == i + 1) : (g_pmode == (i == 9 ? PM_HIST : PM_LAUNCH));
+        BOOL cur = i < 9 ? (g_pmode == PM_BUF && g_curBuf == i + 1) : (g_pmode == i - 8);
         wchar_t dg[2] = {(wchar_t)(L'1' + i), 0};
         const wchar_t *tx = i < 9 ? dg : kTabName(i - 9);
         SelectObject(dc, cur ? g_fntB : g_fnt);
@@ -1303,7 +1440,7 @@ static void PopupPaint(HWND h) {
     if (g_nfilt) { SetTextColor(dc, P.fg); DrawTextW(dc, g_filt, g_nfilt, &fr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS); }
     else { SetTextColor(dc, P.dim); DrawTextW(dc, Tr(L_SEARCH), -1, &fr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS); }
     // rows
-    int y0 = g_hh, lw = g_pmode == PM_BUF ? Sc(28) : 0;
+    int y0 = g_hh, lw = g_pmode == PM_BUF || g_pmode == PM_SCRIPTS ? Sc(28) : 0;
     for (int i = 0; i < VISROWS; i++) {
         int vi = g_top + i; if (vi >= g_nvis) break;
         Row *r = &g_rows[g_vis[vi]];
@@ -1338,6 +1475,7 @@ static void PopupPaint(HWND h) {
         RECT ir = {g_pad, H - Sc(22), W - g_pad, H - Sc(3)};
         wchar_t info[128];
         if (g_pmode == PM_LAUNCH) lstrcpynW(info, Tr(L_INFO_LAUNCH), 128);
+        else if (g_pmode == PM_SCRIPTS) lstrcpynW(info, Tr(L_INFO_SCR), 128);
         else if (g_pmode == PM_BUF) wsprintfW(info, Tr(L_INFO_BUF), tl);
         else wsprintfW(info, Tr(L_INFO_HIST), tl);
         SetTextColor(dc, P.dim);
@@ -1346,7 +1484,7 @@ static void PopupPaint(HWND h) {
         SetTextColor(dc, P.dim);
         wchar_t e[96];
         if (g_pmode == PM_BUF) wsprintfW(e, g_nfilt ? Tr(L_EMPTY_NF) : Tr(L_EMPTY_BUF), g_curBuf, g_curBuf);
-        else lstrcpynW(e, g_pmode == PM_HIST && !g_nfilt ? Tr(L_EMPTY_HIST) : Tr(L_EMPTY_NF), 96);
+        else lstrcpynW(e, g_nfilt ? Tr(L_EMPTY_NF) : g_pmode == PM_HIST ? Tr(L_EMPTY_HIST) : g_pmode == PM_SCRIPTS ? Tr(L_EMPTY_SCR) : Tr(L_EMPTY_NF), 96);
         DrawTextW(dc, e, -1, &pr, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
     }
     FrameRect(dc, &cr, bd);
@@ -1559,7 +1697,7 @@ static void RunProc(wchar_t *cmd, const wchar_t *dir, wchar_t *env) {
         wchar_t m[200]; wsprintfW(m, Tr(L_T_PYFAIL), g_python); Toast(m);
     }
 }
-static void RunPy(const wchar_t *arg, const wchar_t *dir) {
+static void RunPy(const wchar_t *arg, const wchar_t *dir, BOOL hold = FALSE) {   // hold: окно консоли остаётся открытым (pause)
     wchar_t *s = Dup(arg), *file, *par;
     SplitCmd(s, &file, &par);
     wchar_t script[MAX_PATH];
@@ -1570,8 +1708,10 @@ static void RunPy(const wchar_t *arg, const wchar_t *dir) {
     if (sel) WriteText(tmp, sel);
     wchar_t *env = BuildEnv(sel, sel ? tmp : NULL);
     Buf c = {0};
+    if (hold && g_pyPause) BufAdd(&c, L"cmd.exe /d /c \"");
     BufAdd(&c, L"\""); BufAdd(&c, g_python); BufAdd(&c, L"\" \""); BufAdd(&c, script); BufAdd(&c, L"\"");
     if (*par) { BufAdd(&c, L" "); BufAdd(&c, par); }
+    if (hold && g_pyPause) BufAdd(&c, L" & pause\"");
     RunProc(c.p, dir, env);
     Free(c.p); Free(env); Free(sel); Free(s);
 }
@@ -1774,6 +1914,7 @@ static void ExecBind(const Bind *b) {
     case A_BUFFER: OpenPopup(PM_BUF, b->n); break;
     case A_HIST: OpenPopup(PM_HIST, 0); break;
     case A_LAUNCH: OpenPopup(PM_LAUNCH, 0); break;
+    case A_SCRIPTS: OpenPopup(PM_SCRIPTS, 0); break;
     case A_RUN: RunShell(b->arg, b->dir, FALSE); break;
     case A_ADMIN: RunShell(b->arg, b->dir, TRUE); break;
     case A_PY: RunPy(b->arg, b->dir); break;
@@ -1801,9 +1942,11 @@ static void PopupChoose(int vi) {
     if (vi < 0 || vi >= g_nvis) return;
     Row *r = &g_rows[g_vis[vi]];
     int mode = g_pmode;
-    wchar_t *text = Dup(r->text);
+    wchar_t *text = Dup(mode == PM_SCRIPTS ? g_scrNames[r->ref] : r->text);
     PopupClose();
-    if (mode == PM_LAUNCH) ExecSpec(text); else PasteText(text);
+    if (mode == PM_LAUNCH) ExecSpec(text);
+    else if (mode == PM_SCRIPTS) { wchar_t *q = (wchar_t *)Alloc((lstrlenW(text) + 3) * sizeof(wchar_t)); wsprintfW(q, L"\"%s\"", text); RunPy(q, NULL, TRUE); Free(q); }
+    else PasteText(text);
     Free(text);
 }
 static void PopupReselect(int keep) {
@@ -1816,11 +1959,11 @@ static void PopupDelete(void) {
     int ref = g_rows[g_vis[g_sel]].ref;
     if (g_pmode == PM_BUF) BufRemove(g_curBuf, ref);
     else if (g_pmode == PM_HIST) { HistRemove(ref); HistSave(); }
-    else { Toast(Tr(L_T_LISTINI)); return; }
+    else { if (g_pmode == PM_LAUNCH) Toast(Tr(L_T_LISTINI)); return; }
     PopupReselect(g_sel);
 }
 static void PopupEdit(BOOL isNew) {
-    if (g_pmode == PM_LAUNCH || (!isNew && g_nvis <= 0)) return;
+    if (g_pmode == PM_LAUNCH || g_pmode == PM_SCRIPTS || (!isNew && g_nvis <= 0)) return;
     int mode = g_pmode, buf = g_curBuf, ref = isNew ? -1 : g_rows[g_vis[g_sel]].ref;
     wchar_t *cur = Dup(isNew ? L"" : g_rows[g_vis[g_sel]].text);
     PopupClose();
@@ -1845,7 +1988,7 @@ static void PopupSetMode(int m, int buf) {
     BuildRows(); PopupRedraw();
 }
 static void PopupTab(int i) {
-    if (i < 9) PopupSetMode(PM_BUF, i + 1); else PopupSetMode(i == 9 ? PM_HIST : PM_LAUNCH, 0);
+    if (i < 9) PopupSetMode(PM_BUF, i + 1); else PopupSetMode(i - 8, 0);
 }
 static void PopupKey(UINT key, UINT mods, WCHAR ch) {
     Log(L"PopupKey key=%x mods=%x ch=%x", key, mods, (int)ch);
@@ -1869,7 +2012,7 @@ static void PopupKey(UINT key, UINT mods, WCHAR ch) {
     case VK_NEXT: g_sel += VISROWS - 1; if (g_sel > g_nvis - 1) g_sel = g_nvis - 1; if (g_sel < 0) g_sel = 0; PopupEnsureVisible(); PopupRedraw(); return;
     case VK_HOME: g_sel = 0; PopupEnsureVisible(); PopupRedraw(); return;
     case VK_END: g_sel = g_nvis ? g_nvis - 1 : 0; PopupEnsureVisible(); PopupRedraw(); return;
-    case VK_TAB: { int m = (g_pmode + 1) % 3; if (m == PM_HIST && !g_histOn) m = PM_LAUNCH; PopupSetMode(m, 0); return; }
+    case VK_TAB: { int m = (g_pmode + 1) % 4; if (m == PM_HIST && !g_histOn) m = PM_LAUNCH; PopupSetMode(m, 0); return; }
     case VK_DELETE: PopupDelete(); return;
     case VK_F2: PopupEdit(FALSE); return;
     case VK_INSERT: if (buf) PopupEdit(TRUE); return;
@@ -1878,10 +2021,15 @@ static void PopupKey(UINT key, UINT mods, WCHAR ch) {
         return;
     }
     if ((mods & DM_WIN) && dig >= 1) { PopupSetMode(PM_BUF, dig); return; }
-    if ((mods & DM_CTRL) && dig >= 1 && g_pmode != PM_LAUNCH && g_nvis > 0) {
+    if ((mods & DM_CTRL) && dig >= 1 && g_pmode != PM_LAUNCH && g_pmode != PM_SCRIPTS && g_nvis > 0) {
         BufInsert(dig, Dup(g_rows[g_vis[g_sel]].text));
         wchar_t m[64]; wsprintfW(m, Tr(L_T_TOBUF2), dig); Toast(m);
         if (buf) { g_sel = 0; PopupReselect(0); }
+        return;
+    }
+    if (g_pmode == PM_SCRIPTS && !g_nfilt && plain && (dig >= 0 || key == L'T')) {       // T - tmp.py, цифры - остальные по порядку
+        wchar_t want = key == L'T' ? L'T' : (wchar_t)(L'0' + dig);
+        for (int vi = 0; vi < g_nvis; vi++) if (g_rows[g_vis[vi]].label[0] == want) { PopupChoose(vi); return; }
         return;
     }
     if (buf && !g_nfilt && plain && dig >= 0) {
@@ -1971,6 +2119,9 @@ static LRESULT CALLBACK LLKbd(int code, WPARAM wp, LPARAM lp) {
     if (code != HC_ACTION || k->dwExtraInfo == DKMARK) return CallNextHookEx(NULL, code, wp, lp);
     BOOL down = (wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN);
     UINT vk = k->vkCode;
+    { UINT sc = k->scanCode & 0xFF, ic = sc;                     // код клавиши как в input-overlay (старый формат: скан-код, E0-клавиши в старших битах)
+      if (k->flags & LLKHF_EXTENDED) ic = (sc == 0x48 || sc == 0x50 || sc == 0x4B || sc == 0x4D) ? (0xE000 | sc) : (0x0E00 | sc);
+      g_ioKey[ic] = down ? 1 : 0; if (down) g_ioHit[ic] = GetTickCount(); }   // g_ioHit - момент нажатия: короткое нажатие держится на видео минимум 70 мс   // бит0 - зажата, бит1 - нажималась с прошлого кадра (короткие нажатия не теряются)
     LONG mb = ModBit(vk);
     if (mb) {
         if (down) InterlockedOr(&g_modBits, mb); else InterlockedAnd(&g_modBits, ~mb);
@@ -2000,6 +2151,17 @@ static LRESULT CALLBACK LLKbd(int code, WPARAM wp, LPARAM lp) {
 }
 static int g_slowRx, g_slowRy;   // остаток движения мыши в долях при замедлении
 static LRESULT CALLBACK LLMouse(int code, WPARAM wp, LPARAM lp) {
+    if (code == HC_ACTION) {                                           // состояние кнопок / колеса для оверлея ввода
+        MSLLHOOKSTRUCT *mm = (MSLLHOOKSTRUCT *)lp;
+        switch (wp) {
+        case WM_LBUTTONDOWN: { g_ioMouse[1] = 1; g_ioMHit[1] = GetTickCount(); } break; case WM_LBUTTONUP: g_ioMouse[1] = 0; break;
+        case WM_RBUTTONDOWN: { g_ioMouse[2] = 1; g_ioMHit[2] = GetTickCount(); } break; case WM_RBUTTONUP: g_ioMouse[2] = 0; break;
+        case WM_MBUTTONDOWN: { g_ioMouse[3] = 1; g_ioMHit[3] = GetTickCount(); } break; case WM_MBUTTONUP: g_ioMouse[3] = 0; break;
+        case WM_XBUTTONDOWN: { int bn = HIWORD(mm->mouseData) == 1 ? 4 : 5; g_ioMouse[bn] = 1; g_ioMHit[bn] = GetTickCount(); } break;
+        case WM_XBUTTONUP: g_ioMouse[HIWORD(mm->mouseData) == 1 ? 4 : 5] = 0; break;
+        case WM_MOUSEWHEEL: g_ioWheelD = (short)HIWORD(mm->mouseData); g_ioWheelT = GetTickCount(); break;
+        }
+    }
     if (code == HC_ACTION && wp == WM_MOUSEMOVE && g_pickActive && g_mouseSlow > 1) {
         MSLLHOOKSTRUCT *m = (MSLLHOOKSTRUCT *)lp;
         if (!(m->flags & LLMHF_INJECTED) && (g_modBits & 12)) {            // Alt зажат: движение делим на g_mouseSlow
@@ -3636,18 +3798,156 @@ static void Open(void) {
 static void PickerOpen(void) { PickNs::Open(); }
 
 /* ---------- запись экрана: монитор -> H.264 mp4 (Media Foundation), кнопка-кружок скрыта из кадра ---------- */
+static void OvCfgSave(OvCfg *c) { wchar_t v[48]; wsprintfW(v, L"%d,%d,%d,%d", c->mode, c->x, c->y, c->sc); IniSet(L"Overlay", c->stem, v); }
 namespace RecNs {
+using namespace Gdiplus;
+using namespace Gdiplus::DllExports;
 static HWND hw; static HANDLE th, ev; static volatile LONG stopF, okF; static BOOL recording, moved;
 static RECT cr; static wchar_t path[MAX_PATH], fname[64]; static int fps; static POINT dn, wp; static BOOL areaOn; static RECT area; static HWND selw; static POINT selA; static RECT selR; static BOOL selHas; static RECT selMon;
 
-static void Dir(wchar_t *d) { lstrcpynW(d, g_dir, MAX_PATH); Cat(d, MAX_PATH, L"\\videos"); }
+extern "C" HRESULT WINAPI SHGetFolderPathW(HWND, int, HANDLE, DWORD, LPWSTR);
+static void Dir(wchar_t *d) {
+    if (g_rDir[0]) { lstrcpynW(d, g_rDir, MAX_PATH); return; }
+    if (SHGetFolderPathW(NULL, 0x000e, NULL, 0, d) != S_OK) { lstrcpynW(d, g_dir, MAX_PATH); Cat(d, MAX_PATH, L"\\videos"); }   // CSIDL_MYVIDEO
+}
+/* --- оверлей ввода: пресеты input-overlay (json + png-атлас) --- */
+static BOOL KeyOn(int c) { return g_ioKey[c] || GetTickCount() - g_ioHit[c] < 70; }
+static BOOL MouseOn(int c) { return g_ioMouse[c] || GetTickCount() - g_ioMHit[c] < 70; }
+struct OvPre { wchar_t grp[48], stem[64], json[MAX_PATH], png[MAX_PATH]; };
+struct OvEl { int t, code, px, py, mx, my, mw, mh; };
+struct Ov { OvPre *pr; OvCfg *c; int cw, ch, n; OvEl *el; GpImage *img; };
+static OvPre pre[24]; static int npre;
+
+static const char *JFind(const char *s, const char *e, const char *key) {      // значение по ключу "key": -> указатель после ':'
+    int kl = lstrlenA(key);
+    for (const char *p = s; p + kl + 2 < e; p++) {
+        if (*p != '"' || p[kl + 1] != '"' || memcmp(p + 1, key, kl)) continue;
+        const char *q = p + kl + 2; while (q < e && (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n')) q++;
+        if (q < e && *q == ':') { q++; while (q < e && (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n')) q++; return q; }
+    }
+    return NULL;
+}
+static int JInt(const char *&q, const char *e) {                              // число (в кавычках тоже), дробная часть отбрасывается
+    while (q < e && !((*q >= '0' && *q <= '9') || *q == '-')) q++;
+    int neg = 0, v = 0; if (q < e && *q == '-') { neg = 1; q++; }
+    while (q < e && *q >= '0' && *q <= '9') v = v * 10 + (*q++ - '0');
+    if (q < e && *q == '.') { q++; while (q < e && *q >= '0' && *q <= '9') q++; }
+    return neg ? -v : v;
+}
+static BOOL OvLoad(OvPre *p, OvCfg *c, Ov *o) {
+    memset(o, 0, sizeof *o); o->pr = p; o->c = c;
+    HANDLE f = CreateFileW(p->json, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) return FALSE;
+    DWORD sz = GetFileSize(f, NULL), rd = 0;
+    if (!sz || sz > 4000000) { CloseHandle(f); return FALSE; }
+    char *s = (char *)Alloc(sz + 1); ReadFile(f, s, sz, &rd, NULL); CloseHandle(f); s[rd] = 0;
+    const char *e = s + rd, *q;
+    if ((q = JFind(s, e, "overlay_width"))) o->cw = JInt(q, e);
+    if ((q = JFind(s, e, "overlay_height"))) o->ch = JInt(q, e);
+    const char *el = JFind(s, e, "elements"); int n = 0;
+    if (el) for (const char *x = el; x < e; x++) if (*x == '{') n++;
+    if (el && n && o->cw > 0 && o->ch > 0) {
+        o->el = (OvEl *)Alloc(n * sizeof(OvEl));
+        const char *x = el;
+        while (x < e && o->n < n) {
+            const char *b = x; while (b < e && *b != '{') b++;
+            const char *d = b; while (d < e && *d != '}') d++;
+            if (b >= e || d >= e) break;
+            x = d + 1;
+            OvEl *z = &o->el[o->n];
+            const char *v = JFind(b, d, "type"); if (!v) continue;
+            z->t = JInt(v, d);
+            if (z->t != 0 && z->t != 1 && z->t != 3 && z->t != 4) continue;           // остальные типы (геймпад, движение мыши) не поддерживаются
+            if ((v = JFind(b, d, "code"))) z->code = JInt(v, d);
+            if (!(v = JFind(b, d, "pos"))) continue;
+            z->px = JInt(v, d); z->py = JInt(v, d);
+            v = JFind(b, d, "mapping"); if (!v) continue;
+            z->mx = JInt(v, d); z->my = JInt(v, d); z->mw = JInt(v, d); z->mh = JInt(v, d);
+            if (z->mw > 0 && z->mh > 0) o->n++;
+        }
+    }
+    Free(s);
+    if (o->n) {
+        GpImage *im = NULL; GdipLoadImageFromFile(p->png, &im);
+        if (im) {                                                    // атлас в предумноженный ARGB: рисуется в разы быстрее исходного PNG
+            UINT iw = 0, ih = 0; GdipGetImageWidth(im, &iw); GdipGetImageHeight(im, &ih);
+            GpBitmap *cl = NULL; GdipCloneBitmapAreaI(0, 0, iw, ih, PixelFormat32bppPARGB, (GpBitmap *)im, &cl);
+            if (cl) { GdipDisposeImage(im); o->img = (GpImage *)cl; } else o->img = im;
+        }
+    }
+    if (!o->n || !o->img) { Free(o->el); o->el = NULL; if (o->img) GdipDisposeImage(o->img); o->img = NULL; return FALSE; }
+    return TRUE;
+}
+static void OvFree(Ov *o) { Free(o->el); o->el = NULL; if (o->img) GdipDisposeImage(o->img); o->img = NULL; }
+// Отрисовка пресета в точку (ox, oy) с масштабом s. Нажатая версия спрайта лежит в атласе на 2 px ниже обычной.
+static void DrawOv(GpGraphics *g, Ov *o, float ox, float oy, float s, int fl) {   // fl: 1 - не показывать клавиши (поле пароля), 2 - показать всё нажатым (настройка)
+    DWORD now = GetTickCount();
+    GdipSetInterpolationMode(g, s == 1.f ? InterpolationModeNearestNeighbor : InterpolationModeHighQualityBilinear);
+    GdipSetPixelOffsetMode(g, PixelOffsetModeHalf);
+    for (int i = 0; i < o->n; i++) {
+        OvEl *e = &o->el[i]; int sx = e->mx, sy = e->my, sw = e->mw, sh = e->mh, dx = (int)(ox + e->px * s), dy = (int)(oy + e->py * s), dw = (int)(sw * s + 0.5f), dh = (int)(sh * s + 0.5f);
+        if (e->t == 1) { if (!(fl & 1) && ((fl & 2) || KeyOn(e->code & 0xFFFF))) sy += sh + 2; }
+        else if (e->t == 3) { if ((fl & 2) || (!(fl & 1) && MouseOn(e->code & 7))) sy += sh + 2; }
+        else if (e->t == 4) { if ((fl & 2) || (!(fl & 1) && MouseOn(3))) sx += sw + 2; }          // колесо: нажатая средняя кнопка
+        if (e->t == 1 && (fl & 1)) continue;
+        GdipDrawImageRectRectI(g, o->img, dx, dy, dw, dh, sx, sy, sw, sh, UnitPixel, NULL, NULL, NULL);
+        if (e->t == 4 && !(fl & 1) && (fl & 2 || now - g_ioWheelT < 150)) {                               // и стрелка прокрутки вверх / вниз
+            int k = (fl & 2) || g_ioWheelD > 0 ? 2 : 3;
+            GdipDrawImageRectRectI(g, o->img, dx, dy, dw, dh, e->mx + k * (sw + 2), e->my, sw, sh, UnitPixel, NULL, NULL, NULL);
+        }
+    }
+}
+static BOOL PreFits(const wchar_t *png, const wchar_t *stem, int *len) {        // имя png (без .png) - начало имени json
+    int l = lstrlenW(png) - 4; if (l <= 0 || l > lstrlenW(stem)) return FALSE;
+    if (CompareStringOrdinal(png, l, stem, l, TRUE) != CSTR_EQUAL) return FALSE;
+    *len = l; return TRUE;
+}
+static void ScanDir(const wchar_t *dir, int depth, const wchar_t *grp) {
+    wchar_t pat[MAX_PATH]; lstrcpynW(pat, dir, MAX_PATH); Cat(pat, MAX_PATH, L"\\*");
+    WIN32_FIND_DATAW fd; HANDLE h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (fd.cFileName[0] == L'.') continue;
+        wchar_t full[MAX_PATH]; lstrcpynW(full, dir, MAX_PATH); Cat(full, MAX_PATH, L"\\"); Cat(full, MAX_PATH, fd.cFileName);
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) { if (depth < 2) ScanDir(full, depth + 1, depth == 0 ? fd.cFileName : grp); continue; }
+        int l = lstrlenW(fd.cFileName); if (l < 6 || lstrcmpiW(fd.cFileName + l - 5, L".json") || npre >= 24) continue;
+        OvPre *p = &pre[npre]; lstrcpynW(p->grp, grp, 48); lstrcpynW(p->stem, fd.cFileName, l - 4 < 64 ? l - 4 : 64); lstrcpynW(p->json, full, MAX_PATH);
+        wchar_t pp[MAX_PATH]; lstrcpynW(pp, dir, MAX_PATH); Cat(pp, MAX_PATH, L"\\*.png");
+        WIN32_FIND_DATAW f2; HANDLE h2 = FindFirstFileW(pp, &f2); int best = 0;
+        if (h2 != INVALID_HANDLE_VALUE) {
+            do { int pl; if (PreFits(f2.cFileName, p->stem, &pl) && pl > best) { best = pl; lstrcpynW(p->png, dir, MAX_PATH); Cat(p->png, MAX_PATH, L"\\"); Cat(p->png, MAX_PATH, f2.cFileName); } }
+            while (FindNextFileW(h2, &f2));
+            FindClose(h2);
+        }
+        if (best) npre++;
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+}
+static void ScanOv(void) { npre = 0; wchar_t d[MAX_PATH]; lstrcpynW(d, g_dir, MAX_PATH); Cat(d, MAX_PATH, L"\\overlays"); ScanDir(d, 0, L""); }
+
+/* --- поля пароля: UI Automation, пока фокус в таком поле - клавиши в оверлее не показываются --- */
+static volatile LONG pwdNow, pwdStop;
+static DWORD WINAPI PwdWorker(LPVOID) {
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    IUIAutomation *ua = NULL;
+    if (SUCCEEDED(CoCreateInstance(__uuidof(CUIAutomation), NULL, CLSCTX_INPROC_SERVER, __uuidof(IUIAutomation), (void **)&ua)) && ua) {
+        while (!pwdStop) {
+            IUIAutomationElement *el = NULL; BOOL p = FALSE;
+            if (SUCCEEDED(ua->GetFocusedElement(&el)) && el) { el->get_CurrentIsPassword(&p); el->Release(); }
+            pwdNow = p ? 1 : 0; Sleep(150);
+        }
+        ua->Release();
+    }
+    pwdNow = 0; CoUninitialize(); return 0;
+}
+
 static const PROPERTYKEY kFriendly = {{0xa45c254e, 0xdf1c, 0x4efd, {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}}, 14};   // PKEY_Device_FriendlyName
 static CRITICAL_SECTION cs; static LARGE_INTEGER fq, t0; static volatile LONG paused; static volatile long long pauseAcc, pauseStart;
 static IAudioClient *aclient; static IAudioCaptureClient *aclip; static IMFSinkWriter *swr; static int aStream = -1;
 
 static long long ToU(long long ticks) { return ticks / fq.QuadPart * 10000000LL + ticks % fq.QuadPart * 10000000LL / fq.QuadPart; }   // тики QPC -> 100 нс без переполнения
 static long long Now(void) { LARGE_INTEGER t; QueryPerformanceCounter(&t); return t.QuadPart; }
-static void WriteBuf(int stream, const void *data, DWORD bytes, long long ts, long long dur) {
+static void WriteBuf(IMFSinkWriter *wr, int stream, const void *data, DWORD bytes, long long ts, long long dur) {
     IMFMediaBuffer *mb = NULL; IMFSample *sm = NULL;
     if (ts < 0) ts = 0;
     if (FAILED(MFCreateMemoryBuffer(bytes, &mb))) return;
@@ -3655,7 +3955,7 @@ static void WriteBuf(int stream, const void *data, DWORD bytes, long long ts, lo
     mb->SetCurrentLength(bytes);
     if (SUCCEEDED(MFCreateSample(&sm))) {
         sm->AddBuffer(mb); sm->SetSampleTime(ts); sm->SetSampleDuration(dur);
-        EnterCriticalSection(&cs); swr->WriteSample(stream, sm); LeaveCriticalSection(&cs);
+        EnterCriticalSection(&cs); wr->WriteSample(stream, sm); LeaveCriticalSection(&cs);
         sm->Release();
     }
     mb->Release();
@@ -3699,32 +3999,63 @@ static DWORD WINAPI AudioWorker(LPVOID) {
         while (SUCCEEDED(aclip->GetNextPacketSize(&n)) && n) {
             BYTE *d = NULL; UINT32 fr = 0; DWORD fl = 0; UINT64 dpos = 0, qpc = 0;
             if (FAILED(aclip->GetBuffer(&d, &fr, &fl, &dpos, &qpc))) break;
-            if (!paused && fr) WriteBuf(aStream, (fl & AUDCLNT_BUFFERFLAGS_SILENT) ? NULL : d, fr * 4, (long long)qpc - t0u - ToU(pauseAcc), (long long)fr * 10000000LL / 48000);
+            if (!paused && fr) WriteBuf(swr, aStream, (fl & AUDCLNT_BUFFERFLAGS_SILENT) ? NULL : d, fr * 4, (long long)qpc - t0u - ToU(pauseAcc), (long long)fr * 10000000LL / 48000);
             aclip->ReleaseBuffer(fr);
         }
     }
     aclient->Stop();
     CoUninitialize(); return 0;
 }
+// Видеодорожка H.264 в писателе: вход RGB32 (снизу вверх), выход H.264
+static BOOL AddVid(IMFSinkWriter *wr, int w, int h, DWORD *si) {
+    IMFMediaType *mo = NULL, *mi = NULL; BOOL ok = FALSE;
+    if (SUCCEEDED(MFCreateMediaType(&mo)) && SUCCEEDED(MFCreateMediaType(&mi))) {
+        unsigned long long br = (unsigned long long)w * h * fps / 10; if (br < 2000000) br = 2000000; if (br > 40000000) br = 40000000;
+        mo->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video); mo->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264); mo->SetUINT32(MF_MT_AVG_BITRATE, (UINT32)br);
+        mi->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video); mi->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
+        IMFMediaType *ts[2] = {mo, mi};
+        for (int i = 0; i < 2; i++) {
+            ts[i]->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+            MFSetAttributeSize(ts[i], MF_MT_FRAME_SIZE, w, h); MFSetAttributeRatio(ts[i], MF_MT_FRAME_RATE, fps, 1); MFSetAttributeRatio(ts[i], MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+        }
+        ok = SUCCEEDED(wr->AddStream(mo, si)) && SUCCEEDED(wr->SetInputMediaType(*si, mi, NULL));
+    }
+    if (mo) mo->Release(); if (mi) mi->Release();
+    return ok;
+}
+static BOOL MkDib(HDC ref, int w, int h, HDC *dc, HBITMAP *hb, void **bits) {
+    BITMAPINFO bi; memset(&bi, 0, sizeof bi);
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER); bi.bmiHeader.biWidth = w; bi.bmiHeader.biHeight = h;     // снизу вверх - как RGB32 в Media Foundation
+    bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32;
+    *bits = NULL; *hb = CreateDIBSection(ref, &bi, DIB_RGB_COLORS, bits, NULL, 0);
+    if (!*hb) return FALSE;
+    *dc = CreateCompatibleDC(ref); SelectObject(*dc, *hb); return TRUE;
+}
+static BOOL MkGp(void *bits, int w, int h, PixelFormat fmt, GpBitmap **bmp, GpGraphics **g) {  // GDI+ поверх DIB снизу вверх (отрицательный шаг строки)
+    *bmp = NULL; *g = NULL;
+    GdipCreateBitmapFromScan0(w, h, -w * 4, fmt,(BYTE *)bits + (size_t)(h - 1) * w * 4, bmp);
+    if (!*bmp) return FALSE;
+    GdipGetImageGraphicsContext((GpImage *)*bmp, g);
+    if (!*g) return FALSE;
+    GdipSetInterpolationMode(*g, InterpolationModeHighQualityBicubic); return TRUE;
+}
+struct OvOut { IMFSinkWriter *wr; HDC dc; HBITMAP hb; void *bits; GpBitmap *bmp; GpGraphics *g; int w, h; DWORD bytes; };
+
 static DWORD WINAPI Worker(LPVOID) {
     CoInitializeEx(NULL, COINIT_MULTITHREADED);
-    BOOL started = FALSE, mf = SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_LITE)), audio = FALSE; HANDLE ath = NULL;
+    ULONG_PTR gtok = 0; GdiplusStartupInput gin; BOOL gp = GdiplusStartup(&gtok, &gin, NULL) == Ok;
+    BOOL started = FALSE, mf = SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_LITE)), audio = FALSE; HANDLE ath = NULL, pth = NULL;
     int w = cr.right - cr.left, h = cr.bottom - cr.top;
+    Ov ov[4]; OvOut oo[4]; int nov = 0; memset(ov, 0, sizeof ov); memset(oo, 0, sizeof oo);
+    HDC sdc = GetDC(NULL);
     swr = NULL; aStream = -1;
     if (mf) {
-        IMFMediaType *mo = NULL, *mi = NULL; DWORD si = 0;
+        DWORD si = 0;
         audio = AudioInit();
-        if (SUCCEEDED(MFCreateSinkWriterFromURL(path, NULL, NULL, &swr)) && SUCCEEDED(MFCreateMediaType(&mo)) && SUCCEEDED(MFCreateMediaType(&mi))) {
-            unsigned long long br = (unsigned long long)w * h * fps / 10; if (br < 2000000) br = 2000000; if (br > 40000000) br = 40000000;
-            mo->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video); mo->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264); mo->SetUINT32(MF_MT_AVG_BITRATE, (UINT32)br);
-            mi->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video); mi->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
-            IMFMediaType *ts[2] = {mo, mi};
-            for (int i = 0; i < 2; i++) {
-                ts[i]->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
-                MFSetAttributeSize(ts[i], MF_MT_FRAME_SIZE, w, h); MFSetAttributeRatio(ts[i], MF_MT_FRAME_RATE, fps, 1); MFSetAttributeRatio(ts[i], MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
-            }
-            started = SUCCEEDED(swr->AddStream(mo, &si)) && SUCCEEDED(swr->SetInputMediaType(si, mi, NULL));
-            if (started && audio) {                                    // звук - вторая дорожка (AAC); не получилось - пишем без звука
+        if (gp) for (int i = 0; i < npre && nov < 4; i++) { OvCfg *c = OvCfgGet(pre[i].stem, FALSE); if (c && c->mode && OvLoad(&pre[i], c, &ov[nov])) nov++; }
+        if (SUCCEEDED(MFCreateSinkWriterFromURL(path, NULL, NULL, &swr)) && AddVid(swr, w, h, &si)) {
+            started = TRUE;
+            if (audio) {                                               // звук - вторая дорожка (AAC); не получилось - пишем без звука
                 IMFMediaType *ao = NULL, *ai = NULL; DWORD sa = 0;
                 if (SUCCEEDED(MFCreateMediaType(&ao)) && SUCCEEDED(MFCreateMediaType(&ai))) {
                     ao->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio); ao->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_AAC);
@@ -3737,23 +4068,28 @@ static DWORD WINAPI Worker(LPVOID) {
                 }
                 if (ao) ao->Release(); if (ai) ai->Release();
             }
-            started = started && SUCCEEDED(swr->BeginWriting());
+            started = SUCCEEDED(swr->BeginWriting());
         }
-        if (mo) mo->Release(); if (mi) mi->Release();
+        for (int k = 0; started && k < nov; k++) if (ov[k].c->mode & 2) {   // оверлей отдельным файлом на зелёном фоне (хромакей)
+            OvOut *o = &oo[k]; float s = ov[k].c->sc / 100.f;
+            o->w = (int)(ov[k].cw * s + 0.5f) & ~1; o->h = (int)(ov[k].ch * s + 0.5f) & ~1; if (o->w < 16) o->w = 16; if (o->h < 16) o->h = 16;
+            wchar_t p2[MAX_PATH]; lstrcpynW(p2, path, MAX_PATH); p2[lstrlenW(p2) - 4] = 0; Cat(p2, MAX_PATH, L"_"); Cat(p2, MAX_PATH, ov[k].pr->stem); Cat(p2, MAX_PATH, L".mp4");
+            DWORD s2 = 0;
+            if (SUCCEEDED(MFCreateSinkWriterFromURL(p2, NULL, NULL, &o->wr)) && AddVid(o->wr, o->w, o->h, &s2) && SUCCEEDED(o->wr->BeginWriting())
+                && MkDib(sdc, o->w, o->h, &o->dc, &o->hb, &o->bits) && MkGp(o->bits, o->w, o->h, PixelFormat32bppRGB, &o->bmp, &o->g)) o->bytes = (DWORD)o->w * o->h * 4;
+            else { if (o->wr) { o->wr->Release(); o->wr = NULL; } DeleteFileW(p2); }
+        }
     }
     okF = started; SetEvent(ev);
     if (started) {
-        HDC sdc = GetDC(NULL), mdc = CreateCompatibleDC(sdc);
-        BITMAPINFO bi; memset(&bi, 0, sizeof bi);
-        bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER); bi.bmiHeader.biWidth = w; bi.bmiHeader.biHeight = h;     // снизу вверх - как RGB32 в Media Foundation
-        bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32;
-        void *bits = NULL; HBITMAP hb = CreateDIBSection(sdc, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
-        if (hb) {
-            HGDIOBJ ob = SelectObject(mdc, hb);
+        HDC mdc = NULL; HBITMAP hb = NULL; void *bits = NULL; GpBitmap *fb = NULL; GpGraphics *fg = NULL;
+        if (MkDib(sdc, w, h, &mdc, &hb, &bits)) {
+            if (nov) MkGp(bits, w, h, PixelFormat32bppRGB, &fb, &fg);
             DWORD bytes = (DWORD)w * h * 4;
-            QueryPerformanceFrequency(&fq); QueryPerformanceCounter(&t0); pauseAcc = 0; paused = 0;
+            QueryPerformanceFrequency(&fq); QueryPerformanceCounter(&t0); pauseAcc = 0; paused = 0; pwdStop = 0; pwdNow = 0;
             if (aStream >= 0) ath = CreateThread(NULL, 0, AudioWorker, NULL, 0, NULL);
-            long long interval = fq.QuadPart / fps, next = t0.QuadPart;
+            if (nov && g_rPwd) pth = CreateThread(NULL, 0, PwdWorker, NULL, 0, NULL);
+            long long interval = fq.QuadPart / fps, next = t0.QuadPart, dur = 10000000LL / fps;
             timeBeginPeriod(1);
             while (!stopF) {
                 if (paused) { Sleep(20); next = Now(); continue; }
@@ -3766,32 +4102,57 @@ static DWORD WINAPI Worker(LPVOID) {
                         if (ii.hbmMask) DeleteObject(ii.hbmMask); if (ii.hbmColor) DeleteObject(ii.hbmColor);
                     }
                 }
-                WriteBuf(0, bits, bytes, ToU(tn - t0.QuadPart - pauseAcc), 10000000LL / fps);
+                long long ts = ToU(tn - t0.QuadPart - pauseAcc); int hk = pwdNow && g_rPwd ? 1 : 0;
+                GdiFlush();
+                if (fg) {
+                    for (int k = 0; k < nov; k++) if (ov[k].c->mode & 1) DrawOv(fg, &ov[k], w * ov[k].c->x / 1000.f, h * ov[k].c->y / 1000.f, ov[k].c->sc / 100.f, hk);
+                    GdipFlush(fg, FlushIntentionSync);
+                }
+                WriteBuf(swr, 0, bits, bytes, ts, dur);
+                for (int k = 0; k < nov; k++) if (oo[k].wr) {
+                    for (DWORD *px = (DWORD *)oo[k].bits, n = (DWORD)oo[k].w * oo[k].h; n; n--) *px++ = 0xFF00FF00;     // чистый зелёный
+                    DrawOv(oo[k].g, &ov[k], 0, 0, ov[k].c->sc / 100.f, hk); GdipFlush(oo[k].g, FlushIntentionSync);
+                    WriteBuf(oo[k].wr, 0, oo[k].bits, oo[k].bytes, ts, dur);
+                }
                 next += interval; tn = Now();
                 long long wait = (next - tn) * 1000 / fq.QuadPart;
                 if (wait > 0) Sleep((DWORD)wait); else next = tn;        // отстали - долг не копим
             }
             timeEndPeriod(1);
-            if (ath) { WaitForSingleObject(ath, 5000); CloseHandle(ath); }
-            SelectObject(mdc, ob); DeleteObject(hb);
+            if (ath) { WaitForSingleObject(ath, 5000); CloseHandle(ath); ath = NULL; }
+            if (pth) { pwdStop = 1; WaitForSingleObject(pth, 3000); CloseHandle(pth); pth = NULL; }
+            if (fg) GdipDeleteGraphics(fg); if (fb) GdipDisposeImage((GpImage *)fb);
+            DeleteDC(mdc); DeleteObject(hb);
         }
-        DeleteDC(mdc); ReleaseDC(NULL, sdc);
     }
+    for (int k = 0; k < 4; k++) {
+        if (oo[k].wr) { if (started) oo[k].wr->Finalize(); oo[k].wr->Release(); }
+        if (oo[k].g) GdipDeleteGraphics(oo[k].g); if (oo[k].bmp) GdipDisposeImage((GpImage *)oo[k].bmp);
+        if (oo[k].dc) DeleteDC(oo[k].dc); if (oo[k].hb) DeleteObject(oo[k].hb);
+    }
+    for (int k = 0; k < nov; k++) OvFree(&ov[k]);
+    if (sdc) ReleaseDC(NULL, sdc);
     if (swr) { if (started) swr->Finalize(); swr->Release(); swr = NULL; }
     if (aclip) { aclip->Release(); aclip = NULL; } if (aclient) { aclient->Release(); aclient = NULL; }
+    if (gp) GdiplusShutdown(gtok);
     if (mf) MFShutdown();
     CoUninitialize(); return 0;
 }
 static void Repaint(void) { if (hw) InvalidateRect(hw, NULL, FALSE); }
 static BOOL CALLBACK MonCb(HMONITOR m, HDC, LPRECT, LPARAM l) { HMONITOR *a = (HMONITOR *)l; for (int i = 0; i < 8; i++) if (!a[i]) { a[i] = m; break; } return TRUE; }
 static int Mons(HMONITOR *hm) { memset(hm, 0, 8 * sizeof(HMONITOR)); EnumDisplayMonitors(NULL, NULL, MonCb, (LPARAM)hm); int n = 0; while (n < 8 && hm[n]) n++; return n; }
+static HWND ow; static BOOL ovBusy(void) { return ow != NULL; }
+static void CalcCr(RECT *r) {                                // что будет снято: монитор / рабочая область / все экраны / выбранная область
+    POINT pt; GetCursorPos(&pt);
+    MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoW(hw ? MonitorFromWindow(hw, MONITOR_DEFAULTTONEAREST) : MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST), &mi);
+    *r = g_rNoTb ? mi.rcWork : mi.rcMonitor;                 // рабочая область = без панели задач
+    if (g_rScr < 0) { r->left = GetSystemMetrics(SM_XVIRTUALSCREEN); r->top = GetSystemMetrics(SM_YVIRTUALSCREEN); r->right = r->left + GetSystemMetrics(SM_CXVIRTUALSCREEN); r->bottom = r->top + GetSystemMetrics(SM_CYVIRTUALSCREEN); }
+    else if (g_rScr > 0) { HMONITOR hm[8]; int n = Mons(hm); if (g_rScr <= n) { MONITORINFO m2; m2.cbSize = sizeof m2; if (GetMonitorInfoW(hm[g_rScr - 1], &m2)) *r = g_rNoTb ? m2.rcWork : m2.rcMonitor; } }
+    if (areaOn) *r = area;                                    // выбранная область важнее настроек монитора
+}
 static void Start(void) {
-    if (recording || !hw) return;
-    MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoW(MonitorFromWindow(hw, MONITOR_DEFAULTTONEAREST), &mi);
-    cr = g_rNoTb ? mi.rcWork : mi.rcMonitor;                 // рабочая область = без панели задач
-    if (g_rScr < 0) { cr.left = GetSystemMetrics(SM_XVIRTUALSCREEN); cr.top = GetSystemMetrics(SM_YVIRTUALSCREEN); cr.right = cr.left + GetSystemMetrics(SM_CXVIRTUALSCREEN); cr.bottom = cr.top + GetSystemMetrics(SM_CYVIRTUALSCREEN); }
-    else if (g_rScr > 0) { HMONITOR hm[8]; int n = Mons(hm); if (g_rScr <= n) { MONITORINFO m2; m2.cbSize = sizeof m2; if (GetMonitorInfoW(hm[g_rScr - 1], &m2)) cr = g_rNoTb ? m2.rcWork : m2.rcMonitor; } }
-    if (areaOn) cr = area;                                    // выбранная область важнее настроек монитора
+    if (recording || !hw || ovBusy()) return;
+    CalcCr(&cr); ScanOv();
     static BOOL csInit; if (!csInit) { InitializeCriticalSection(&cs); csInit = TRUE; }
     paused = 0;
     cr.right -= (cr.right - cr.left) & 1; cr.bottom -= (cr.bottom - cr.top) & 1;     // H.264: чётные размеры
@@ -3882,6 +4243,77 @@ static void SelectArea(void) {
     SetLayeredWindowAttributes(selw, RGB(255, 0, 255), 130, LWA_COLORKEY | LWA_ALPHA);
     ShowWindow(hw, SW_HIDE); ShowWindow(selw, SW_SHOW); ForceFg(selw); SetFocus(selw);
 }
+/* --- настройка положения и масштаба оверлея: окно с оверлеем на экране, тянуть - перенос, углы / колесо - масштаб --- */
+static Ov oc; static OvCfg *ocfg; static RECT ocr; static float osc; static ULONG_PTR otok; static int ox, oy, ocorner; static POINT odn; static RECT orc0;
+static void OvPaint(void) {
+    int W = (int)(oc.cw * osc + 0.5f), H = (int)(oc.ch * osc + 0.5f); if (W < 40) W = 40; if (H < 40) H = 40;
+    HDC sd = GetDC(NULL), md = NULL; HBITMAP hb = NULL; void *bits = NULL; GpBitmap *bmp = NULL; GpGraphics *g = NULL;
+    if (MkDib(sd, W, H, &md, &hb, &bits) && MkGp(bits, W, H, PixelFormat32bppPARGB, &bmp, &g)) {
+        GdipGraphicsClear(g, 0x70101820);                                    // полупрозрачная подложка: за неё можно схватить
+        DrawOv(g, &oc, 0, 0, osc, 2);                                        // все клавиши показаны нажатыми - видна вся раскладка
+        GpPen *pen = NULL; GpSolidFill *br = NULL;
+        GdipCreatePen1(0xFFFFFFFF, 2, UnitPixel, &pen); GdipCreateSolidFill(0xFFFF3B30, &br);
+        GdipDrawRectangleI(g, pen, 1, 1, W - 3, H - 3);
+        GdipFillRectangleI(g, br, 0, 0, 12, 12); GdipFillRectangleI(g, br, W - 12, 0, 12, 12); GdipFillRectangleI(g, br, 0, H - 12, 12, 12); GdipFillRectangleI(g, br, W - 12, H - 12, 12, 12);
+        GdipDeletePen(pen); GdipDeleteBrush(br); GdipFlush(g, FlushIntentionSync);
+        POINT pt = {ox, oy}, ps0 = {0, 0}; SIZE sz = {W, H}; BLENDFUNCTION bf = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+        UpdateLayeredWindow(ow, sd, &pt, &sz, md, &ps0, 0, &bf, ULW_ALPHA);
+    }
+    if (g) GdipDeleteGraphics(g); if (bmp) GdipDisposeImage((GpImage *)bmp);
+    if (md) DeleteDC(md); if (hb) DeleteObject(hb); ReleaseDC(NULL, sd);
+}
+static void OvSave(void) {
+    int W = ocr.right - ocr.left, H = ocr.bottom - ocr.top; if (W < 1 || H < 1 || !ocfg) return;
+    ocfg->x = MulDiv(ox - ocr.left, 1000, W); ocfg->y = MulDiv(oy - ocr.top, 1000, H); ocfg->sc = (int)(osc * 100 + 0.5f);
+    if (!ocfg->mode) ocfg->mode = 1;
+    OvCfgSave(ocfg);
+}
+static LRESULT CALLBACK OvProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    switch (m) {
+    case WM_ERASEBKGND: return 1;
+    case WM_LBUTTONDOWN: {
+        RECT r; GetClientRect(h, &r); int x = (short)LOWORD(l), y = (short)HIWORD(l), W = r.right, H = r.bottom;
+        ocorner = 0;
+        if (x < 16 && y < 16) ocorner = 1; else if (x > W - 16 && y < 16) ocorner = 2; else if (x < 16 && y > H - 16) ocorner = 3; else if (x > W - 16 && y > H - 16) ocorner = 4;
+        GetCursorPos(&odn); GetWindowRect(h, &orc0); SetCapture(h); return 0;
+    }
+    case WM_MOUSEMOVE:
+        if (GetCapture() == h) {
+            POINT p; GetCursorPos(&p);
+            if (!ocorner) { ox = orc0.left + p.x - odn.x; oy = orc0.top + p.y - odn.y; SetWindowPos(h, NULL, ox, oy, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE); }
+            else {
+                BOOL lf = ocorner == 1 || ocorner == 3, tp = ocorner == 1 || ocorner == 2;
+                int ax = lf ? orc0.right : orc0.left, ay = tp ? orc0.bottom : orc0.top;
+                int dx = p.x > ax ? p.x - ax : ax - p.x, dy = p.y > ay ? p.y - ay : ay - p.y;
+                float s1 = (float)dx / oc.cw, s2 = (float)dy / oc.ch, s = s1 > s2 ? s1 : s2;
+                if (s < 0.2f) s = 0.2f; if (s > 6.f) s = 6.f;
+                osc = s; int W = (int)(oc.cw * s + 0.5f), H = (int)(oc.ch * s + 0.5f);
+                ox = lf ? ax - W : ax; oy = tp ? ay - H : ay; OvPaint();
+            }
+        }
+        return 0;
+    case WM_LBUTTONUP: if (GetCapture() == h) ReleaseCapture(); return 0;
+    case WM_MOUSEWHEEL: osc *= (short)HIWORD(w) > 0 ? 1.05f : 1.f / 1.05f; if (osc < 0.2f) osc = 0.2f; if (osc > 6.f) osc = 6.f; OvPaint(); return 0;
+    case WM_RBUTTONUP: OvSave(); DestroyWindow(h); return 0;
+    case WM_KEYDOWN: if (w == VK_RETURN) { OvSave(); DestroyWindow(h); } else if (w == VK_ESCAPE) DestroyWindow(h); return 0;
+    case WM_DESTROY: ow = NULL; OvFree(&oc); GdiplusShutdown(otok); if (hw) { ShowWindow(hw, SW_SHOWNOACTIVATE); Repaint(); } return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+static void OvConfig(int i) {
+    if (ow || recording || i < 0 || i >= npre) return;
+    OvCfg *c = OvCfgGet(pre[i].stem, TRUE); if (!c) return;
+    GdiplusStartupInput in;
+    if (GdiplusStartup(&otok, &in, NULL) != Ok) { Toast(Tr(L_D_GDIFAIL)); return; }
+    if (!OvLoad(&pre[i], c, &oc)) { GdiplusShutdown(otok); Toast(Tr(L_REC_OV_BAD)); return; }
+    ocfg = c; CalcCr(&ocr);
+    osc = c->sc / 100.f; ox = ocr.left + MulDiv(ocr.right - ocr.left, c->x, 1000); oy = ocr.top + MulDiv(ocr.bottom - ocr.top, c->y, 1000);
+    RegClass(L"DKRecOv", OvProc, 0);
+    ow = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW, L"DKRecOv", L"", WS_POPUP, ox, oy, 100, 100, NULL, NULL, g_inst, NULL);
+    if (!ow) { OvFree(&oc); GdiplusShutdown(otok); return; }
+    if (hw) ShowWindow(hw, SW_HIDE);
+    OvPaint(); ShowWindow(ow, SW_SHOW); ForceFg(ow); SetFocus(ow); Toast(Tr(L_REC_OV_HINT));
+}
 static void SavePos(void) {
     RECT r; if (!hw || !GetWindowRect(hw, &r)) return;
     wchar_t v[32]; wsprintfW(v, L"%d,%d", r.left, r.top); IniSet(L"Record", L"Pos", v); g_rPos[0] = r.left; g_rPos[1] = r.top;
@@ -3962,6 +4394,34 @@ static HMENU MicMenu(void) {
     }
     return m;
 }
+static HMENU OvMenu(void) {
+    HMENU m = CreatePopupMenu(); ScanOv(); BOOL done[24]; memset(done, 0, sizeof done);
+    if (!npre) AppendMenuW(m, MF_STRING | MF_GRAYED, 0, Tr(L_REC_OV_NONE));
+    for (int g = 0; g < npre; g++) {
+        if (done[g]) continue;
+        HMENU gm = pre[g].grp[0] ? CreatePopupMenu() : m;                 // пресеты из подпапки - в своё подменю
+        for (int i = g; i < npre; i++) {
+            if (done[i] || lstrcmpiW(pre[i].grp, pre[g].grp)) continue;
+            done[i] = TRUE;
+            OvCfg *c = OvCfgGet(pre[i].stem, FALSE); int md = c ? c->mode : 0; HMENU s = CreatePopupMenu();
+            const wchar_t *nm[4] = {Tr(L_REC_OV_OFF), Tr(L_REC_OV_VID), Tr(L_REC_OV_FILE), Tr(L_REC_OV_BOTH)};
+            for (int j = 0; j < 4; j++) AppendMenuW(s, MF_STRING | (md == j ? MF_CHECKED : 0), 300 + i * 8 + j, nm[j]);
+            AppendMenuW(s, MF_SEPARATOR, 0, NULL);
+            AppendMenuW(s, MF_STRING, 300 + i * 8 + 4, Tr(L_REC_OV_CFG));
+            wchar_t e[140]; int o = 0; for (int j = 0; pre[i].stem[j] && o < 130; j++) { if (pre[i].stem[j] == L'&') e[o++] = L'&'; e[o++] = pre[i].stem[j]; } e[o] = 0;
+            if (md) { e[o++] = L' '; e[o++] = 0x2713; e[o] = 0; }               // галочка у включённых
+            AppendMenuW(gm, MF_POPUP, (UINT_PTR)s, e);
+        }
+        if (gm != m) {
+            wchar_t e[100]; int o = 0; for (int j = 0; pre[g].grp[j] && o < 90; j++) { if (pre[g].grp[j] == L'&') e[o++] = L'&'; e[o++] = pre[g].grp[j]; } e[o] = 0;
+            AppendMenuW(m, MF_POPUP, (UINT_PTR)gm, e);
+        }
+    }
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(m, MF_STRING | (g_rPwd ? MF_CHECKED : 0), 60, Tr(L_REC_OV_PWD));
+    AppendMenuW(m, MF_STRING, 61, Tr(L_REC_OV_DIR));
+    return m;
+}
 static HMENU Menu(void) {
     HMENU m = CreatePopupMenu(); wchar_t t[64];
     AppendMenuW(m, MF_STRING | (g_rNoTb ? MF_CHECKED : 0), 20, Tr(L_REC_NOTB));
@@ -3976,6 +4436,7 @@ static HMENU Menu(void) {
     AppendMenuW(m, MF_STRING | (g_rScr < 0 ? MF_CHECKED : 0), 26, Tr(L_REC_ALL));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_POPUP, (UINT_PTR)MicMenu(), Tr(L_REC_MIC));
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)OvMenu(), Tr(L_REC_OV));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     static const int f[3] = {15, 30, 60};
     for (int i = 0; i < 3; i++) { wsprintfW(t, Tr(L_REC_FPS), f[i]); AppendMenuW(m, MF_STRING | (g_rFps == f[i] ? MF_CHECKED : 0), 22 + i, t); }
@@ -3995,6 +4456,13 @@ static void Cmd(int c) {
         if (c == 30) g_rMic[0] = 0; else if (c == 31) { g_rMic[0] = L'-'; g_rMic[1] = 0; } else lstrcpynW(g_rMic, micList[c - 32], 80);
         IniSet(L"Record", L"Mic", g_rMic);
     }
+    else if (c == 60) { g_rPwd = !g_rPwd; IniSet(L"Overlay", L"HidePasswords", g_rPwd ? L"1" : L"0"); }
+    else if (c == 61) { wchar_t d[MAX_PATH]; lstrcpynW(d, g_dir, MAX_PATH); Cat(d, MAX_PATH, L"\\overlays"); CreateDirectoryW(d, NULL); ShellExecuteW(NULL, L"open", d, NULL, NULL, SW_SHOWNORMAL); }
+    else if (c >= 300 && c < 500) {
+        int i = (c - 300) / 8, j = (c - 300) % 8;
+        if (i < npre && j < 4) { OvCfg *g = OvCfgGet(pre[i].stem, TRUE); if (g) { g->mode = j; OvCfgSave(g); if (j) Toast(Tr(L_REC_OV_WARN)); } }
+        else if (i < npre && j == 4) OvConfig(i);
+    }
     else if (c == 25) { wchar_t d[MAX_PATH]; Dir(d); CreateDirectoryW(d, NULL); ShellExecuteW(NULL, L"open", d, NULL, NULL, SW_SHOWNORMAL); }
 }
 }   // namespace RecNs
@@ -4006,6 +4474,7 @@ static void TrayMenu(void) {
     AddHk(m, MF_STRING, 1, Tr(L_TRAY_BUF), A_BUFFER);
     AddHk(m, g_histOn ? MF_STRING : MF_STRING | MF_GRAYED, 2, Tr(L_TRAY_HIST), A_HIST);
     AddHk(m, MF_STRING, 3, Tr(L_TRAY_LAUNCH), A_LAUNCH);
+    AddHk(m, MF_STRING, 8, Tr(L_TRAY_SCR), A_SCRIPTS);
     AddHk(m, MF_STRING, 4, Tr(L_TRAY_CAM), A_WEBCAM);
     AddHk(m, MF_STRING, 5, Tr(L_TRAY_DRAW), A_DRAW);
     AddHk(m, MF_STRING, 6, Tr(L_TRAY_PICK), A_PICKER);
@@ -4043,6 +4512,7 @@ static void TrayMenu(void) {
     case 1: PopupOpen(PM_BUF); break;
     case 2: PopupOpen(PM_HIST); break;
     case 3: PopupOpen(PM_LAUNCH); break;
+    case 8: PopupOpen(PM_SCRIPTS); break;
     case 4: CamOpen(); break;
     case 5: Sleep(150); DrawOpen(); break;      // пауза: меню успевает исчезнуть с экрана
     case 6: Sleep(150); PickerOpen(); break;
@@ -4056,7 +4526,7 @@ static void TrayMenu(void) {
     case 14: Reload(); break;
     case 16: DestroyWindow(g_hwnd); break;
     default:
-        if (c >= 20 && c < 60) RecNs::Cmd(c);
+        if ((c >= 20 && c < 70) || (c >= 300 && c < 500)) RecNs::Cmd(c);
         else if (c >= TM_ID && c < TM_ID + 80) TmCommand(c);
         else if (c >= 200 && c < 200 + 32) ShowHidden(c - 200);
     }
