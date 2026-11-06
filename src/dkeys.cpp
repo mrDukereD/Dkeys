@@ -9,6 +9,8 @@
 #include <objbase.h>
 #include <shellapi.h>
 #include <commdlg.h>
+#include <xmmintrin.h>
+#include <gdiplus.h>
 #define NO_DSHOW_STRSAFE
 #include <dshow.h>
 #include <stdarg.h>
@@ -23,11 +25,13 @@
 #pragma comment(lib, "strmiids.lib")
 #pragma comment(lib, "uuid.lib")
 #pragma comment(lib, "comdlg32.lib")
+#pragma comment(lib, "gdiplus.lib")
 
 #pragma optimize("", off)
 extern "C" {
 void *memset(void *d, int c, size_t n) { BYTE *p = (BYTE *)d; while (n--) *p++ = (BYTE)c; return d; }
 void *memcpy(void *d, const void *s, size_t n) { BYTE *p = (BYTE *)d; const BYTE *q = (const BYTE *)s; while (n--) *p++ = *q++; return d; }
+int _fltused = 0;      // нужен, раз используются float без CRT
 int memcmp(const void *a, const void *b, size_t n) {
     const BYTE *p = (const BYTE *)a, *q = (const BYTE *)b;
     while (n--) { if (*p != *q) return *p < *q ? -1 : 1; p++; q++; }
@@ -43,7 +47,7 @@ void *memmove(void *d, const void *s, size_t n) {
 
 #define DKMARK ((ULONG_PTR)0x444B4559)
 enum { DM_CTRL = 1, DM_ALT = 2, DM_SHIFT = 4, DM_WIN = 8 };
-enum { A_NONE, A_COPY, A_PASTE, A_BUFFER, A_HIST, A_LAUNCH, A_RUN, A_ADMIN, A_PY, A_PYRUN, A_TOPMOST, A_TOTRAY, A_LAYOUT, A_PAUSE, A_WEBCAM, A_STOPWATCH, A_TIMER };
+enum { A_NONE, A_COPY, A_PASTE, A_BUFFER, A_HIST, A_LAUNCH, A_RUN, A_ADMIN, A_PY, A_PYRUN, A_TOPMOST, A_TOTRAY, A_LAYOUT, A_PAUSE, A_WEBCAM, A_STOPWATCH, A_TIMER, A_DRAW };
 enum { PM_BUF, PM_HIST, PM_LAUNCH };
 enum {
     WM_APP_HOT = WM_APP + 1, WM_APP_KEY, WM_APP_CLOSE, WM_APP_PCLICK, WM_APP_PTAB, WM_TRAY, WM_APP_RENDERED,
@@ -64,6 +68,7 @@ struct Buf { wchar_t *p; int n, cap; };
 static void CamOpen(void);
 static IUnknown *CamObj(int k);
 static void TmToggle(int mode);
+static void DrawOpen(void);
 static BOOL RegClass(const wchar_t *name, WNDPROC proc, UINT style);
 struct BB { BYTE *p; DWORD n, cap; };
 
@@ -79,6 +84,7 @@ static DWORD g_hookTid;
 static UINT g_msgTaskbar;
 static BOOL g_elev;
 static HICON g_icon;
+static BOOL g_dLive; static int g_dCol, g_dWid = 1; static wchar_t g_dSaveDir[MAX_PATH];   // [Draw] в ini: режим, цвет, толщина, папка
 static COLORREF g_tmFg = RGB(255, 255, 255), g_tmBg = RGB(0, 0, 0);               // [Timer] в ini
 static int g_tmFav[10], g_tmNFav;                                                  // избранное: секунды
 static int g_tmAlpha = 60, g_tmSize = 48, g_tmEnd, g_tmPos[2] = {80, 80};          // прозрачность фона %, высота шрифта, действие по окончании, место
@@ -101,6 +107,126 @@ static SRWLOCK g_bindLock = SRWLOCK_INIT;
 static HWND g_hid[32]; static int g_nhid;
 static Snap g_ps; static BOOL g_psPending;
 static wchar_t *g_pasteTxt; static SRWLOCK g_pasteLock = SRWLOCK_INIT;   // текст вставки, отдаётся приложению по требованию (WM_RENDERFORMAT)
+
+/* ---------- тексты интерфейса (langs\<Language>.ini, секция [Text]; здесь - встроенные русские по умолчанию) ---------- */
+#define LANG_LIST(X) \
+X(L_TRAY_BUF, "tray.buffers", L"Буферы…") \
+X(L_TRAY_HIST, "tray.history", L"История…") \
+X(L_TRAY_LAUNCH, "tray.launcher", L"Быстрый запуск…") \
+X(L_TRAY_CAM, "tray.webcam", L"Вебкамеры…") \
+X(L_TRAY_DRAW, "tray.draw", L"Рисовалка на экране…") \
+X(L_TRAY_TIMER, "tray.timer", L"Секундомер и таймер") \
+X(L_TRAY_HISTON, "tray.history_on", L"Своя история буфера") \
+X(L_TRAY_AUTO, "tray.autostart", L"Автозапуск") \
+X(L_TRAY_PAUSE, "tray.pause", L"Пауза") \
+X(L_TRAY_ELEV, "tray.elevate", L"Перезапустить от администратора") \
+X(L_TRAY_NONAME, "tray.noname", L"(без названия)") \
+X(L_TRAY_HIDDEN, "tray.hidden", L"Спрятанные окна") \
+X(L_TRAY_INI, "tray.open_ini", L"Открыть DKeys.ini") \
+X(L_TRAY_MEM, "tray.open_memory", L"Открыть папку memory") \
+X(L_TRAY_RELOAD, "tray.reload", L"Перечитать настройки") \
+X(L_TRAY_EXIT, "tray.exit", L"Выход") \
+X(L_TRAY_TIPADM, "tray.tip_admin", L"DKeys (администратор)") \
+X(L_TAB_HIST, "popup.tab_history", L"История") \
+X(L_TAB_LAUNCH, "popup.tab_launch", L"Запуск") \
+X(L_SEARCH, "popup.search", L"Введите для поиска…") \
+X(L_INFO_LAUNCH, "popup.info_launch", L"Enter - запустить   Tab - режим   Esc - закрыть") \
+X(L_INFO_BUF, "popup.info_buffer", L"%d симв.   цифра/Enter - вставить   Del - удалить   F2 - правка   Ins - новая   ←→ - буфер") \
+X(L_INFO_HIST, "popup.info_history", L"%d симв.   Enter - вставить   Del - удалить   F2 - правка   Ctrl+1..9 - в буфер") \
+X(L_EMPTY_NF, "popup.not_found", L"Ничего не найдено") \
+X(L_EMPTY_BUF, "popup.buffer_empty", L"Буфер %d пуст. Ctrl+Num%d копирует выделенное сюда, Ins - ввести вручную") \
+X(L_EMPTY_HIST, "popup.history_empty", L"История пуста") \
+X(L_CANCEL, "dialog.cancel", L"Отмена") \
+X(L_ED_NEW, "dialog.buffer_new", L"Буфер %d: новая запись") \
+X(L_ED_BUF, "dialog.buffer_entry", L"Буфер %d: запись %d") \
+X(L_ED_HIST, "dialog.history_entry", L"Запись истории") \
+X(L_T_RUNFAIL, "toast.run_failed", L"Не удалось запустить: %.120s") \
+X(L_T_PYFAIL, "toast.python_failed", L"Не удалось запустить Python (%.80s)") \
+X(L_T_NOSEL, "toast.no_selection", L"Нет выделенного текста") \
+X(L_T_TOPON, "toast.topmost_on", L"Поверх всех: ВКЛ  —  %s") \
+X(L_T_TOPOFF, "toast.topmost_off", L"Поверх всех: ВЫКЛ  —  %s") \
+X(L_T_TOTRAY, "toast.to_tray", L"Спрятано в трей: %s") \
+X(L_T_NOLAYOUT, "toast.need_layouts", L"Для смены раскладки нужны раскладки EN и RU") \
+X(L_T_NOLAYTXT, "toast.no_layout_text", L"Нет текста для смены раскладки") \
+X(L_T_TOBUF, "toast.to_buffer_len", L"→ буфер %d   (%d симв.)") \
+X(L_T_TOBUF2, "toast.to_buffer", L"→ буфер %d") \
+X(L_T_NOITEM, "toast.no_item", L"В буфере %d нет записи %d") \
+X(L_T_PAUSED, "toast.paused", L"DKeys: пауза") \
+X(L_T_WORKING, "toast.working", L"DKeys: работает") \
+X(L_T_LISTINI, "toast.launcher_in_ini", L"Список запуска правится в DKeys.ini") \
+X(L_T_AUTOFAIL, "toast.autostart_failed", L"Не удалось создать задачу автозапуска") \
+X(L_T_RELOADED, "toast.reloaded", L"Настройки перечитаны") \
+X(L_CAM_NAME, "cam.default_name", L"Камера") \
+X(L_CAM_P0, "cam.prop_device", L"Камера: яркость, контраст…") \
+X(L_CAM_P1, "cam.prop_capture", L"Видеопоток: формат (capture pin)…") \
+X(L_CAM_P2, "cam.prop_preview", L"Видеопоток: предпросмотр (preview pin)…") \
+X(L_CAM_P3, "cam.prop_crossbar", L"Видеовход (crossbar)…") \
+X(L_CAM_PTITLE, "cam.prop_title", L"Настройки камеры") \
+X(L_CAM_BUSY, "cam.open_failed", L"Не удалось открыть камеру (занята другим приложением?)") \
+X(L_CAM_TITLE, "cam.title_fmt", L"Вебкамера - %s") \
+X(L_CAM_NONE, "cam.none", L"Камеры не найдены") \
+X(L_CAM_MCAM, "cam.menu_camera", L"Камера") \
+X(L_CAM_MRES, "cam.menu_resolution", L"Разрешение") \
+X(L_CAM_MSET, "cam.menu_settings", L"Настройки") \
+X(L_CAM_FULL, "cam.menu_fullscreen", L"Полный экран (F11)") \
+X(L_CAM_WND, "cam.window", L"Вебкамера") \
+X(L_TM_DONE, "timer.done", L"Таймер: время вышло") \
+X(L_TM_NEEDTIME, "timer.need_time", L"Задайте время: меню - Время таймера") \
+X(L_TM_INPUT, "timer.input_title", L"Таймер: минуты, м:с или ч:м:с") \
+X(L_TM_CANCELED, "timer.shutdown_canceled", L"Выключение отменено") \
+X(L_TM_SWPAUSE, "timer.sw_pause", L"Секундомер: пауза") \
+X(L_TM_SWSTART, "timer.sw_start", L"Секундомер: старт") \
+X(L_TM_SWRESET, "timer.sw_reset", L"Секундомер: сбросить") \
+X(L_TM_TPAUSE, "timer.t_pause", L"Таймер: пауза") \
+X(L_TM_TSTART, "timer.t_start", L"Таймер: старт") \
+X(L_TM_TRESET, "timer.t_reset", L"Таймер: сбросить") \
+X(L_TM_ENTER, "timer.enter_time", L"Ввести время…") \
+X(L_TM_FAVADD, "timer.fav_add", L"Добавить текущее в избранное") \
+X(L_TM_FAVDEL, "timer.fav_remove", L"Убрать из избранного") \
+X(L_TM_TIME, "timer.time", L"Время таймера") \
+X(L_TM_E0, "timer.end_signal", L"Только сигнал") \
+X(L_TM_E1, "timer.end_off", L"Выключить компьютер") \
+X(L_TM_E2, "timer.end_reboot", L"Перезагрузить компьютер") \
+X(L_TM_END, "timer.end_action", L"По окончании таймера") \
+X(L_TM_FG, "timer.color_font", L"Цвет цифр…") \
+X(L_TM_BG, "timer.color_bg", L"Цвет фона…") \
+X(L_TM_ALPHA, "timer.opacity", L"Непрозрачность фона") \
+X(L_TM_SIZE, "timer.size", L"Размер цифр") \
+X(L_TM_VIEW, "timer.view", L"Вид") \
+X(L_TM_CANCEL, "timer.cancel_shutdown", L"Отменить выключение/перезагрузку") \
+X(L_TM_CLOSE, "timer.close", L"Закрыть") \
+X(L_D_TT0, "draw.tip_pen", L"Перо") \
+X(L_D_TT1, "draw.tip_marker", L"Маркер") \
+X(L_D_TT2, "draw.tip_arrow", L"Стрелка") \
+X(L_D_TT3, "draw.tip_line", L"Линия") \
+X(L_D_TT4, "draw.tip_rect", L"Прямоугольник") \
+X(L_D_TT5, "draw.tip_ellipse", L"Овал") \
+X(L_D_TT6, "draw.tip_text", L"Текст (Enter - готово, Shift+Enter - новая строка)") \
+X(L_D_TT7, "draw.tip_number", L"Нумерованная метка") \
+X(L_D_TT8, "draw.tip_blur", L"Скрыть (пикселизация), например пароль") \
+X(L_D_TT9, "draw.tip_eraser", L"Ластик (убирает фигуру целиком)") \
+X(L_D_TT10, "draw.tip_undo", L"Отменить") \
+X(L_D_TT11, "draw.tip_redo", L"Вернуть") \
+X(L_D_TT12, "draw.tip_mode", L"Режим: снимок экрана / поверх живого экрана") \
+X(L_D_TT13, "draw.tip_copy", L"Копировать в буфер и закрыть") \
+X(L_D_TT14, "draw.tip_save", L"Сохранить в PNG и закрыть") \
+X(L_D_TT15, "draw.tip_close", L"Закрыть без сохранения") \
+X(L_D_TTCOL, "draw.tip_color", L"Цвет") \
+X(L_D_TTWID, "draw.tip_width", L"Толщина") \
+X(L_D_STATIC, "draw.mode_static", L"Фото") \
+X(L_D_COPIED, "draw.copied", L"Скриншот скопирован в буфер обмена") \
+X(L_D_COPYFAIL, "draw.copy_failed", L"Не удалось скопировать скриншот") \
+X(L_D_SAVED, "draw.saved", L"Сохранено: %s") \
+X(L_D_SAVEFAIL, "draw.save_failed", L"Не удалось сохранить PNG") \
+X(L_D_GDIFAIL, "draw.gdi_failed", L"Не удалось запустить GDI+") \
+X(L_D_MEMFAIL, "draw.no_memory", L"Не хватает памяти для снимка экрана")
+#define LE_(e, k, t) e,
+#define LT_(e, k, t) {L##k, t},
+enum { LANG_LIST(LE_) L_COUNT };
+struct LangEnt { const wchar_t *key, *def; };
+static const LangEnt kLang[L_COUNT] = { LANG_LIST(LT_) };
+static wchar_t *g_lsTxt[L_COUNT]; static wchar_t g_lang[16] = L"ru";
+static const wchar_t *Tr(int id) { return g_lsTxt[id] ? g_lsTxt[id] : kLang[id].def; }
 
 /* ---------- util ---------- */
 static void *Alloc(SIZE_T n) { return HeapAlloc(g_heap, HEAP_ZERO_MEMORY, n ? n : 1); }
@@ -352,6 +478,7 @@ static const char *kIni1 = u8R"INI(; DKeys - настройки. Коммент�
 ;     pause                     пауза/продолжить хоткеи
 ;     webcam                    окно предпросмотра веб-камеры (есть и в меню значка)
 ;     stopwatch / timer         секундомер / таймер: старт-пауза (настройки - в меню значка, секция [Timer])
+;     draw                      рисовалка на экране (пометки, стрелки, номера, скрытие; стоп-кадр или поверх живого экрана; секция [Draw])
 ; Win+цифры буферов перекрывают запуск закреплённых программ на панели задач.
 ; В меню буфера: Del - удалить, F2 - править, Ins - новая запись, Ctrl+Вверх/Вниз - переставить,
 ; Влево/Вправо или Win+цифра - другой буфер, Ctrl+цифра - скопировать запись в буфер, Tab - история/запуск.
@@ -376,6 +503,8 @@ Python=python.exe
 PyRunPause=1
 ; Всплывающие подсказки внизу экрана
 Toasts=1
+; Язык интерфейса: файл langs\<язык>.ini (создаётся сам; для перевода скопируйте ru.ini и поменяйте тексты)
+Language=ru
 
 [Hotkeys]
 Ctrl+Num1=copy 1
@@ -489,6 +618,34 @@ static BOOL ParseHotkey(const wchar_t *spec, UINT *mods, UINT *key) {
     }
     return *key != 0;
 }
+static void HkName(UINT mods, UINT vk, wchar_t *o) {
+    o[0] = 0;
+    if (mods & DM_WIN) Cat(o, 48, L"Win+");
+    if (mods & DM_CTRL) Cat(o, 48, L"Ctrl+");
+    if (mods & DM_ALT) Cat(o, 48, L"Alt+");
+    if (mods & DM_SHIFT) Cat(o, 48, L"Shift+");
+    wchar_t k[16] = L"";
+    if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) { k[0] = (wchar_t)vk; k[1] = 0; }
+    else if (vk >= VK_F1 && vk <= VK_F24) wsprintfW(k, L"F%d", vk - VK_F1 + 1);
+    else if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) wsprintfW(k, L"Num%d", vk - VK_NUMPAD0);
+    else for (int i = 0; i < (int)(sizeof kKeys / sizeof kKeys[0]); i++) if (kKeys[i].vk == vk) { lstrcpynW(k, kKeys[i].n, 16); break; }
+    Cat(o, 48, k);
+}
+// Хоткей первого назначения действия act (для подписи в меню).
+static BOOL HkFor(int act, wchar_t *o) {
+    BOOL f = FALSE; o[0] = 0;
+    AcquireSRWLockShared(&g_bindLock);
+    for (int i = 0; i < g_nbind; i++) if (g_bind[i].act == act) { HkName(g_bind[i].mods, g_bind[i].key, o); f = TRUE; break; }
+    ReleaseSRWLockShared(&g_bindLock);
+    return f;
+}
+// Пункт меню "текст<TAB>хоткей"
+static void AddHk(HMENU m, UINT fl, UINT_PTR id, const wchar_t *text, int act) {
+    wchar_t b[200], hk[48];
+    lstrcpynW(b, text, 150);
+    if (act && HkFor(act, hk)) { Cat(b, 200, L"\t"); Cat(b, 200, hk); }
+    AppendMenuW(m, fl, id, b);
+}
 static void SplitDir(const wchar_t *v, Bind *b) {
     int n = lstrlenW(v), at = -1;
     for (int i = 0; i + 2 < n; i++) if (v[i] == L' ' && v[i + 1] == L'@' && v[i + 2] == L' ') { at = i; break; }
@@ -508,7 +665,7 @@ static BOOL ParseAction(const wchar_t *v, Bind *b) {
     static const Act T[] = {
         {L"copy", A_COPY, 1}, {L"paste", A_PASTE, 3}, {L"buffer", A_BUFFER, 4}, {L"slots", A_BUFFER, 4}, {L"layout", A_LAYOUT, 0}, {L"history", A_HIST, 0}, {L"launcher", A_LAUNCH, 0},
         {L"run", A_RUN, 2}, {L"admin", A_ADMIN, 2}, {L"py", A_PY, 2}, {L"pyrun", A_PYRUN, 0}, {L"topmost", A_TOPMOST, 0},
-        {L"totray", A_TOTRAY, 0}, {L"pause", A_PAUSE, 0}, {L"webcam", A_WEBCAM, 0}, {L"stopwatch", A_STOPWATCH, 0}, {L"timer", A_TIMER, 0},
+        {L"totray", A_TOTRAY, 0}, {L"pause", A_PAUSE, 0}, {L"webcam", A_WEBCAM, 0}, {L"stopwatch", A_STOPWATCH, 0}, {L"timer", A_TIMER, 0}, {L"draw", A_DRAW, 0},
     };
     for (int i = 0; i < (int)(sizeof T / sizeof T[0]); i++) {
         if (lstrcmpiW(name, T[i].n)) continue;
@@ -540,7 +697,8 @@ static COLORREF HexRgb(const wchar_t *s) {
 }
 static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
     if (!lstrcmpiW(s, L"General")) {
-        if (!lstrcmpiW(k, L"HistoryEnabled")) g_histOn = ToInt(v) != 0;
+        if (!lstrcmpiW(k, L"Language")) lstrcpynW(g_lang, v, 16);
+        else if (!lstrcmpiW(k, L"HistoryEnabled")) g_histOn = ToInt(v) != 0;
         else if (!lstrcmpiW(k, L"HistoryMax")) { g_histMax = ToInt(v); if (g_histMax < 5) g_histMax = 5; if (g_histMax > 1000) g_histMax = 1000; }
         else if (!lstrcmpiW(k, L"PasteDelay")) { g_pasteDelay = ToInt(v); if (g_pasteDelay < 50) g_pasteDelay = 50; }
         else if (!lstrcmpiW(k, L"CopyTimeout")) { g_copyTimeout = ToInt(v); if (g_copyTimeout < 100) g_copyTimeout = 100; }
@@ -555,6 +713,11 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
         if (!ParseHotkey(k, &b.mods, &b.key) || !ParseAction(v, &b)) { Free(b.arg); Free(b.dir); return; }
         if (g_nbnew >= g_bnewCap) { g_bnewCap = g_bnewCap ? g_bnewCap * 2 : 64; g_bnew = (Bind *)Realloc(g_bnew, g_bnewCap * sizeof(Bind)); }
         g_bnew[g_nbnew++] = b;
+    } else if (!lstrcmpiW(s, L"Draw")) {
+        if (!lstrcmpiW(k, L"Mode")) g_dLive = !lstrcmpiW(v, L"live");
+        else if (!lstrcmpiW(k, L"Color")) { g_dCol = ToInt(v); if (g_dCol < 0 || g_dCol > 7) g_dCol = 0; }
+        else if (!lstrcmpiW(k, L"Width")) { g_dWid = ToInt(v); if (g_dWid < 0 || g_dWid > 2) g_dWid = 1; }
+        else if (!lstrcmpiW(k, L"SaveDir")) lstrcpynW(g_dSaveDir, v, MAX_PATH);
     } else if (!lstrcmpiW(s, L"Timer")) {
         if (!lstrcmpiW(k, L"FontColor")) g_tmFg = HexRgb(v);
         else if (!lstrcmpiW(k, L"BgColor")) g_tmBg = HexRgb(v);
@@ -585,6 +748,32 @@ static void FreeBinds(Bind *b, int n) {
     for (int i = 0; i < n; i++) { Free(b[i].arg); Free(b[i].dir); }
     Free(b);
 }
+static void LangCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
+    if (lstrcmpiW(s, L"Text")) return;
+    for (int i = 0; i < L_COUNT; i++) if (!lstrcmpW(k, kLang[i].key)) { Free(g_lsTxt[i]); g_lsTxt[i] = Dup(v); return; }
+}
+// Читает langs\<Language>.ini; отсутствующие строки (или весь файл) дописывает из встроенных русских.
+static void LoadLang(void) {
+    for (int i = 0; i < L_COUNT; i++) { Free(g_lsTxt[i]); g_lsTxt[i] = NULL; }
+    wchar_t dir[MAX_PATH], path[MAX_PATH];
+    lstrcpynW(dir, g_dir, MAX_PATH); Cat(dir, MAX_PATH, L"\\langs");
+    lstrcpynW(path, dir, MAX_PATH); Cat(path, MAX_PATH, L"\\"); Cat(path, MAX_PATH, g_lang); Cat(path, MAX_PATH, L".ini");
+    DWORD sz = 0; BYTE *raw = ReadAll(path, &sz);
+    Buf all = {0};
+    if (raw) { wchar_t *t = FromUtf8((char *)raw, sz); Free(raw); BufAdd(&all, t); IniParse(t, LangCb); Free(t); }
+    else BufAdd(&all, L"; DKeys: тексты интерфейса. Правьте только то, что после знака =. Перевод: скопируйте файл в <язык>.ini и укажите Language=<язык> в DKeys.ini [General].\r\n[Text]\r\n");
+    int miss = 0;
+    for (int i = 0; i < L_COUNT; i++) {
+        if (g_lsTxt[i]) continue;
+        if (!miss && raw && all.n && all.p[all.n - 1] != L'\n') BufAdd(&all, L"\r\n");
+        miss++; BufAdd(&all, kLang[i].key); BufAdd(&all, L"="); BufAdd(&all, kLang[i].def); BufAdd(&all, L"\r\n");
+    }
+    if (miss || !raw) {
+        CreateDirectoryW(dir, NULL);
+        int n; char *u = ToUtf8(all.p, &n); if (u) { WriteAtomic(path, u, n); Free(u); }
+    }
+    Free(all.p);
+}
 static void LoadConfig(void) {
     DWORD sz = 0; BYTE *raw = ReadAll(g_ini, &sz);
     if (!raw) {
@@ -605,6 +794,7 @@ static void LoadConfig(void) {
     ReleaseSRWLockExclusive(&g_bindLock);
     FreeBinds(old, oldn);
     g_bnew = NULL;
+    LoadLang();
 }
 
 /* ---------- clipboard ---------- */
@@ -946,7 +1136,7 @@ static const Pal kDark = {RGB(32, 32, 32), RGB(40, 40, 40), RGB(230, 230, 230), 
 static const Pal kLight = {RGB(250, 250, 250), RGB(240, 240, 240), RGB(28, 28, 28), RGB(125, 125, 125), RGB(204, 228, 247), RGB(0, 95, 184), RGB(170, 170, 170)};
 // вкладки: 0..8 - буферы 1..9, 9 - история, 10 - запуск
 #define NTABS 11
-static const wchar_t *kTabName[2] = {L"История", L"Запуск"};
+#define kTabName(i) Tr((i) ? L_TAB_LAUNCH : L_TAB_HIST)
 
 static Row *g_rows; static int g_nrows;
 static int *g_vis, g_nvis, g_sel, g_top, g_pmode;
@@ -1024,7 +1214,7 @@ static void PopupPaint(HWND h) {
         if (i == 9 && !g_histOn) continue;
         BOOL cur = i < 9 ? (g_pmode == PM_BUF && g_curBuf == i + 1) : (g_pmode == (i == 9 ? PM_HIST : PM_LAUNCH));
         wchar_t dg[2] = {(wchar_t)(L'1' + i), 0};
-        const wchar_t *tx = i < 9 ? dg : kTabName[i - 9];
+        const wchar_t *tx = i < 9 ? dg : kTabName(i - 9);
         SelectObject(dc, cur ? g_fntB : g_fnt);
         SIZE sz; GetTextExtentPoint32W(dc, tx, lstrlenW(tx), &sz);
         int tw = i < 9 ? Sc(24) : sz.cx + Sc(16);
@@ -1038,7 +1228,7 @@ static void PopupPaint(HWND h) {
     SelectObject(dc, g_fnt);
     RECT fr = {g_pad, 0, right - Sc(8), g_hh};
     if (g_nfilt) { SetTextColor(dc, P.fg); DrawTextW(dc, g_filt, g_nfilt, &fr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS); }
-    else { SetTextColor(dc, P.dim); DrawTextW(dc, L"Введите для поиска…", -1, &fr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS); }
+    else { SetTextColor(dc, P.dim); DrawTextW(dc, Tr(L_SEARCH), -1, &fr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS); }
     // rows
     int y0 = g_hh, lw = g_pmode == PM_BUF ? Sc(28) : 0;
     for (int i = 0; i < VISROWS; i++) {
@@ -1074,16 +1264,16 @@ static void PopupPaint(HWND h) {
         Free(tmp);
         RECT ir = {g_pad, H - Sc(22), W - g_pad, H - Sc(3)};
         wchar_t info[128];
-        if (g_pmode == PM_LAUNCH) lstrcpynW(info, L"Enter - запустить   Tab - режим   Esc - закрыть", 128);
-        else if (g_pmode == PM_BUF) wsprintfW(info, L"%d симв.   цифра/Enter - вставить   Del - удалить   F2 - правка   Ins - новая   ←→ - буфер", tl);
-        else wsprintfW(info, L"%d симв.   Enter - вставить   Del - удалить   F2 - правка   Ctrl+1..9 - в буфер", tl);
+        if (g_pmode == PM_LAUNCH) lstrcpynW(info, Tr(L_INFO_LAUNCH), 128);
+        else if (g_pmode == PM_BUF) wsprintfW(info, Tr(L_INFO_BUF), tl);
+        else wsprintfW(info, Tr(L_INFO_HIST), tl);
         SetTextColor(dc, P.dim);
         DrawTextW(dc, info, -1, &ir, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     } else {
         SetTextColor(dc, P.dim);
         wchar_t e[96];
-        if (g_pmode == PM_BUF) wsprintfW(e, g_nfilt ? L"Ничего не найдено" : L"Буфер %d пуст. Ctrl+Num%d копирует выделенное сюда, Ins - ввести вручную", g_curBuf, g_curBuf);
-        else lstrcpynW(e, g_pmode == PM_HIST && !g_nfilt ? L"История пуста" : L"Ничего не найдено", 96);
+        if (g_pmode == PM_BUF) wsprintfW(e, g_nfilt ? Tr(L_EMPTY_NF) : Tr(L_EMPTY_BUF), g_curBuf, g_curBuf);
+        else lstrcpynW(e, g_pmode == PM_HIST && !g_nfilt ? Tr(L_EMPTY_HIST) : Tr(L_EMPTY_NF), 96);
         DrawTextW(dc, e, -1, &pr, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
     }
     FrameRect(dc, &cr, bd);
@@ -1226,7 +1416,7 @@ static wchar_t *EditDialog(const wchar_t *title, const wchar_t *text) {
     g_edEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | (g_edLine ? ES_AUTOHSCROLL : (WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN)),
                                0, 0, 10, 10, g_edDlg, (HMENU)3, g_inst, NULL);
     HWND ok = CreateWindowExW(0, L"BUTTON", g_edLine ? L"OK  (Enter)" : L"OK  (Ctrl+Enter)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 10, 10, g_edDlg, (HMENU)IDOK, g_inst, NULL);
-    HWND cn = CreateWindowExW(0, L"BUTTON", L"Отмена", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 10, 10, g_edDlg, (HMENU)IDCANCEL, g_inst, NULL);
+    HWND cn = CreateWindowExW(0, L"BUTTON", Tr(L_CANCEL), WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 10, 10, g_edDlg, (HMENU)IDCANCEL, g_inst, NULL);
     SendMessageW(g_edEdit, WM_SETFONT, (WPARAM)f, TRUE); SendMessageW(ok, WM_SETFONT, (WPARAM)f, TRUE); SendMessageW(cn, WM_SETFONT, (WPARAM)f, TRUE);
     SendMessageW(g_edEdit, EM_SETLIMITTEXT, 4000000, 0);
     SetWindowTextW(g_edEdit, text);
@@ -1271,7 +1461,7 @@ static void RunShell(const wchar_t *spec, const wchar_t *dir, BOOL admin) {
     e.lpVerb = admin ? L"runas" : NULL; e.lpFile = file; e.lpParameters = *par ? par : NULL;
     e.lpDirectory = (dir && *dir) ? dir : NULL; e.nShow = SW_SHOWNORMAL;
     if (!ShellExecuteExW(&e) && GetLastError() != ERROR_CANCELLED) {
-        wchar_t m[200]; wsprintfW(m, L"Не удалось запустить: %.120s", file); Toast(m);
+        wchar_t m[200]; wsprintfW(m, Tr(L_T_RUNFAIL), file); Toast(m);
     }
     Free(s);
 }
@@ -1293,7 +1483,7 @@ static void RunProc(wchar_t *cmd, const wchar_t *dir, wchar_t *env) {
     if (CreateProcessW(NULL, cmd, NULL, NULL, FALSE, CREATE_UNICODE_ENVIRONMENT, env, (dir && *dir) ? dir : g_pyDir, &si, &pi)) {
         CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
     } else {
-        wchar_t m[200]; wsprintfW(m, L"Не удалось запустить Python (%.80s)", g_python); Toast(m);
+        wchar_t m[200]; wsprintfW(m, Tr(L_T_PYFAIL), g_python); Toast(m);
     }
 }
 static void RunPy(const wchar_t *arg, const wchar_t *dir) {
@@ -1314,7 +1504,7 @@ static void RunPy(const wchar_t *arg, const wchar_t *dir) {
 }
 static void RunPySelection(void) {
     wchar_t *sel = GrabSelection();
-    if (!sel || !*sel) { Free(sel); Toast(L"Нет выделенного текста"); return; }
+    if (!sel || !*sel) { Free(sel); Toast(Tr(L_T_NOSEL)); return; }
     wchar_t script[MAX_PATH]; lstrcpynW(script, g_pyDir, MAX_PATH); Cat(script, MAX_PATH, L"tmp.py");
     WriteText(script, sel); Free(sel);
     Buf c = {0};
@@ -1340,14 +1530,14 @@ static void ToggleTopmost(void) {
     BOOL on = !(GetWindowLongW(h, GWL_EXSTYLE) & WS_EX_TOPMOST);
     SetWindowPos(h, on ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     wchar_t t[64], m[160]; GetWindowTextW(h, t, 64);
-    wsprintfW(m, on ? L"Поверх всех: ВКЛ  —  %s" : L"Поверх всех: ВЫКЛ  —  %s", t);
+    wsprintfW(m, on ? Tr(L_T_TOPON) : Tr(L_T_TOPOFF), t);
     Toast(m);
 }
 static void HideToTray(void) {
     HWND h = TopWin(); if (!h || g_nhid >= 32) return;
     wchar_t t[64], m[160]; GetWindowTextW(h, t, 64);
     ShowWindow(h, SW_HIDE); g_hid[g_nhid++] = h;
-    wsprintfW(m, L"Спрятано в трей: %s", t); Toast(m);
+    wsprintfW(m, Tr(L_T_TOTRAY), t); Toast(m);
 }
 static void ShowHidden(int i) {
     HWND h = g_hid[i];
@@ -1420,7 +1610,7 @@ static void OnLayoutTimer(void) {
 // Исправить текст, набранный не в той раскладке: последний набранный, а если его нет - выделенный.
 static void FixLayout(void) {
     HKL en = FindHkl(LANG_ENGLISH), ru = FindHkl(LANG_RUSSIAN);
-    if (!en || !ru) { Toast(L"Для смены раскладки нужны раскладки EN и RU"); return; }
+    if (!en || !ru) { Toast(Tr(L_T_NOLAYOUT)); return; }
     static Typed t[256];
     int n = TypedCopy(t);
     HWND fg = GetForegroundWindow();
@@ -1462,7 +1652,7 @@ static void FixLayout(void) {
         while (n && (sel[n - 1] == L'\n' || sel[n - 1] == L'\r')) sel[--n] = 0;
         if (n) { SendKeysN(VK_END, 1, 0); SendKeysN(VK_HOME, 2, VK_SHIFT); }
     }
-    if (!sel || !*sel) { Free(sel); Toast(L"Нет текста для смены раскладки"); return; }
+    if (!sel || !*sel) { Free(sel); Toast(Tr(L_T_NOLAYTXT)); return; }
     int cyr = 0, lat = 0;
     for (wchar_t *p = sel; *p; p++) { if (*p >= 0x400 && *p <= 0x4FF) cyr++; else if ((*p | 32) >= L'a' && (*p | 32) <= L'z') lat++; }
     HKL from = cyr > lat ? ru : en, to = cyr > lat ? en : ru;
@@ -1476,15 +1666,15 @@ static void FixLayout(void) {
 
 static void CopyToBuf(int n) {
     wchar_t *t = GrabSelection();
-    if (!t || !*t) { Free(t); Toast(L"Нет выделенного текста"); return; }
+    if (!t || !*t) { Free(t); Toast(Tr(L_T_NOSEL)); return; }
     int len = lstrlenW(t);
     BufInsert(n, t);
     g_curBuf = n;
-    wchar_t m[96]; wsprintfW(m, L"→ буфер %d   (%d симв.)", n, len);
+    wchar_t m[96]; wsprintfW(m, Tr(L_T_TOBUF), n, len);
     Toast(m);
 }
 static void PasteBuf(int n, int item) {
-    if (item < 1 || item > g_bufN[n]) { wchar_t m[48]; wsprintfW(m, L"В буфере %d нет записи %d", n, item); Toast(m); return; }
+    if (item < 1 || item > g_bufN[n]) { wchar_t m[48]; wsprintfW(m, Tr(L_T_NOITEM), n, item); Toast(m); return; }
     PasteText(g_buf[n][item - 1]);
 }
 static void OpenPopup(int mode, int buf) {
@@ -1510,7 +1700,8 @@ static void ExecBind(const Bind *b) {
     case A_WEBCAM: CamOpen(); break;
     case A_STOPWATCH: TmToggle(1); break;
     case A_TIMER: TmToggle(2); break;
-    case A_PAUSE: InterlockedExchange(&g_paused, !g_paused); Toast(g_paused ? L"DKeys: пауза" : L"DKeys: работает"); break;
+    case A_DRAW: DrawOpen(); break;
+    case A_PAUSE: InterlockedExchange(&g_paused, !g_paused); Toast(g_paused ? Tr(L_T_PAUSED) : Tr(L_T_WORKING)); break;
     }
 }
 static void ExecSpec(const wchar_t *spec) {
@@ -1539,7 +1730,7 @@ static void PopupDelete(void) {
     int ref = g_rows[g_vis[g_sel]].ref;
     if (g_pmode == PM_BUF) BufRemove(g_curBuf, ref);
     else if (g_pmode == PM_HIST) { HistRemove(ref); HistSave(); }
-    else { Toast(L"Список запуска правится в DKeys.ini"); return; }
+    else { Toast(Tr(L_T_LISTINI)); return; }
     PopupReselect(g_sel);
 }
 static void PopupEdit(BOOL isNew) {
@@ -1548,8 +1739,8 @@ static void PopupEdit(BOOL isNew) {
     wchar_t *cur = Dup(isNew ? L"" : g_rows[g_vis[g_sel]].text);
     PopupClose();
     wchar_t title[64];
-    if (mode == PM_BUF) wsprintfW(title, isNew ? L"Буфер %d: новая запись" : L"Буфер %d: запись %d", buf, ref + 1);
-    else lstrcpyW(title, L"Запись истории");
+    if (mode == PM_BUF) wsprintfW(title, isNew ? Tr(L_ED_NEW) : Tr(L_ED_BUF), buf, ref + 1);
+    else lstrcpyW(title, Tr(L_ED_HIST));
     wchar_t *nt = EditDialog(title, cur);
     Free(cur);
     if (nt && !*nt) { Free(nt); nt = NULL; if (!isNew) { if (mode == PM_BUF) BufRemove(buf, ref); else { HistRemove(ref); HistSave(); } } }
@@ -1603,7 +1794,7 @@ static void PopupKey(UINT key, UINT mods, WCHAR ch) {
     if ((mods & DM_WIN) && dig >= 1) { PopupSetMode(PM_BUF, dig); return; }
     if ((mods & DM_CTRL) && dig >= 1 && g_pmode != PM_LAUNCH && g_nvis > 0) {
         BufInsert(dig, Dup(g_rows[g_vis[g_sel]].text));
-        wchar_t m[64]; wsprintfW(m, L"→ буфер %d", dig); Toast(m);
+        wchar_t m[64]; wsprintfW(m, Tr(L_T_TOBUF2), dig); Toast(m);
         if (buf) { g_sel = 0; PopupReselect(0); }
         return;
     }
@@ -1761,7 +1952,7 @@ static void TrayAdd(void) {
     memset(&g_nid, 0, sizeof g_nid);
     g_nid.cbSize = sizeof g_nid; g_nid.hWnd = g_hwnd; g_nid.uID = 1;
     g_nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP; g_nid.uCallbackMessage = WM_TRAY; g_nid.hIcon = g_icon;
-    lstrcpyW(g_nid.szTip, g_elev ? L"DKeys (администратор)" : L"DKeys");
+    lstrcpyW(g_nid.szTip, g_elev ? Tr(L_TRAY_TIPADM) : L"DKeys");
     // при автозапуске панель задач может быть ещё не готова - повторяем, пока значок не добавится
     if (Shell_NotifyIconW(NIM_ADD, &g_nid)) KillTimer(g_hwnd, TID_TRAY);
     else SetTimer(g_hwnd, TID_TRAY, 2000, NULL);
@@ -1808,7 +1999,7 @@ static void AutoSet(BOOL on) {
         GetTempPathW(MAX_PATH, tmp); Cat(tmp, MAX_PATH, L"dkeys_task.xml");
         WriteAtomic(tmp, x.p, x.n * sizeof(wchar_t)); Free(x.p);
         wchar_t cmd[2 * MAX_PATH]; wsprintfW(cmd, L"schtasks.exe /Create /TN DKeys /XML \"%s\" /F", tmp);
-        if (RunHidden(cmd) != 0) Toast(L"Не удалось создать задачу автозапуска");
+        if (RunHidden(cmd) != 0) Toast(Tr(L_T_AUTOFAIL));
         DeleteFileW(tmp);
     } else if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_SET_VALUE, &k) == ERROR_SUCCESS) {
         wchar_t v[MAX_PATH + 4]; v[0] = L'"'; v[1] = 0; Cat(v, MAX_PATH + 4, g_exe); Cat(v, MAX_PATH + 4, L"\"");
@@ -1826,7 +2017,7 @@ static void Reload(void) {
     LoadConfig();
     if (g_histOn != was) { if (g_histOn) AddClipboardFormatListener(g_hwnd); else RemoveClipboardFormatListener(g_hwnd); }
     PostThreadMessageW(g_hookTid, TM_REHOOK, 0, 0);
-    Toast(L"Настройки перечитаны");
+    Toast(Tr(L_T_RELOADED));
 }
 /* ---------- веб-камера (DirectShow): предпросмотр в окне ---------- */
 struct CamRes { int w, h, idx; LONGLONG iv; };
@@ -1860,7 +2051,7 @@ static int CamEnum(int bind, IBaseFilter **pf) {
                 if (SUCCEEDED(pb->Read(L"FriendlyName", &v, NULL)) && v.vt == VT_BSTR) lstrcpynW(g_camName[n], v.bstrVal, 80);
                 VariantClear(&v); pb->Release();
             }
-            if (!g_camName[n][0]) lstrcpyW(g_camName[n], L"Камера");
+            if (!g_camName[n][0]) lstrcpyW(g_camName[n], Tr(L_CAM_NAME));
             if (n == bind && pf) mk->BindToObject(NULL, NULL, IID_IBaseFilter, (void **)pf);
             mk->Release(); n++;
         }
@@ -1941,7 +2132,7 @@ static void CamMenuBuild(void) {
     }
     if (g_nres) CheckMenuRadioItem(g_camPopRes, 0, g_nres - 1, g_curRes, MF_BYPOSITION);
     while (GetMenuItemCount(g_camPopSet) > 0) DeleteMenu(g_camPopSet, 0, MF_BYPOSITION);
-    static const wchar_t *const sn[4] = {L"Камера: яркость, контраст…", L"Видеопоток: формат (capture pin)…", L"Видеопоток: предпросмотр (preview pin)…", L"Видеовход (crossbar)…"};
+    const wchar_t *sn[4] = {Tr(L_CAM_P0), Tr(L_CAM_P1), Tr(L_CAM_P2), Tr(L_CAM_P3)};
     for (int k = 0; k < 4; k++) {
         IUnknown *o = CamObj(k);
         AppendMenuW(g_camPopSet, o ? MF_STRING : MF_STRING | MF_GRAYED, CAM_SET + k, sn[k]);
@@ -1980,7 +2171,7 @@ static void CamProps(int k) {
     if (SUCCEEDED(o->QueryInterface(IID_ISpecifyPropertyPages, (void **)&sp))) {
         if (SUCCEEDED(sp->GetPages(&ca))) {
             if (k == 1 || k == 2) g_mc->Stop();      // формат потока меняется только на остановленном графе
-            OleCreatePropertyFrame(g_hwndCam, 0, 0, L"Настройки камеры", 1, &o, ca.cElems, ca.pElems, 0, 0, NULL);
+            OleCreatePropertyFrame(g_hwndCam, 0, 0, Tr(L_CAM_PTITLE), 1, &o, ca.cElems, ca.pElems, 0, 0, NULL);
             CoTaskMemFree(ca.pElems);
             if (k == 1 || k == 2) { g_mc->Run(); CamQuerySize(); }
         }
@@ -2009,7 +2200,7 @@ static BOOL CamStart(int dev, int ri) {
           && SUCCEEDED(g_gb->QueryInterface(IID_IVideoWindow, (void **)&g_vwin))
           && SUCCEEDED(g_gb->QueryInterface(IID_IMediaControl, (void **)&g_mc));
     }
-    if (!ok) { CamStop(); g_nres = 0; Toast(L"Не удалось открыть камеру (занята другим приложением?)"); return FALSE; }
+    if (!ok) { CamStop(); g_nres = 0; Toast(Tr(L_CAM_BUSY)); return FALSE; }
     g_vidW = g_nres ? g_res[ri].w : 640; g_vidH = g_nres ? g_res[ri].h : 480;
     CamQuerySize();
     g_vwin->put_Owner((OAHWND)g_hwndCam);
@@ -2018,7 +2209,7 @@ static BOOL CamStart(int dev, int ri) {
     CamLayout();
     g_vwin->put_Visible(OATRUE);
     g_mc->Run();
-    wchar_t t[120]; wsprintfW(t, L"Вебкамера - %s", g_camName[dev]); SetWindowTextW(g_hwndCam, t);
+    wchar_t t[120]; wsprintfW(t, Tr(L_CAM_TITLE), g_camName[dev]); SetWindowTextW(g_hwndCam, t);
     return TRUE;
 }
 // отступы рамки окна и предельный размер клиентской области: 3/4 монитора
@@ -2130,14 +2321,14 @@ static LRESULT CALLBACK CamProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 static void CamOpen(void) {
     if (g_hwndCam) { if (IsIconic(g_hwndCam)) ShowWindow(g_hwndCam, SW_RESTORE); SetForegroundWindow(g_hwndCam); return; }
     g_ncam = CamEnum(-1, NULL);
-    if (!g_ncam) { Toast(L"Камеры не найдены"); return; }
+    if (!g_ncam) { Toast(Tr(L_CAM_NONE)); return; }
     RegClass(L"DKCam", CamProc, 0);
     g_camMenu = CreateMenu(); g_camPopDev = CreatePopupMenu(); g_camPopRes = CreatePopupMenu(); g_camPopSet = CreatePopupMenu();
-    AppendMenuW(g_camMenu, MF_POPUP, (UINT_PTR)g_camPopDev, L"Камера");
-    AppendMenuW(g_camMenu, MF_POPUP, (UINT_PTR)g_camPopRes, L"Разрешение");
-    AppendMenuW(g_camMenu, MF_POPUP, (UINT_PTR)g_camPopSet, L"Настройки");
-    AppendMenuW(g_camMenu, MF_STRING, CAM_FULL, L"Полный экран (F11)");
-    g_hwndCam = CreateWindowExW(0, L"DKCam", L"Вебкамера", CAMSTYLE, CW_USEDEFAULT, CW_USEDEFAULT, 640, 480, NULL, g_camMenu, g_inst, NULL);
+    AppendMenuW(g_camMenu, MF_POPUP, (UINT_PTR)g_camPopDev, Tr(L_CAM_MCAM));
+    AppendMenuW(g_camMenu, MF_POPUP, (UINT_PTR)g_camPopRes, Tr(L_CAM_MRES));
+    AppendMenuW(g_camMenu, MF_POPUP, (UINT_PTR)g_camPopSet, Tr(L_CAM_MSET));
+    AppendMenuW(g_camMenu, MF_STRING, CAM_FULL, Tr(L_CAM_FULL));
+    g_hwndCam = CreateWindowExW(0, L"DKCam", Tr(L_CAM_WND), CAMSTYLE, CW_USEDEFAULT, CW_USEDEFAULT, 640, 480, NULL, g_camMenu, g_inst, NULL);
     if (!g_hwndCam) { DestroyMenu(g_camMenu); return; }
     int dev = 0;
     for (int i = 0; i < g_ncam; i++) if (!lstrcmpiW(g_camName[i], g_cfgCamDev)) dev = i;
@@ -2228,7 +2419,7 @@ static void TmFinish(void) {
     g_tmAcc = g_tmTarget; g_tmRun = FALSE;
     TmPaint();
     MessageBeep(MB_ICONEXCLAMATION);
-    Toast(L"Таймер: время вышло");
+    Toast(Tr(L_TM_DONE));
     if (g_tmEnd) {
         RunHidden(g_tmEnd == 1 ? L"shutdown.exe /s /t 30 /c \"DKeys: таймер\"" : L"shutdown.exe /r /t 30 /c \"DKeys: таймер\"");
         g_shutPend = TRUE;
@@ -2251,7 +2442,7 @@ static void TmEnsure(int mode) {
 static void TmClose(void) { g_tmMode = 0; g_tmRun = FALSE; if (g_hwndTm) DestroyWindow(g_hwndTm); }
 static void TmToggle(int mode) {
     TmEnsure(mode); if (!g_hwndTm) return;
-    if (mode == 2 && g_tmTarget == 0) { Toast(L"Задайте время: меню - Время таймера"); return; }
+    if (mode == 2 && g_tmTarget == 0) { Toast(Tr(L_TM_NEEDTIME)); return; }
     if (g_tmRun) { g_tmAcc = TmElapsed(); g_tmRun = FALSE; }
     else { if (mode == 2 && TmElapsed() >= g_tmTarget) g_tmAcc = 0; g_tmStart = GetTickCount64(); g_tmRun = TRUE; }
     TmPaint();
@@ -2279,7 +2470,7 @@ static void TmCommand(int id) {
     else if (k == 5) {                                   // ввести время и сразу запустить
         wchar_t cur[16] = L"";
         if (g_tmTarget) TmFmt((int)(g_tmTarget / 1000), cur);
-        g_edLine = TRUE; wchar_t *s = EditDialog(L"Таймер: минуты, м:с или ч:м:с", cur); g_edLine = FALSE;
+        g_edLine = TRUE; wchar_t *s = EditDialog(Tr(L_TM_INPUT), cur); g_edLine = FALSE;
         if (s) { int t = ParseTime(s); Free(s); if (t > 0) TmStartFor(t); }
     }
     else if (k == 6) {                                   // текущее время таймера - в избранное
@@ -2296,17 +2487,17 @@ static void TmCommand(int id) {
     else if (k >= 20 && k <= 24) { TmEnsure(g_tmMode ? g_tmMode : 1); g_tmAlpha = (k - 20) * 25; TmSave(); TmPaint(); }
     else if (k >= 30 && k <= 34) { TmEnsure(g_tmMode ? g_tmMode : 1); g_tmSize = kTmSize[k - 30]; TmSave(); TmPaint(); }
     else if (k == 40) TmClose();
-    else if (k == 41) { RunHidden(L"shutdown.exe /a"); g_shutPend = FALSE; Toast(L"Выключение отменено"); }
+    else if (k == 41) { RunHidden(L"shutdown.exe /a"); g_shutPend = FALSE; Toast(Tr(L_TM_CANCELED)); }
 }
 static HMENU TmMenu(void) {
     HMENU m = CreatePopupMenu(), add = CreatePopupMenu(), en = CreatePopupMenu(), view = CreatePopupMenu(), al = CreatePopupMenu(), sz = CreatePopupMenu();
-    AppendMenuW(m, MF_STRING, TM_ID + 1, g_tmMode == 1 && g_tmRun ? L"Секундомер: пауза" : L"Секундомер: старт");
-    AppendMenuW(m, MF_STRING, TM_ID + 2, L"Секундомер: сбросить");
+    AddHk(m, MF_STRING, TM_ID + 1, g_tmMode == 1 && g_tmRun ? Tr(L_TM_SWPAUSE) : Tr(L_TM_SWSTART), A_STOPWATCH);
+    AppendMenuW(m, MF_STRING, TM_ID + 2, Tr(L_TM_SWRESET));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(m, MF_STRING, TM_ID + 3, g_tmMode == 2 && g_tmRun ? L"Таймер: пауза" : L"Таймер: старт");
-    AppendMenuW(m, MF_STRING, TM_ID + 4, L"Таймер: сбросить");
+    AddHk(m, MF_STRING, TM_ID + 3, g_tmMode == 2 && g_tmRun ? Tr(L_TM_TPAUSE) : Tr(L_TM_TSTART), A_TIMER);
+    AppendMenuW(m, MF_STRING, TM_ID + 4, Tr(L_TM_TRESET));
     HMENU rm = CreatePopupMenu();
-    AppendMenuW(add, MF_STRING, TM_ID + 5, L"Ввести время…");
+    AppendMenuW(add, MF_STRING, TM_ID + 5, Tr(L_TM_ENTER));
     if (g_tmNFav) AppendMenuW(add, MF_SEPARATOR, 0, NULL);
     for (int i = 0; i < g_tmNFav; i++) {
         wchar_t t[16]; TmFmt(g_tmFav[i], t);
@@ -2314,22 +2505,22 @@ static HMENU TmMenu(void) {
     }
     AppendMenuW(add, MF_SEPARATOR, 0, NULL);
     int cur = (int)(g_tmTarget / 1000), ci = 0; while (ci < g_tmNFav && g_tmFav[ci] != cur) ci++;
-    AppendMenuW(add, MF_STRING | (cur > 0 && ci == g_tmNFav && g_tmNFav < 10 ? 0 : MF_GRAYED), TM_ID + 6, L"Добавить текущее в избранное");
-    if (g_tmNFav) AppendMenuW(add, MF_POPUP, (UINT_PTR)rm, L"Убрать из избранного"); else DestroyMenu(rm);
-    AppendMenuW(m, MF_POPUP, (UINT_PTR)add, L"Время таймера");
-    static const wchar_t *const en_[3] = {L"Только сигнал", L"Выключить компьютер", L"Перезагрузить компьютер"};
+    AppendMenuW(add, MF_STRING | (cur > 0 && ci == g_tmNFav && g_tmNFav < 10 ? 0 : MF_GRAYED), TM_ID + 6, Tr(L_TM_FAVADD));
+    if (g_tmNFav) AppendMenuW(add, MF_POPUP, (UINT_PTR)rm, Tr(L_TM_FAVDEL)); else DestroyMenu(rm);
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)add, Tr(L_TM_TIME));
+    const wchar_t *en_[3] = {Tr(L_TM_E0), Tr(L_TM_E1), Tr(L_TM_E2)};
     for (int i = 0; i < 3; i++) AppendMenuW(en, MF_STRING | (g_tmEnd == i ? MF_CHECKED : 0), TM_ID + 12 + i, en_[i]);
-    AppendMenuW(m, MF_POPUP, (UINT_PTR)en, L"По окончании таймера");
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)en, Tr(L_TM_END));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(view, MF_STRING, TM_ID + 15, L"Цвет цифр…");
-    AppendMenuW(view, MF_STRING, TM_ID + 16, L"Цвет фона…");
+    AppendMenuW(view, MF_STRING, TM_ID + 15, Tr(L_TM_FG));
+    AppendMenuW(view, MF_STRING, TM_ID + 16, Tr(L_TM_BG));
     for (int i = 0; i < 5; i++) { wchar_t t[16]; wsprintfW(t, L"%d%%", i * 25); AppendMenuW(al, MF_STRING | (g_tmAlpha == i * 25 ? MF_CHECKED : 0), TM_ID + 20 + i, t); }
-    AppendMenuW(view, MF_POPUP, (UINT_PTR)al, L"Непрозрачность фона");
+    AppendMenuW(view, MF_POPUP, (UINT_PTR)al, Tr(L_TM_ALPHA));
     for (int i = 0; i < 5; i++) { wchar_t t[16]; wsprintfW(t, L"%d", kTmSize[i]); AppendMenuW(sz, MF_STRING | (g_tmSize == kTmSize[i] ? MF_CHECKED : 0), TM_ID + 30 + i, t); }
-    AppendMenuW(view, MF_POPUP, (UINT_PTR)sz, L"Размер цифр");
-    AppendMenuW(m, MF_POPUP, (UINT_PTR)view, L"Вид");
-    if (g_shutPend) AppendMenuW(m, MF_STRING, TM_ID + 41, L"Отменить выключение/перезагрузку");
-    if (g_tmMode) AppendMenuW(m, MF_STRING, TM_ID + 40, L"Закрыть");
+    AppendMenuW(view, MF_POPUP, (UINT_PTR)sz, Tr(L_TM_SIZE));
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)view, Tr(L_TM_VIEW));
+    if (g_shutPend) AppendMenuW(m, MF_STRING, TM_ID + 41, Tr(L_TM_CANCEL));
+    if (g_tmMode) AppendMenuW(m, MF_STRING, TM_ID + 40, Tr(L_TM_CLOSE));
     return m;
 }
 static void TmMenuPopup(void) {
@@ -2358,19 +2549,551 @@ static LRESULT CALLBACK TmProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     return DefWindowProcW(h, m, w, l);
 }
 
+/* ---------- рисовалка на экране (GDI+ flat API) ----------
+   Один слоистый (UpdateLayeredWindow) оверлей на весь монитор под курсором.
+   Статика: фон - снимок экрана. Живой режим: фон прозрачный (alpha=1, чтобы ловить мышь), под ним настоящий экран.
+   Фигуры хранятся списком (undo/redo = счётчик), стирание - отдельная фигура S_DEL со ссылкой. */
+namespace DrawNs {
+using namespace Gdiplus;
+using namespace Gdiplus::DllExports;
+
+enum { T_PEN, T_MARK, T_ARROW, T_LINE, T_RECT, T_ELL, T_TEXT, T_NUM, T_BLUR, T_ERASE, S_DEL = 20 };
+struct Shp { int t; unsigned col; float w, x1, y1, x2, y2; PointF *pts; int n, cap; wchar_t *txt; int num, ref; BOOL hid; };
+struct Surf { HBITMAP hb; DWORD *bits; HDC dc; GpBitmap *bmp; GpGraphics *g; };
+struct FR { float x, y, w, h; };
+static const unsigned kCol[8] = {0xFFFF3B30, 0xFFFF9500, 0xFFFFD60A, 0xFF34C759, 0xFF0A84FF, 0xFFAF52DE, 0xFFFFFFFF, 0xFF000000};
+static const float kWid[3] = {3, 6, 12};
+static const GUID kPng = {0x557cf406, 0x1a04, 0x11d3, {0x9a, 0x73, 0x00, 0x00, 0xf8, 0x1e, 0xf3, 0x2e}};
+
+static Surf bg, base, back;
+static int W, H, OX, OY, tool, nextNum;
+static float sc, tbX, tbY, tbW, tbH, tbDX, tbDY;
+static HWND hw;
+static ULONG_PTR gdiTok;
+static Shp **shp; static int shN, shTot, shCap;
+static Shp *act;
+static BOOL typing, drag, tbDrag;
+static FR ir[27];
+
+static float Sqrt(float v) { return _mm_cvtss_f32(_mm_sqrt_ss(_mm_set_ss(v))); }
+static float SegD(float px, float py, float ax, float ay, float bx, float by) {
+    float dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy, t = l2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / l2 : 0;
+    if (t < 0) t = 0; else if (t > 1) t = 1;
+    float qx = ax + t * dx - px, qy = ay + t * dy - py;
+    return Sqrt(qx * qx + qy * qy);
+}
+
+/* --- поверхности --- */
+static BOOL SurfNew(Surf *s) {
+    BITMAPINFO bi; memset(&bi, 0, sizeof bi);
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER); bi.bmiHeader.biWidth = W; bi.bmiHeader.biHeight = -H;
+    bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32;
+    s->hb = CreateDIBSection(NULL, &bi, DIB_RGB_COLORS, (void **)&s->bits, NULL, 0);
+    if (!s->hb) return FALSE;
+    s->dc = CreateCompatibleDC(NULL); SelectObject(s->dc, s->hb);
+    GdipCreateBitmapFromScan0(W, H, W * 4, PixelFormat32bppPARGB, (BYTE *)s->bits, &s->bmp);
+    if (!s->bmp) return FALSE;
+    GdipGetImageGraphicsContext((GpImage *)s->bmp, &s->g);
+    if (!s->g) return FALSE;
+    GdipSetSmoothingMode(s->g, SmoothingModeAntiAlias);
+    GdipSetTextRenderingHint(s->g, TextRenderingHintAntiAlias);
+    return TRUE;
+}
+static void SurfFree(Surf *s) {
+    if (s->g) GdipDeleteGraphics(s->g);
+    if (s->bmp) GdipDisposeImage((GpImage *)s->bmp);
+    if (s->dc) DeleteDC(s->dc);
+    if (s->hb) DeleteObject(s->hb);
+    memset(s, 0, sizeof *s);
+}
+static void Capture(void) {
+    HDC sdc = GetDC(NULL);
+    BitBlt(bg.dc, 0, 0, W, H, sdc, OX, OY, SRCCOPY | CAPTUREBLT);
+    ReleaseDC(NULL, sdc);
+    DWORD *p = bg.bits; for (int i = W * H; i > 0; i--, p++) *p |= 0xFF000000;
+}
+
+/* --- примитивы GDI+ --- */
+static GpBrush *MkBr(unsigned col) { GpSolidFill *b = NULL; GdipCreateSolidFill(col, &b); return (GpBrush *)b; }
+static GpPen *MkPen(unsigned col, float w, int cap) {
+    GpPen *p = NULL; GdipCreatePen1(col, w, UnitPixel, &p);
+    GdipSetPenStartCap(p, (LineCap)cap); GdipSetPenEndCap(p, (LineCap)cap); GdipSetPenLineJoin(p, LineJoinRound);
+    return p;
+}
+static GpPath *RPath(float x, float y, float w, float h, float r) {
+    GpPath *p = NULL; GdipCreatePath(FillModeAlternate, &p); float d = r * 2;
+    GdipAddPathArc(p, x, y, d, d, 180, 90); GdipAddPathArc(p, x + w - d, y, d, d, 270, 90);
+    GdipAddPathArc(p, x + w - d, y + h - d, d, d, 0, 90); GdipAddPathArc(p, x, y + h - d, d, d, 90, 90);
+    GdipClosePathFigure(p); return p;
+}
+static void FillRR(GpGraphics *g, unsigned col, float x, float y, float w, float h, float r) {
+    GpPath *p = RPath(x, y, w, h, r); GpBrush *b = MkBr(col);
+    GdipFillPath(g, b, p); GdipDeleteBrush(b); GdipDeletePath(p);
+}
+// style: 0 обычный, 1 жирный. centered: по центру прямоугольника, иначе от левого верха (x, y)
+static void Text(GpGraphics *g, const wchar_t *t, float x, float y, float w, float h, float px, int style, unsigned col, BOOL centered, const wchar_t *fam) {
+    GpFontFamily *ff = NULL; GpFont *f = NULL; GpStringFormat *sf = NULL;
+    GdipCreateFontFamilyFromName(fam, NULL, &ff);
+    if (!ff) return;
+    GdipCreateFont(ff, px, style, UnitPixel, &f);
+    if (centered) {
+        GdipCreateStringFormat(0, 0, &sf);
+        GdipSetStringFormatAlign(sf, StringAlignmentCenter); GdipSetStringFormatLineAlign(sf, StringAlignmentCenter);
+    }
+    RectF r(x, y, w, h); GpBrush *b = MkBr(col);
+    if (f) GdipDrawString(g, t, -1, f, &r, sf, b);
+    GdipDeleteBrush(b); if (sf) GdipDeleteStringFormat(sf); if (f) GdipDeleteFont(f); GdipDeleteFontFamily(ff);
+}
+static void Arrow(GpGraphics *g, unsigned col, float w, float x1, float y1, float x2, float y2) {
+    float dx = x2 - x1, dy = y2 - y1, len = Sqrt(dx * dx + dy * dy);
+    if (len < 2) return;
+    float ux = dx / len, uy = dy / len, hl = w * 4 + 10, hw2;
+    if (hl > len * 0.9f) hl = len * 0.9f;
+    hw2 = hl * 0.45f;
+    float bx = x2 - ux * hl, by = y2 - uy * hl;
+    GpPen *p = MkPen(col, w, 2); GdipDrawLine(g, p, x1, y1, x2 - ux * hl * 0.8f, y2 - uy * hl * 0.8f); GdipDeletePen(p);
+    PointF tri[3]; tri[0].X = x2; tri[0].Y = y2;
+    tri[1].X = bx - uy * hw2; tri[1].Y = by + ux * hw2; tri[2].X = bx + uy * hw2; tri[2].Y = by - ux * hw2;
+    GpBrush *b = MkBr(col); GdipFillPolygon2(g, b, tri, 3); GdipDeleteBrush(b);
+}
+static float TxtPx(float w) { return w < 4 ? 20.f : w < 8 ? 30.f : 46.f; }
+static float NumR(float w) { return w < 4 ? 13.f : w < 8 ? 18.f : 26.f; }
+
+static void DrawShape(GpGraphics *g, Shp *s) {
+    float x = s->x1 < s->x2 ? s->x1 : s->x2, y = s->y1 < s->y2 ? s->y1 : s->y2;
+    float w = s->x1 < s->x2 ? s->x2 - s->x1 : s->x1 - s->x2, h = s->y1 < s->y2 ? s->y2 - s->y1 : s->y1 - s->y2;
+    switch (s->t) {
+    case T_PEN: case T_MARK: {
+        float lw = s->t == T_MARK ? s->w * 3.5f : s->w;
+        if (s->n == 1) { GpBrush *b = MkBr(s->col); GdipFillEllipse(g, b, s->pts[0].X - lw / 2, s->pts[0].Y - lw / 2, lw, lw); GdipDeleteBrush(b); }
+        else if (s->n > 1) { GpPen *p = MkPen(s->col, lw, s->t == T_MARK ? 0 : 2); GdipDrawCurve2(g, p, s->pts, s->n, 0.5f); GdipDeletePen(p); }
+        break;
+    }
+    case T_ARROW: Arrow(g, s->col, s->w, s->x1, s->y1, s->x2, s->y2); break;
+    case T_LINE: { GpPen *p = MkPen(s->col, s->w, 2); GdipDrawLine(g, p, s->x1, s->y1, s->x2, s->y2); GdipDeletePen(p); break; }
+    case T_RECT: { GpPen *p = MkPen(s->col, s->w, 2); GdipDrawRectangle(g, p, x, y, w, h); GdipDeletePen(p); break; }
+    case T_ELL: { GpPen *p = MkPen(s->col, s->w, 2); GdipDrawEllipse(g, p, x, y, w, h); GdipDeletePen(p); break; }
+    case T_TEXT: {
+        wchar_t t[520]; lstrcpynW(t, s->txt, 512);
+        if (s == act && typing) Cat(t, 520, L"|");
+        float px = TxtPx(s->w);
+        Text(g, t, s->x1 + 1.5f, s->y1 + 1.5f, 4000, 4000, px, 1, (s->col & 0xFFFFFF) ? 0x99000000 : 0x99FFFFFF, FALSE, L"Segoe UI");
+        Text(g, t, s->x1, s->y1, 4000, 4000, px, 1, s->col, FALSE, L"Segoe UI");
+        break;
+    }
+    case T_NUM: {
+        float r = NumR(s->w); wchar_t t[12]; wsprintfW(t, L"%d", s->num);
+        GpBrush *b = MkBr(s->col); GdipFillEllipse(g, b, s->x1 - r, s->y1 - r, r * 2, r * 2); GdipDeleteBrush(b);
+        GpPen *p = MkPen(0xCCFFFFFF, 1.5f, 2); GdipDrawEllipse(g, p, s->x1 - r, s->y1 - r, r * 2, r * 2); GdipDeletePen(p);
+        unsigned c = s->col & 0xFFFFFF; BOOL light = c == 0xFFD60A || c == 0xFFFFFF || c == 0x34C759 || c == 0xFF9500;
+        Text(g, t, s->x1 - r, s->y1 - r, r * 2, r * 2, r * 1.15f, 1, light ? 0xFF000000 : 0xFFFFFFFF, TRUE, L"Segoe UI");
+        break;
+    }
+    }
+}
+static void Pixelate(Surf *d, Shp *s) {
+    int x0 = (int)(s->x1 < s->x2 ? s->x1 : s->x2), x1 = (int)(s->x1 < s->x2 ? s->x2 : s->x1);
+    int y0 = (int)(s->y1 < s->y2 ? s->y1 : s->y2), y1 = (int)(s->y1 < s->y2 ? s->y2 : s->y1);
+    if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0; if (x1 > W) x1 = W; if (y1 > H) y1 = H;
+    int B = s->w < 4 ? 8 : s->w < 8 ? 14 : 22;
+    for (int by = y0; by < y1; by += B) for (int bx = x0; bx < x1; bx += B) {
+        int ex = bx + B < x1 ? bx + B : x1, ey = by + B < y1 ? by + B : y1, n = (ex - bx) * (ey - by);
+        unsigned r = 0, gg = 0, b = 0;
+        for (int yy = by; yy < ey; yy++) for (int xx = bx; xx < ex; xx++) {
+            DWORD c = bg.bits[(size_t)yy * W + xx]; r += (c >> 16) & 255; gg += (c >> 8) & 255; b += c & 255;
+        }
+        DWORD c = 0xFF000000 | ((r / n) << 16) | ((gg / n) << 8) | (b / n);
+        for (int yy = by; yy < ey; yy++) for (int xx = bx; xx < ex; xx++) d->bits[(size_t)yy * W + xx] = c;
+    }
+}
+// Собрать слой "фон + готовые фигуры" (без панели и без текущей фигуры).
+static void Rebuild(BOOL withBg) {
+    for (int i = 0; i < shTot; i++) shp[i]->hid = FALSE;
+    nextNum = 1;
+    for (int i = 0; i < shN; i++) if (shp[i]->t == S_DEL) shp[shp[i]->ref]->hid = TRUE;
+    for (int i = 0; i < shN; i++) if (shp[i]->t == T_NUM && !shp[i]->hid && shp[i]->num >= nextNum) nextNum = shp[i]->num + 1;
+    if (!g_dLive || withBg) memcpy(base.bits, bg.bits, (size_t)W * H * 4);
+    else { DWORD *p = base.bits; for (int i = W * H; i > 0; i--) *p++ = 0x01000000; }
+    for (int i = 0; i < shN; i++) if (shp[i]->t == T_BLUR && !shp[i]->hid) Pixelate(&base, shp[i]);
+    for (int i = 0; i < shN; i++) if (!shp[i]->hid && shp[i]->t != T_BLUR && shp[i]->t != S_DEL) DrawShape(base.g, shp[i]);
+}
+
+/* --- панель --- */
+static void SetR(int i, float x, float y, float w, float h) { ir[i].x = x; ir[i].y = y; ir[i].w = w; ir[i].h = h; }
+static void TbLayout(void) {
+    float B = 36 * sc, gp = 4 * sc, pd = 8 * sc, sp = 10 * sc, x = tbX + pd, y = tbY + pd;
+    for (int i = 0; i < 16; i++) { if (i == 10 || i == 12) x += sp; SetR(i, x, y, B, B); x += B + gp; }
+    tbW = x - gp + pd - tbX;
+    float cb = B * 0.8f; x = tbX + pd; y += B + gp;
+    for (int i = 0; i < 8; i++) { SetR(16 + i, x, y, cb, cb); x += cb + gp; }
+    x += sp;
+    for (int i = 0; i < 3; i++) { SetR(24 + i, x, y, cb * 1.5f, cb); x += cb * 1.5f + gp; }
+    tbH = pd * 2 + B + gp + cb;
+}
+static int HitTb(int x, int y) {
+    if (x < tbX || y < tbY || x >= tbX + tbW || y >= tbY + tbH) return -1;
+    for (int i = 0; i < 27; i++) if (x >= ir[i].x && x < ir[i].x + ir[i].w && y >= ir[i].y && y < ir[i].y + ir[i].h) return i;
+    return 99;
+}
+#define PX(a) (r->x + r->w * (a))
+#define PY(b) (r->y + r->h * (b))
+static void Icon(GpGraphics *g, int i, FR *r, unsigned ic) {
+    GpPen *p = MkPen(ic, 2.2f * sc, 2); GpBrush *b = MkBr(ic);
+    switch (i) {
+    case 0: { PointF q[4]; q[0].X = PX(.22f); q[0].Y = PY(.7f); q[1].X = PX(.4f); q[1].Y = PY(.32f); q[2].X = PX(.58f); q[2].Y = PY(.68f); q[3].X = PX(.78f); q[3].Y = PY(.3f); GdipDrawCurve2(g, p, q, 4, 0.5f); break; }
+    case 1: { GpPen *m = MkPen((ic & 0xFF000000) ? 0xB0FFD60A : 0x40FFD60A, r->w * 0.2f, 0); GdipDrawLine(g, m, PX(.24f), PY(.68f), PX(.76f), PY(.34f)); GdipDeletePen(m); break; }
+    case 2: Arrow(g, ic, 2.2f * sc, PX(.24f), PY(.76f), PX(.76f), PY(.24f)); break;
+    case 3: GdipDrawLine(g, p, PX(.25f), PY(.75f), PX(.75f), PY(.25f)); break;
+    case 4: GdipDrawRectangle(g, p, PX(.24f), PY(.3f), r->w * .52f, r->h * .4f); break;
+    case 5: GdipDrawEllipse(g, p, PX(.22f), PY(.26f), r->w * .56f, r->h * .48f); break;
+    case 6: Text(g, L"T", r->x, r->y, r->w, r->h, r->h * .56f, 1, ic, TRUE, L"Segoe UI"); break;
+    case 7: GdipFillEllipse(g, b, PX(.2f), PY(.2f), r->w * .6f, r->h * .6f); Text(g, L"1", r->x, r->y, r->w, r->h, r->h * .38f, 1, 0xFF202124, TRUE, L"Segoe UI"); break;
+    case 8: for (int a = 0; a < 3; a++) for (int c = 0; c < 3; c++) {
+                GpBrush *q = MkBr(((a + c) & 1) ? (ic & 0x66FFFFFF) : ic);
+                GdipFillRectangle(g, q, PX(.2f + c * .2f), PY(.2f + a * .2f), r->w * .18f, r->h * .18f); GdipDeleteBrush(q);
+            } break;
+    case 9: { PointF q[4]; q[0].X = PX(.26f); q[0].Y = PY(.62f); q[1].X = PX(.5f); q[1].Y = PY(.28f); q[2].X = PX(.78f); q[2].Y = PY(.46f); q[3].X = PX(.54f); q[3].Y = PY(.8f); GdipDrawPolygon(g, p, q, 4); GdipDrawLine(g, p, PX(.38f), PY(.45f), PX(.66f), PY(.63f)); break; }
+    case 10: Text(g, L"\x21B6", r->x, r->y, r->w, r->h, r->h * .62f, 0, ic, TRUE, L"Segoe UI Symbol"); break;
+    case 11: Text(g, L"\x21B7", r->x, r->y, r->w, r->h, r->h * .62f, 0, ic, TRUE, L"Segoe UI Symbol"); break;
+    case 12: Text(g, g_dLive ? L"LIVE" : Tr(L_D_STATIC), r->x, r->y, r->w, r->h, r->h * .3f, 1, ic, TRUE, L"Segoe UI"); break;
+    case 13: GdipDrawRectangle(g, p, PX(.26f), PY(.2f), r->w * .34f, r->h * .4f); GdipDrawRectangle(g, p, PX(.4f), PY(.4f), r->w * .34f, r->h * .4f); break;
+    case 14: GdipDrawLine(g, p, PX(.5f), PY(.2f), PX(.5f), PY(.62f)); GdipDrawLine(g, p, PX(.33f), PY(.46f), PX(.5f), PY(.64f)); GdipDrawLine(g, p, PX(.67f), PY(.46f), PX(.5f), PY(.64f));
+            GdipDrawLine(g, p, PX(.27f), PY(.78f), PX(.73f), PY(.78f)); break;
+    case 15: GdipDrawLine(g, p, PX(.3f), PY(.3f), PX(.7f), PY(.7f)); GdipDrawLine(g, p, PX(.7f), PY(.3f), PX(.3f), PY(.7f)); break;
+    }
+    GdipDeletePen(p); GdipDeleteBrush(b);
+}
+static void DrawToolbar(GpGraphics *g) {
+    GpPath *pa = RPath(tbX, tbY, tbW, tbH, 14 * sc); GpBrush *b = MkBr(0xF2202124);
+    GdipFillPath(g, b, pa); GdipDeleteBrush(b);
+    GpPen *pn = MkPen(0x40FFFFFF, 1, 0); GdipDrawPath(g, pn, pa); GdipDeletePen(pn); GdipDeletePath(pa);
+    for (int i = 0; i < 27; i++) {
+        FR *r = &ir[i];
+        BOOL sel = (i < 10 && i == tool) || (i >= 16 && i < 24 && i - 16 == g_dCol) || (i >= 24 && i - 24 == g_dWid);
+        if (i < 16) {
+            if (sel) FillRR(g, 0xFF0A84FF, r->x, r->y, r->w, r->h, 8 * sc);
+            BOOL off = (i == 10 && !shN && !typing) || (i == 11 && shN >= shTot);
+            Icon(g, i, r, off ? 0x55FFFFFF : 0xFFFFFFFF);
+        } else if (i < 24) {
+            float d = r->w * 0.74f, cx = r->x + r->w / 2 - d / 2, cy = r->y + r->h / 2 - d / 2;
+            GpBrush *c = MkBr(kCol[i - 16]); GdipFillEllipse(g, c, cx, cy, d, d); GdipDeleteBrush(c);
+            GpPen *q = MkPen(sel ? 0xFFFFFFFF : 0x66FFFFFF, sel ? 2.5f * sc : 1, 2); GdipDrawEllipse(g, q, sel ? cx - 3 * sc : cx, sel ? cy - 3 * sc : cy, sel ? d + 6 * sc : d, sel ? d + 6 * sc : d); GdipDeletePen(q);
+        } else {
+            if (sel) FillRR(g, 0xFF0A84FF, r->x, r->y, r->w, r->h, 8 * sc);
+            GpPen *q = MkPen(0xFFFFFFFF, kWid[i - 24] * 0.7f + 1, 2); GdipDrawLine(g, q, r->x + r->w * .25f, r->y + r->h / 2, r->x + r->w * .75f, r->y + r->h / 2); GdipDeletePen(q);
+        }
+    }
+}
+
+/* --- подсказка над кнопкой панели --- */
+static int hov = -1; static DWORD hovTick; static BOOL tipOn;
+static const wchar_t *const kTipKey[27] = {L"P", L"M", L"A", L"L", L"R", L"O", L"T", L"N", L"B", L"E", L"Ctrl+Z", L"Ctrl+Y", L"Tab",
+    L"Enter / Ctrl+C", L"Ctrl+S", L"Esc", NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, L"1", L"2", L"3"};
+static float MeasureW(GpGraphics *g, const wchar_t *t, float px) {
+    GpFontFamily *ff = NULL; GpFont *f = NULL; float w = 0;
+    GdipCreateFontFamilyFromName(L"Segoe UI", NULL, &ff);
+    if (!ff) return 0;
+    GdipCreateFont(ff, px, 0, UnitPixel, &f);
+    if (f) { RectF lay(0, 0, 4000, 200), bb; GdipMeasureString(g, t, -1, f, &lay, NULL, &bb, NULL, NULL); w = bb.Width; GdipDeleteFont(f); }
+    GdipDeleteFontFamily(ff); return w;
+}
+static BOOL TipVisible(void) { return hov >= 0 && !drag && !tbDrag && GetTickCount() - hovTick >= 350; }
+static void DrawTip(GpGraphics *g) {
+    int i = hov; wchar_t t[220];
+    lstrcpynW(t, Tr(i < 16 ? L_D_TT0 + i : i < 24 ? L_D_TTCOL : L_D_TTWID), 170);
+    if (kTipKey[i]) { Cat(t, 220, L"   ["); Cat(t, 220, kTipKey[i]); Cat(t, 220, L"]"); }
+    float px = 14 * sc, tw = MeasureW(g, t, px), bw = tw + 18 * sc, bh = px * 1.9f;
+    FR *r = &ir[i];
+    float x = r->x + r->w / 2 - bw / 2, y = r->y + r->h + 8 * sc;
+    if (x > W - bw - 4) x = W - bw - 4; if (x < 4) x = 4;
+    if (y + bh > H) y = r->y - bh - 8 * sc;
+    FillRR(g, 0xF2101114, x, y, bw, bh, 7 * sc);
+    Text(g, t, x, y, bw, bh, px, 0, 0xFFFFFFFF, TRUE, L"Segoe UI");
+}
+
+/* --- вывод на экран --- */
+static void Present(void) {
+    memcpy(back.bits, base.bits, (size_t)W * H * 4);
+    if (act) {
+        if (act->t == T_BLUR) {
+            Pixelate(&back, act);
+            GpPen *p = MkPen(0xCCFFFFFF, 1, 0); float x = act->x1 < act->x2 ? act->x1 : act->x2, y = act->y1 < act->y2 ? act->y1 : act->y2;
+            GdipDrawRectangle(back.g, p, x, y, act->x1 < act->x2 ? act->x2 - act->x1 : act->x1 - act->x2, act->y1 < act->y2 ? act->y2 - act->y1 : act->y1 - act->y2); GdipDeletePen(p);
+        } else DrawShape(back.g, act);
+    }
+    DrawToolbar(back.g);
+    if (TipVisible()) DrawTip(back.g);
+    POINT pd = {OX, OY}, ps = {0, 0}; SIZE sz = {W, H};
+    BLENDFUNCTION bf = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+    UpdateLayeredWindow(hw, NULL, &pd, &sz, back.dc, &ps, 0, &bf, ULW_ALPHA);
+}
+
+/* --- фигуры --- */
+static Shp *NewShp(int t) {
+    Shp *s = (Shp *)Alloc(sizeof(Shp)); s->t = t; s->col = kCol[g_dCol]; s->w = kWid[g_dWid];
+    if (t == T_MARK) s->col = (s->col & 0xFFFFFF) | 0x73000000;
+    if (t == T_TEXT) s->txt = (wchar_t *)Alloc(520 * sizeof(wchar_t));
+    return s;
+}
+static void FreeShp(Shp *s) { if (!s) return; Free(s->pts); Free(s->txt); Free(s); }
+static void AddShp(Shp *s) {
+    for (int i = shN; i < shTot; i++) FreeShp(shp[i]);
+    shTot = shN;
+    if (shN == shCap) { shCap = shCap ? shCap * 2 : 64; shp = (Shp **)Realloc(shp, shCap * sizeof(Shp *)); }
+    shp[shN++] = s; shTot = shN;
+}
+static void AddPt(Shp *s, int x, int y) {
+    if (s->n == s->cap) { s->cap = s->cap ? s->cap * 2 : 64; s->pts = (PointF *)Realloc(s->pts, s->cap * sizeof(PointF)); }
+    s->pts[s->n].X = (float)x; s->pts[s->n].Y = (float)y; s->n++;
+}
+static void CommitText(void) {
+    if (!typing) return;
+    typing = FALSE;
+    if (act && act->txt[0]) AddShp(act); else FreeShp(act);
+    act = NULL; Rebuild(FALSE); Present();
+}
+static BOOL HitShp(Shp *s, float px, float py) {
+    float tol = 8 + s->w / 2;
+    float x0 = s->x1 < s->x2 ? s->x1 : s->x2, x1 = s->x1 < s->x2 ? s->x2 : s->x1, y0 = s->y1 < s->y2 ? s->y1 : s->y2, y1 = s->y1 < s->y2 ? s->y2 : s->y1;
+    switch (s->t) {
+    case T_PEN: case T_MARK: {
+        if (s->t == T_MARK) tol = 8 + s->w * 1.75f;
+        if (s->n == 1) return SegD(px, py, s->pts[0].X, s->pts[0].Y, s->pts[0].X, s->pts[0].Y) < tol;
+        for (int i = 1; i < s->n; i++) if (SegD(px, py, s->pts[i - 1].X, s->pts[i - 1].Y, s->pts[i].X, s->pts[i].Y) < tol) return TRUE;
+        return FALSE;
+    }
+    case T_ARROW: case T_LINE: return SegD(px, py, s->x1, s->y1, s->x2, s->y2) < tol;
+    case T_RECT: case T_ELL: {
+        BOOL out = px >= x0 - tol && px <= x1 + tol && py >= y0 - tol && py <= y1 + tol;
+        BOOL in = px > x0 + tol && px < x1 - tol && py > y0 + tol && py < y1 - tol;
+        return out && !in;
+    }
+    case T_BLUR: return px >= x0 && px <= x1 && py >= y0 && py <= y1;
+    case T_NUM: { float r = NumR(s->w) + 4, dx = px - s->x1, dy = py - s->y1; return dx * dx + dy * dy <= r * r; }
+    case T_TEXT: {
+        float sz = TxtPx(s->w); int lines = 1, cur = 0, mx = 0;
+        for (const wchar_t *c = s->txt; *c; c++) { if (*c == L'\n') { lines++; cur = 0; } else if (++cur > mx) mx = cur; }
+        return px >= s->x1 - 4 && px <= s->x1 + mx * sz * 0.6f + 4 && py >= s->y1 - 4 && py <= s->y1 + lines * sz * 1.3f + 4;
+    }
+    }
+    return FALSE;
+}
+static void EraseAt(int x, int y) {
+    for (int i = shN - 1; i >= 0; i--) {
+        if (shp[i]->hid || shp[i]->t == S_DEL || !HitShp(shp[i], (float)x, (float)y)) continue;
+        Shp *d = (Shp *)Alloc(sizeof(Shp)); d->t = S_DEL; d->ref = i; AddShp(d);
+        Rebuild(FALSE); Present(); return;
+    }
+}
+
+/* --- результат --- */
+static void Close(void) { if (hw) DestroyWindow(hw); }
+static void PrepExport(void) {
+    CommitText();
+    if (g_dLive) { ShowWindow(hw, SW_HIDE); Sleep(150); Capture(); }     // живой режим: заново снять настоящий экран
+    Rebuild(TRUE);
+}
+static void DoCopy(void) {
+    PrepExport();
+    SIZE_T bytes = (SIZE_T)W * H * 4;
+    HGLOBAL hg = GlobalAlloc(GMEM_MOVEABLE, sizeof(BITMAPINFOHEADER) + bytes);
+    BOOL ok = FALSE;
+    if (hg) {
+        BYTE *p = (BYTE *)GlobalLock(hg);
+        BITMAPINFOHEADER *bh = (BITMAPINFOHEADER *)p; memset(bh, 0, sizeof *bh);
+        bh->biSize = sizeof *bh; bh->biWidth = W; bh->biHeight = H; bh->biPlanes = 1; bh->biBitCount = 32; bh->biSizeImage = (DWORD)bytes;
+        BYTE *d = p + sizeof *bh;
+        for (int y = 0; y < H; y++) memcpy(d + (size_t)y * W * 4, base.bits + (size_t)(H - 1 - y) * W, (size_t)W * 4);
+        GlobalUnlock(hg);
+        if (OpenClipboard(hw)) { EmptyClipboard(); ok = SetClipboardData(CF_DIB, hg) != NULL; CloseClipboard(); }
+        if (!ok) GlobalFree(hg);
+    }
+    Close();
+    Toast(ok ? Tr(L_D_COPIED) : Tr(L_D_COPYFAIL));
+}
+static void DoSave(void) {
+    PrepExport();
+    wchar_t dir[MAX_PATH], path[MAX_PATH + 48], nm[48];
+    if (g_dSaveDir[0]) lstrcpynW(dir, g_dSaveDir, MAX_PATH); else { lstrcpynW(dir, g_dir, MAX_PATH); Cat(dir, MAX_PATH, L"\\shots"); }
+    CreateDirectoryW(dir, NULL);
+    SYSTEMTIME st; GetLocalTime(&st);
+    wsprintfW(nm, L"Screen_%04d-%02d-%02d_%02d-%02d-%02d.png", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    lstrcpynW(path, dir, MAX_PATH); Cat(path, MAX_PATH + 48, L"\\"); Cat(path, MAX_PATH + 48, nm);
+    Status s = GdipSaveImageToFile((GpImage *)base.bmp, path, &kPng, NULL);
+    Close();
+    wchar_t msg[160]; wsprintfW(msg, Tr(L_D_SAVED), nm);
+    Toast(s == Ok ? msg : Tr(L_D_SAVEFAIL));
+}
+static void Undo(void) {
+    if (typing) { typing = FALSE; FreeShp(act); act = NULL; }
+    else if (shN > 0) shN--;
+    Rebuild(FALSE); Present();
+}
+static void Redo(void) { CommitText(); if (shN < shTot) shN++; Rebuild(FALSE); Present(); }
+static void ToggleLive(void) {
+    CommitText();
+    if (g_dLive) {                                         // живой -> статика: снять экран без оверлея
+        ShowWindow(hw, SW_HIDE); Sleep(150); g_dLive = FALSE; Capture();
+        ShowWindow(hw, SW_SHOW); ForceFg(hw);
+    } else g_dLive = TRUE;
+    Rebuild(FALSE); Present();
+}
+static void TbClick(int hit) {
+    CommitText();
+    if (hit < 10) tool = hit;
+    else if (hit == 10) { Undo(); return; }
+    else if (hit == 11) { Redo(); return; }
+    else if (hit == 12) { ToggleLive(); return; }
+    else if (hit == 13) { DoCopy(); return; }
+    else if (hit == 14) { DoSave(); return; }
+    else if (hit == 15) { Close(); return; }
+    else if (hit < 24) g_dCol = hit - 16;
+    else g_dWid = hit - 24;
+    Present();
+}
+
+/* --- ввод --- */
+static void OnDown(int x, int y) {
+    int hit = HitTb(x, y); hov = -1;
+    if (hit == 99) { tbDrag = TRUE; tbDX = x - tbX; tbDY = y - tbY; SetCapture(hw); return; }
+    if (hit >= 0) { TbClick(hit); return; }
+    CommitText();
+    if (tool == T_ERASE) { drag = TRUE; SetCapture(hw); EraseAt(x, y); return; }
+    if (tool == T_NUM) { Shp *s = NewShp(T_NUM); s->x1 = (float)x; s->y1 = (float)y; s->num = nextNum; AddShp(s); Rebuild(FALSE); Present(); return; }
+    Shp *s = NewShp(tool); s->x1 = s->x2 = (float)x; s->y1 = s->y2 = (float)y;
+    if (tool == T_PEN || tool == T_MARK) AddPt(s, x, y);
+    act = s;
+    if (tool == T_TEXT) { typing = TRUE; s->y1 = y - TxtPx(s->w) / 2; }
+    else { drag = TRUE; SetCapture(hw); }
+    Present();
+}
+static void OnMove(int x, int y) {
+    if (tbDrag) {
+        tbX = x - tbDX; tbY = y - tbDY;
+        if (tbX < 0) tbX = 0; if (tbY < 0) tbY = 0; if (tbX > W - tbW) tbX = W - tbW; if (tbY > H - tbH) tbY = H - tbH;
+        TbLayout(); Present(); return;
+    }
+    if (!drag) {
+        int hit = HitTb(x, y); if (hit < 0 || hit > 26) hit = -1;
+        if (hit != hov) { hov = hit; hovTick = GetTickCount(); Present(); }
+        return;
+    }
+    if (tool == T_ERASE) { EraseAt(x, y); return; }
+    if (!act) return;
+    if (act->t == T_PEN || act->t == T_MARK) {
+        PointF *l = &act->pts[act->n - 1]; float dx = x - l->X, dy = y - l->Y;
+        if (dx * dx + dy * dy < 4) return;
+        AddPt(act, x, y);
+    } else { act->x2 = (float)x; act->y2 = (float)y; }
+    Present();
+}
+static void OnUp(void) {
+    if (tbDrag) { tbDrag = FALSE; ReleaseCapture(); return; }
+    if (!drag) return;
+    drag = FALSE; ReleaseCapture();
+    if (act) {
+        float dx = act->x2 - act->x1, dy = act->y2 - act->y1;
+        BOOL tiny = (dx < 3 && dx > -3 && dy < 3 && dy > -3) && act->t != T_PEN && act->t != T_MARK;
+        if (tiny) FreeShp(act); else AddShp(act);
+        act = NULL; Rebuild(FALSE);
+    }
+    Present();
+}
+static void OnKey(WPARAM k) {
+    BOOL ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0, shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    if (k == VK_ESCAPE) { if (typing) Undo(); else Close(); return; }
+    if (k == VK_RETURN) {
+        if (typing) { if (shift) { int n = lstrlenW(act->txt); if (n < 510) { act->txt[n] = L'\n'; Present(); } } else CommitText(); }
+        else DoCopy();
+        return;
+    }
+    if (ctrl) {
+        if (k == 'C') DoCopy(); else if (k == 'S') DoSave();
+        else if (k == 'Z') { if (shift) Redo(); else Undo(); }
+        else if (k == 'Y') Redo();
+        return;
+    }
+    if (typing) return;
+    static const char keys[] = "PMALROTNBE";
+    for (int i = 0; i < 10; i++) if (k == (WPARAM)keys[i]) { tool = i; Present(); return; }
+    if (k >= '1' && k <= '3') { g_dWid = (int)k - '1'; Present(); }
+    else if (k == VK_TAB) ToggleLive();
+}
+static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    switch (m) {
+    case WM_ERASEBKGND: return 1;
+    case WM_SETCURSOR: {
+        POINT p; GetCursorPos(&p); ScreenToClient(h, &p);
+        SetCursor(LoadCursorW(NULL, HitTb(p.x, p.y) >= 0 ? IDC_ARROW : tool == T_TEXT ? IDC_IBEAM : IDC_CROSS));
+        return TRUE;
+    }
+    case WM_TIMER: { BOOL v = TipVisible(); if (v != tipOn) { tipOn = v; Present(); } return 0; }
+    case WM_LBUTTONDOWN: OnDown((short)LOWORD(l), (short)HIWORD(l)); return 0;
+    case WM_MOUSEMOVE: OnMove((short)LOWORD(l), (short)HIWORD(l)); return 0;
+    case WM_LBUTTONUP: OnUp(); return 0;
+    case WM_KEYDOWN: OnKey(w); return 0;
+    case WM_CHAR:
+        if (typing && act) {
+            int n = lstrlenW(act->txt);
+            if (w == 8) { if (n) act->txt[n - 1] = 0; Present(); }
+            else if (w >= 32 && n < 510) { act->txt[n] = (wchar_t)w; Present(); }
+        }
+        return 0;
+    case WM_DESTROY: {
+        wchar_t t[8];
+        IniSet(L"Draw", L"Mode", g_dLive ? L"live" : L"static");
+        wsprintfW(t, L"%d", g_dCol); IniSet(L"Draw", L"Color", t);
+        wsprintfW(t, L"%d", g_dWid); IniSet(L"Draw", L"Width", t);
+        FreeShp(act); act = NULL;
+        for (int i = 0; i < shTot; i++) FreeShp(shp[i]);
+        Free(shp); shp = NULL; shN = shTot = shCap = 0;
+        SurfFree(&bg); SurfFree(&base); SurfFree(&back);
+        GdiplusShutdown(gdiTok);
+        KillTimer(h, 1); typing = drag = tbDrag = tipOn = FALSE; hov = -1; hw = NULL;
+        return 0;
+    }
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+static void Open(void) {
+    if (hw) { DestroyWindow(hw); return; }
+    POINT pt; GetCursorPos(&pt);
+    MONITORINFO mi; mi.cbSize = sizeof mi;
+    GetMonitorInfoW(MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST), &mi);
+    OX = mi.rcMonitor.left; OY = mi.rcMonitor.top; W = mi.rcMonitor.right - OX; H = mi.rcMonitor.bottom - OY;
+    GdiplusStartupInput in;
+    if (GdiplusStartup(&gdiTok, &in, NULL) != Ok) { Toast(Tr(L_D_GDIFAIL)); return; }
+    if (!SurfNew(&bg) || !SurfNew(&base) || !SurfNew(&back)) {
+        SurfFree(&bg); SurfFree(&base); SurfFree(&back); GdiplusShutdown(gdiTok); Toast(Tr(L_D_MEMFAIL)); return;
+    }
+    Capture();
+    RegClass(L"DKDraw", Proc, 0);
+    hw = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW, L"DKDraw", L"", WS_POPUP, OX, OY, W, H, NULL, NULL, g_inst, NULL);
+    if (!hw) { SurfFree(&bg); SurfFree(&base); SurfFree(&back); GdiplusShutdown(gdiTok); return; }
+    sc = GetDpiForWindow(hw) / 96.0f;
+    tool = T_PEN; tbX = 0; tbY = 0; TbLayout();
+    tbX = (W - tbW) / 2; tbY = 16 * sc; TbLayout();
+    hov = -1; tipOn = FALSE; SetTimer(hw, 1, 150, NULL);
+    Rebuild(FALSE); Present();
+    ShowWindow(hw, SW_SHOW); ForceFg(hw); SetFocus(hw);
+}
+}   // namespace DrawNs
+static void DrawOpen(void) { DrawNs::Open(); }
+
 static void TrayMenu(void) {
     POINT pt; GetCursorPos(&pt);
     HMENU m = CreatePopupMenu(), hm = NULL;
-    AppendMenuW(m, MF_STRING, 1, L"Буферы…");
-    AppendMenuW(m, g_histOn ? MF_STRING : MF_STRING | MF_GRAYED, 2, L"История…");
-    AppendMenuW(m, MF_STRING, 3, L"Быстрый запуск…");
-    AppendMenuW(m, MF_STRING, 4, L"Вебкамеры…");
-    AppendMenuW(m, MF_POPUP, (UINT_PTR)TmMenu(), L"Секундомер и таймер");
+    AddHk(m, MF_STRING, 1, Tr(L_TRAY_BUF), A_BUFFER);
+    AddHk(m, g_histOn ? MF_STRING : MF_STRING | MF_GRAYED, 2, Tr(L_TRAY_HIST), A_HIST);
+    AddHk(m, MF_STRING, 3, Tr(L_TRAY_LAUNCH), A_LAUNCH);
+    AddHk(m, MF_STRING, 4, Tr(L_TRAY_CAM), A_WEBCAM);
+    AddHk(m, MF_STRING, 5, Tr(L_TRAY_DRAW), A_DRAW);
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)TmMenu(), Tr(L_TRAY_TIMER));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(m, MF_STRING | (g_histOn ? MF_CHECKED : 0), 10, L"Своя история буфера (Win+V)");
-    AppendMenuW(m, MF_STRING | (AutoGet() ? MF_CHECKED : 0), 11, L"Автозапуск");
-    AppendMenuW(m, MF_STRING | (g_paused ? MF_CHECKED : 0), 15, L"Пауза");
-    if (!g_elev) AppendMenuW(m, MF_STRING, 17, L"Перезапустить от администратора");
+    AddHk(m, MF_STRING | (g_histOn ? MF_CHECKED : 0), 10, Tr(L_TRAY_HISTON), A_HIST);
+    AppendMenuW(m, MF_STRING | (AutoGet() ? MF_CHECKED : 0), 11, Tr(L_TRAY_AUTO));
+    AddHk(m, MF_STRING | (g_paused ? MF_CHECKED : 0), 15, Tr(L_TRAY_PAUSE), A_PAUSE);
+    if (!g_elev) AppendMenuW(m, MF_STRING, 17, Tr(L_TRAY_ELEV));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     for (int i = g_nhid - 1; i >= 0; i--) if (!IsWindow(g_hid[i])) { memmove(g_hid + i, g_hid + i + 1, (g_nhid - i - 1) * sizeof(HWND)); g_nhid--; }
     if (g_nhid) {
@@ -2379,16 +3102,16 @@ static void TrayMenu(void) {
             wchar_t t[64], e[140]; GetWindowTextW(g_hid[i], t, 50);
             int o = 0; for (int j = 0; t[j] && o < 130; j++) { if (t[j] == L'&') e[o++] = L'&'; e[o++] = t[j]; }
             e[o] = 0;
-            AppendMenuW(hm, MF_STRING, 200 + i, *e ? e : L"(без названия)");
+            AppendMenuW(hm, MF_STRING, 200 + i, *e ? e : Tr(L_TRAY_NONAME));
         }
-        AppendMenuW(m, MF_POPUP, (UINT_PTR)hm, L"Спрятанные окна");
+        AppendMenuW(m, MF_POPUP, (UINT_PTR)hm, Tr(L_TRAY_HIDDEN));
         AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     }
-    AppendMenuW(m, MF_STRING, 12, L"Открыть DKeys.ini");
-    AppendMenuW(m, MF_STRING, 13, L"Открыть папку memory");
-    AppendMenuW(m, MF_STRING, 14, L"Перечитать настройки");
+    AppendMenuW(m, MF_STRING, 12, Tr(L_TRAY_INI));
+    AppendMenuW(m, MF_STRING, 13, Tr(L_TRAY_MEM));
+    AppendMenuW(m, MF_STRING, 14, Tr(L_TRAY_RELOAD));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(m, MF_STRING, 16, L"Выход");
+    AppendMenuW(m, MF_STRING, 16, Tr(L_TRAY_EXIT));
     SetForegroundWindow(g_hwnd);
     int c = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, g_hwnd, NULL);
     PostMessageW(g_hwnd, WM_NULL, 0, 0);
@@ -2398,6 +3121,7 @@ static void TrayMenu(void) {
     case 2: PopupOpen(PM_HIST); break;
     case 3: PopupOpen(PM_LAUNCH); break;
     case 4: CamOpen(); break;
+    case 5: Sleep(150); DrawOpen(); break;      // пауза: меню успевает исчезнуть с экрана
     case 10: SetHistory(!g_histOn); break;
     case 11: AutoSet(!AutoGet()); break;
     case 15: InterlockedExchange(&g_paused, !g_paused); break;
