@@ -103,7 +103,8 @@ static BOOL g_elev;
 static HICON g_icon;
 static int g_mouseSlow = 4;   // [General] MouseSlow: во сколько раз замедлять мышь при зажатом Alt в пипетке (0/1 - выкл)
 static volatile LONG g_pickActive;
-static BOOL g_rNoTb = TRUE, g_rCur = TRUE; static int g_rFps = 30, g_rPos[2] = {-99999, -99999}, g_rAll; static wchar_t g_rMic[80];   // [Record] в ini: без панели задач, курсор, кадры/с, позиция кнопки
+static BOOL g_rNoTb = TRUE, g_rCur = TRUE; static int g_rFps = 30, g_rPos[2] = {-99999, -99999}, g_rScr;   // g_rScr: 0 - монитор с кнопкой, -1 - весь рабочий стол, N - монитор N
+static BOOL g_rDummy; static wchar_t g_rMic[80];   // [Record] в ini: без панели задач, курсор, кадры/с, позиция кнопки
 static BOOL g_dLive; static int g_dCol, g_dWid = 1; static wchar_t g_dSaveDir[MAX_PATH];   // [Draw] в ini: режим, цвет, толщина, папка
 static COLORREF g_tmFg = RGB(255, 255, 255), g_tmBg = RGB(0, 0, 0);               // [Timer] в ini
 static int g_tmFav[10], g_tmNFav;                                                  // избранное: секунды
@@ -142,7 +143,9 @@ X(L_TRAY_RECSET, "tray.record_settings", L"Настройки записи") \
 X(L_REC_NOTB, "rec.no_taskbar", L"Не снимать панель задач") \
 X(L_REC_CUR, "rec.cursor", L"Снимать курсор мыши") \
 X(L_REC_FPS, "rec.fps", L"%d кадров/с") \
-X(L_REC_ALL, "rec.all_screens", L"Весь рабочий стол (иначе монитор с кнопкой)") \
+X(L_REC_ALL, "rec.desktop", L"Весь рабочий стол") \
+X(L_REC_BTN, "rec.btn_monitor", L"Монитор с кнопкой") \
+X(L_REC_MON, "rec.monitor", L"Монитор %d (%dx%d)") \
 X(L_REC_MIC, "rec.mic", L"Микрофон") \
 X(L_REC_MICDEF, "rec.mic_default", L"По умолчанию") \
 X(L_REC_MICOFF, "rec.mic_off", L"Без звука") \
@@ -530,7 +533,7 @@ static const char *kIni1 = u8R"INI(; DKeys - настройки. Коммент�
 ;   Ctrl+Z / Ctrl+Y - отмена / возврат, Enter или Ctrl+C - в буфер и закрыть, Ctrl+S - PNG в папку shots, Esc - закрыть.
 ; Настройки модулей (правятся и из меню значка, руками - по желанию):
 ;   [Draw]    Mode=live|static  Color=0-7  Width=0-2  SaveDir=папка для PNG
-;   [Record]  NoTaskbar=1|0 (не снимать панель задач)  Cursor=1|0  Fps=15|30|60  AllScreens=1|0 (весь рабочий стол, иначе монитор с кнопкой)
+;   [Record]  NoTaskbar=1|0 (не снимать панель задач)  Cursor=1|0  Fps=15|30|60  Screen=0 (монитор с кнопкой)|1-8 (номер монитора)|all (весь рабочий стол)
 ;             Mic= пусто - микрофон по умолчанию, "-" - без звука, иначе имя устройства  Pos=x,y (кнопка)
 ;   [Timer]   FontColor BgColor (RRGGBB)  BgAlpha 0-100  Size  EndAction 0 сигнал|1 выключить|2 перезагрузить  Favorites=секунды,...  Pos=x,y
 ;   [Camera]  Device  Resolution=ШxВ  Window=x,y,ш,в
@@ -783,7 +786,8 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
     } else if (!lstrcmpiW(s, L"Record")) {
         if (!lstrcmpiW(k, L"NoTaskbar")) g_rNoTb = ToInt(v) != 0;
         else if (!lstrcmpiW(k, L"Cursor")) g_rCur = ToInt(v) != 0;
-        else if (!lstrcmpiW(k, L"AllScreens")) g_rAll = ToInt(v) != 0;
+        else if (!lstrcmpiW(k, L"AllScreens")) { if (ToInt(v)) g_rScr = -1; }
+        else if (!lstrcmpiW(k, L"Screen")) g_rScr = !lstrcmpiW(v, L"all") ? -1 : ToInt(v) > 0 && ToInt(v) <= 8 ? ToInt(v) : 0;
         else if (!lstrcmpiW(k, L"Mic")) lstrcpynW(g_rMic, v, 80);
         else if (!lstrcmpiW(k, L"Fps")) { g_rFps = ToInt(v); if (g_rFps != 15 && g_rFps != 60) g_rFps = 30; }
         else if (!lstrcmpiW(k, L"Pos")) { const wchar_t *q = v; g_rPos[0] = ToInt(q); while (*q && *q != L',') q++; g_rPos[1] = *q ? ToInt(q + 1) : -99999; }
@@ -3779,11 +3783,14 @@ static DWORD WINAPI Worker(LPVOID) {
     CoUninitialize(); return 0;
 }
 static void Repaint(void) { if (hw) InvalidateRect(hw, NULL, FALSE); }
+static BOOL CALLBACK MonCb(HMONITOR m, HDC, LPRECT, LPARAM l) { HMONITOR *a = (HMONITOR *)l; for (int i = 0; i < 8; i++) if (!a[i]) { a[i] = m; break; } return TRUE; }
+static int Mons(HMONITOR *hm) { memset(hm, 0, 8 * sizeof(HMONITOR)); EnumDisplayMonitors(NULL, NULL, MonCb, (LPARAM)hm); int n = 0; while (n < 8 && hm[n]) n++; return n; }
 static void Start(void) {
     if (recording || !hw) return;
     MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoW(MonitorFromWindow(hw, MONITOR_DEFAULTTONEAREST), &mi);
     cr = g_rNoTb ? mi.rcWork : mi.rcMonitor;                 // рабочая область = без панели задач
-    if (g_rAll) { cr.left = GetSystemMetrics(SM_XVIRTUALSCREEN); cr.top = GetSystemMetrics(SM_YVIRTUALSCREEN); cr.right = cr.left + GetSystemMetrics(SM_CXVIRTUALSCREEN); cr.bottom = cr.top + GetSystemMetrics(SM_CYVIRTUALSCREEN); }
+    if (g_rScr < 0) { cr.left = GetSystemMetrics(SM_XVIRTUALSCREEN); cr.top = GetSystemMetrics(SM_YVIRTUALSCREEN); cr.right = cr.left + GetSystemMetrics(SM_CXVIRTUALSCREEN); cr.bottom = cr.top + GetSystemMetrics(SM_CYVIRTUALSCREEN); }
+    else if (g_rScr > 0) { HMONITOR hm[8]; int n = Mons(hm); if (g_rScr <= n) { MONITORINFO m2; m2.cbSize = sizeof m2; if (GetMonitorInfoW(hm[g_rScr - 1], &m2)) cr = g_rNoTb ? m2.rcWork : m2.rcMonitor; } }
     if (areaOn) cr = area;                                    // выбранная область важнее настроек монитора
     static BOOL csInit; if (!csInit) { InitializeCriticalSection(&cs); csInit = TRUE; }
     paused = 0;
@@ -3959,7 +3966,15 @@ static HMENU Menu(void) {
     HMENU m = CreatePopupMenu(); wchar_t t[64];
     AppendMenuW(m, MF_STRING | (g_rNoTb ? MF_CHECKED : 0), 20, Tr(L_REC_NOTB));
     AppendMenuW(m, MF_STRING | (g_rCur ? MF_CHECKED : 0), 21, Tr(L_REC_CUR));
-    AppendMenuW(m, MF_STRING | (g_rAll ? MF_CHECKED : 0), 26, Tr(L_REC_ALL));
+    AppendMenuW(m, MF_STRING | (g_rScr == 0 ? MF_CHECKED : 0), 27, Tr(L_REC_BTN));
+    { HMONITOR hm[8]; int n = Mons(hm);
+      for (int i = 0; i < n; i++) {
+          MONITORINFO m2; m2.cbSize = sizeof m2; wchar_t e[80]; if (!GetMonitorInfoW(hm[i], &m2)) continue;
+          wsprintfW(e, Tr(L_REC_MON), i + 1, m2.rcMonitor.right - m2.rcMonitor.left, m2.rcMonitor.bottom - m2.rcMonitor.top);
+          AppendMenuW(m, MF_STRING | (g_rScr == i + 1 ? MF_CHECKED : 0), 50 + i, e);
+      } }
+    AppendMenuW(m, MF_STRING | (g_rScr < 0 ? MF_CHECKED : 0), 26, Tr(L_REC_ALL));
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_POPUP, (UINT_PTR)MicMenu(), Tr(L_REC_MIC));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     static const int f[3] = {15, 30, 60};
@@ -3973,7 +3988,9 @@ static void Cmd(int c) {
     if (c == 20) { g_rNoTb = !g_rNoTb; IniSet(L"Record", L"NoTaskbar", g_rNoTb ? L"1" : L"0"); }
     else if (c == 21) { g_rCur = !g_rCur; IniSet(L"Record", L"Cursor", g_rCur ? L"1" : L"0"); }
     else if (c >= 22 && c <= 24) { g_rFps = c == 22 ? 15 : c == 23 ? 30 : 60; wsprintfW(v, L"%d", g_rFps); IniSet(L"Record", L"Fps", v); }
-    else if (c == 26) { g_rAll = !g_rAll; IniSet(L"Record", L"AllScreens", g_rAll ? L"1" : L"0"); }
+    else if (c == 26 || c == 27 || (c >= 50 && c < 58)) {
+        g_rScr = c == 26 ? -1 : c == 27 ? 0 : c - 49; wsprintfW(v, L"%d", g_rScr); IniSet(L"Record", L"Screen", c == 26 ? L"all" : v);
+    }
     else if (c >= 30 && c < 48) {
         if (c == 30) g_rMic[0] = 0; else if (c == 31) { g_rMic[0] = L'-'; g_rMic[1] = 0; } else lstrcpynW(g_rMic, micList[c - 32], 80);
         IniSet(L"Record", L"Mic", g_rMic);
@@ -4039,7 +4056,7 @@ static void TrayMenu(void) {
     case 14: Reload(); break;
     case 16: DestroyWindow(g_hwnd); break;
     default:
-        if (c >= 20 && c < 50) RecNs::Cmd(c);
+        if (c >= 20 && c < 60) RecNs::Cmd(c);
         else if (c >= TM_ID && c < TM_ID + 80) TmCommand(c);
         else if (c >= 200 && c < 200 + 32) ShowHidden(c - 200);
     }
