@@ -85,6 +85,8 @@ static DWORD g_hookTid;
 static UINT g_msgTaskbar;
 static BOOL g_elev;
 static HICON g_icon;
+static int g_mouseSlow = 4;   // [General] MouseSlow: во сколько раз замедлять мышь при зажатом Alt в пипетке (0/1 - выкл)
+static volatile LONG g_pickActive;
 static BOOL g_dLive; static int g_dCol, g_dWid = 1; static wchar_t g_dSaveDir[MAX_PATH];   // [Draw] в ini: режим, цвет, толщина, папка
 static COLORREF g_tmFg = RGB(255, 255, 255), g_tmBg = RGB(0, 0, 0);               // [Timer] в ini
 static int g_tmFav[10], g_tmNFav;                                                  // избранное: секунды
@@ -507,6 +509,8 @@ Python=python.exe
 PyRunPause=1
 ; Всплывающие подсказки внизу экрана
 Toasts=1
+; В пипетке при зажатом Alt мышь движется медленнее в N раз (точное наведение). 0 или 1 - выключено
+MouseSlow=4
 ; Язык интерфейса: файл langs\<язык>.ini (создаётся сам; для перевода скопируйте ru.ini и поменяйте тексты)
 Language=ru
 
@@ -702,6 +706,7 @@ static COLORREF HexRgb(const wchar_t *s) {
 static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
     if (!lstrcmpiW(s, L"General")) {
         if (!lstrcmpiW(k, L"Language")) lstrcpynW(g_lang, v, 16);
+        else if (!lstrcmpiW(k, L"MouseSlow")) { g_mouseSlow = ToInt(v); if (g_mouseSlow < 0 || g_mouseSlow > 20) g_mouseSlow = 4; }
         else if (!lstrcmpiW(k, L"HistoryEnabled")) g_histOn = ToInt(v) != 0;
         else if (!lstrcmpiW(k, L"HistoryMax")) { g_histMax = ToInt(v); if (g_histMax < 5) g_histMax = 5; if (g_histMax > 1000) g_histMax = 1000; }
         else if (!lstrcmpiW(k, L"PasteDelay")) { g_pasteDelay = ToInt(v); if (g_pasteDelay < 50) g_pasteDelay = 50; }
@@ -1928,7 +1933,20 @@ static LRESULT CALLBACK LLKbd(int code, WPARAM wp, LPARAM lp) {
     TypedKey(k, mods);
     return CallNextHookEx(NULL, code, wp, lp);
 }
+static int g_slowRx, g_slowRy;   // остаток движения мыши в долях при замедлении
 static LRESULT CALLBACK LLMouse(int code, WPARAM wp, LPARAM lp) {
+    if (code == HC_ACTION && wp == WM_MOUSEMOVE && g_pickActive && g_mouseSlow > 1) {
+        MSLLHOOKSTRUCT *m = (MSLLHOOKSTRUCT *)lp;
+        if (!(m->flags & LLMHF_INJECTED) && (g_modBits & 12)) {            // Alt зажат: движение делим на g_mouseSlow
+            POINT cur; GetCursorPos(&cur);
+            int tx = (m->pt.x - cur.x) + g_slowRx, ty = (m->pt.y - cur.y) + g_slowRy;
+            int sx = tx / g_mouseSlow, sy = ty / g_mouseSlow;
+            g_slowRx = tx - sx * g_mouseSlow; g_slowRy = ty - sy * g_mouseSlow;
+            if (sx || sy) SetCursorPos(cur.x + sx, cur.y + sy);
+            return 1;
+        }
+        g_slowRx = g_slowRy = 0;
+    }
     if (code == HC_ACTION && (wp == WM_LBUTTONDOWN || wp == WM_RBUTTONDOWN || wp == WM_MBUTTONDOWN || wp == WM_XBUTTONDOWN)) {
         TypedClear();
         if (g_popup) {
@@ -3179,7 +3197,7 @@ static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (mdc) { SelectObject(mdc, hbOld); DeleteDC(mdc); mdc = NULL; }
         if (hb) { DeleteObject(hb); hb = NULL; }
         if (font) { DeleteObject(font); font = NULL; }
-        hw = NULL; return 0;
+        InterlockedExchange(&g_pickActive, 0); hw = NULL; return 0;
     }
     return DefWindowProcW(h, m, w, l);
 }
@@ -3200,6 +3218,7 @@ static void Open(void) {
     if (!hw) { SelectObject(mdc, hbOld); DeleteDC(mdc); mdc = NULL; DeleteObject(hb); hb = NULL; DeleteObject(font); font = NULL; return; }
     havePrev = FALSE;
     ShowWindow(hw, SW_SHOW); ForceFg(hw); SetFocus(hw);
+    InterlockedExchange(&g_pickActive, 1);
 }
 }   // namespace PickNs
 static void PickerOpen(void) { PickNs::Open(); }
