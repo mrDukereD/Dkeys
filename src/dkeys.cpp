@@ -76,6 +76,7 @@ static DWORD g_hookTid;
 static UINT g_msgTaskbar;
 static BOOL g_elev;
 static HICON g_icon;
+static wchar_t g_cfgCamDev[80]; static int g_cfgCamW, g_cfgCamH, g_cfgWin[4];   // [Camera] в ini: камера, разрешение, x,y,ширина,высота окна
 static DWORD g_ignoreSeq, g_ownSeq;
 
 static int g_histOn, g_histMax = 50, g_pasteDelay = 300, g_copyTimeout = 600, g_pyPause = 1, g_toasts = 1;
@@ -535,6 +536,15 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
         if (!ParseHotkey(k, &b.mods, &b.key) || !ParseAction(v, &b)) { Free(b.arg); Free(b.dir); return; }
         if (g_nbnew >= g_bnewCap) { g_bnewCap = g_bnewCap ? g_bnewCap * 2 : 64; g_bnew = (Bind *)Realloc(g_bnew, g_bnewCap * sizeof(Bind)); }
         g_bnew[g_nbnew++] = b;
+    } else if (!lstrcmpiW(s, L"Camera")) {
+        if (!lstrcmpiW(k, L"Device")) lstrcpynW(g_cfgCamDev, v, 80);
+        else if (!lstrcmpiW(k, L"Resolution")) {
+            g_cfgCamW = ToInt(v); const wchar_t *x = v; while (*x && *x != L'x' && *x != L'X') x++;
+            g_cfgCamH = *x ? ToInt(x + 1) : 0;
+        } else if (!lstrcmpiW(k, L"Window")) {
+            const wchar_t *q = v;
+            for (int i = 0; i < 4; i++) { g_cfgWin[i] = ToInt(q); while (*q && *q != L',') q++; if (*q) q++; }
+        }
     } else if (!lstrcmpiW(s, L"Launcher")) {
         g_launch = (KV *)Realloc(g_launch, (g_nlaunch + 1) * sizeof(KV));
         g_launch[g_nlaunch].k = Dup(k); g_launch[g_nlaunch].v = Dup(v); g_nlaunch++;
@@ -1954,6 +1964,10 @@ static BOOL CamStart(int dev, int ri) {
     if (ok) {
         g_cgb->SetFiltergraph(g_gb); g_gb->AddFilter(g_capf, L"Cam");
         CamLoadRes();
+        if (ri < 0) {                           // -1: разрешение из ini, иначе самое большое
+            ri = 0;
+            for (int k = 0; k < g_nres; k++) if (g_res[k].w == g_cfgCamW && g_res[k].h == g_cfgCamH) ri = k;
+        }
         if (ri >= g_nres) ri = 0;
         if (g_nres) CamSetFmt(ri);
         g_curRes = ri;
@@ -1988,10 +2002,15 @@ static void CamSizeWindow(BOOL center) {      // родной размер ка�
     if (!center) mon = MonitorFromWindow(g_hwndCam, MONITOR_DEFAULTTONEAREST);
     int dw, dh, mcw, mch; CamLimits(mon, &dw, &dh, &mcw, &mch);
     int cw = g_vidW, ch = g_vidH;
+    BOOL saved = center && g_cfgWin[2] > dw;     // при открытии - размер и место из ini
+    if (saved) { cw = g_cfgWin[2] - dw; ch = MulDiv(cw, g_vidH, g_vidW); }
     if (cw > mcw) { cw = mcw; ch = MulDiv(cw, g_vidH, g_vidW); }
     if (ch > mch) { ch = mch; cw = MulDiv(ch, g_vidW, g_vidH); }
     int W = cw + dw, H = ch + dh;
-    if (center) {
+    RECT sr = {g_cfgWin[0], g_cfgWin[1], g_cfgWin[0] + W, g_cfgWin[1] + H};
+    if (saved && MonitorFromRect(&sr, MONITOR_DEFAULTTONULL))
+        SetWindowPos(g_hwndCam, NULL, sr.left, sr.top, W, H, SWP_NOZORDER | SWP_NOACTIVATE);
+    else if (center) {
         MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoW(mon, &mi);
         SetWindowPos(g_hwndCam, NULL, (mi.rcMonitor.left + mi.rcMonitor.right - W) / 2, (mi.rcMonitor.top + mi.rcMonitor.bottom - H) / 2, W, H, SWP_NOZORDER | SWP_NOACTIVATE);
     } else SetWindowPos(g_hwndCam, NULL, 0, 0, W, H, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE);
@@ -2014,6 +2033,19 @@ static void CamFull(BOOL on) {
         SetWindowPos(g_hwndCam, NULL, g_camSaved.left, g_camSaved.top, g_camSaved.right - g_camSaved.left, g_camSaved.bottom - g_camSaved.top, SWP_FRAMECHANGED | SWP_NOZORDER | SWP_SHOWWINDOW);
     }
     CamLayout();
+}
+static void CamSave(void) {                  // запомнить в ini камеру, разрешение, положение и размер окна
+    wchar_t v[64]; RECT r;
+    if (g_camFull) r = g_camSaved;
+    else { WINDOWPLACEMENT wp; wp.length = sizeof wp; GetWindowPlacement(g_hwndCam, &wp); r = wp.rcNormalPosition; }
+    g_cfgWin[0] = r.left; g_cfgWin[1] = r.top; g_cfgWin[2] = r.right - r.left; g_cfgWin[3] = r.bottom - r.top;
+    wsprintfW(v, L"%d,%d,%d,%d", g_cfgWin[0], g_cfgWin[1], g_cfgWin[2], g_cfgWin[3]);
+    IniSet(L"Camera", L"Window", v);
+    if (g_curDev < g_ncam) { lstrcpynW(g_cfgCamDev, g_camName[g_curDev], 80); IniSet(L"Camera", L"Device", g_cfgCamDev); }
+    if (g_nres > 0) {
+        g_cfgCamW = g_res[g_curRes].w; g_cfgCamH = g_res[g_curRes].h;
+        wsprintfW(v, L"%dx%d", g_cfgCamW, g_cfgCamH); IniSet(L"Camera", L"Resolution", v);
+    }
 }
 static LRESULT CALLBACK CamProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
@@ -2052,7 +2084,7 @@ static LRESULT CALLBACK CamProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             return TRUE;
         }
         break;
-    case WM_CLOSE: DestroyWindow(h); return 0;
+    case WM_CLOSE: CamSave(); DestroyWindow(h); return 0;
     case WM_DESTROY:
         CamStop();
         if (g_camFull) DestroyMenu(g_camMenu);
@@ -2073,7 +2105,9 @@ static void CamOpen(void) {
     AppendMenuW(g_camMenu, MF_STRING, CAM_FULL, L"Полный экран (F11)");
     g_hwndCam = CreateWindowExW(0, L"DKCam", L"Вебкамера", CAMSTYLE, CW_USEDEFAULT, CW_USEDEFAULT, 640, 480, NULL, g_camMenu, g_inst, NULL);
     if (!g_hwndCam) { DestroyMenu(g_camMenu); return; }
-    CamStart(0, 0);
+    int dev = 0;
+    for (int i = 0; i < g_ncam; i++) if (!lstrcmpiW(g_camName[i], g_cfgCamDev)) dev = i;
+    CamStart(dev, -1);
     CamMenuBuild();
     CamSizeWindow(TRUE);
     ShowWindow(g_hwndCam, SW_SHOW);
