@@ -13,6 +13,17 @@
 #include <gdiplus.h>
 #define NO_DSHOW_STRSAFE
 #include <dshow.h>
+#include <mfapi.h>
+#include <mfidl.h>
+#include <mfreadwrite.h>
+#include <initguid.h>
+#include <mmdeviceapi.h>
+#include <audioclient.h>
+#include <propidl.h>
+DEFINE_GUID(CLSID_MMDeviceEnumerator, 0xBCDE0395, 0xE52F, 0x467C, 0x8E, 0x3D, 0xC4, 0x57, 0x92, 0x91, 0x69, 0x2E);
+DEFINE_GUID(IID_IMMDeviceEnumerator, 0xA95664D2, 0x9614, 0x4F35, 0xA7, 0x46, 0xDE, 0x8D, 0xB6, 0x36, 0x17, 0xE6);
+DEFINE_GUID(IID_IAudioClient, 0x1CB9AD4C, 0xDBFA, 0x4C32, 0xB1, 0x78, 0xC2, 0xF5, 0x68, 0xA7, 0x03, 0xB2);
+DEFINE_GUID(IID_IAudioCaptureClient, 0xC8ADBD64, 0xE71E, 0x48A0, 0xA4, 0xDE, 0x18, 0x5C, 0x39, 0x5C, 0xD3, 0x17);
 #include <stdarg.h>
 
 #pragma comment(lib, "kernel32.lib")
@@ -26,6 +37,10 @@
 #pragma comment(lib, "uuid.lib")
 #pragma comment(lib, "comdlg32.lib")
 #pragma comment(lib, "gdiplus.lib")
+#pragma comment(lib, "mfplat.lib")
+#pragma comment(lib, "mfreadwrite.lib")
+#pragma comment(lib, "mfuuid.lib")
+#pragma comment(lib, "winmm.lib")
 
 #pragma optimize("", off)
 extern "C" {
@@ -47,7 +62,7 @@ void *memmove(void *d, const void *s, size_t n) {
 
 #define DKMARK ((ULONG_PTR)0x444B4559)
 enum { DM_CTRL = 1, DM_ALT = 2, DM_SHIFT = 4, DM_WIN = 8 };
-enum { A_NONE, A_COPY, A_PASTE, A_BUFFER, A_HIST, A_LAUNCH, A_RUN, A_ADMIN, A_PY, A_PYRUN, A_TOPMOST, A_TOTRAY, A_LAYOUT, A_PAUSE, A_WEBCAM, A_STOPWATCH, A_TIMER, A_DRAW, A_PICKER };
+enum { A_NONE, A_COPY, A_PASTE, A_BUFFER, A_HIST, A_LAUNCH, A_RUN, A_ADMIN, A_PY, A_PYRUN, A_TOPMOST, A_TOTRAY, A_LAYOUT, A_PAUSE, A_WEBCAM, A_STOPWATCH, A_TIMER, A_DRAW, A_PICKER, A_RECORD };
 enum { PM_BUF, PM_HIST, PM_LAUNCH };
 enum {
     WM_APP_HOT = WM_APP + 1, WM_APP_KEY, WM_APP_CLOSE, WM_APP_PCLICK, WM_APP_PTAB, WM_TRAY, WM_APP_RENDERED,
@@ -70,6 +85,7 @@ static IUnknown *CamObj(int k);
 static void TmToggle(int mode);
 static void DrawOpen(void);
 static void PickerOpen(void);
+static void RecOpen(void);
 static BOOL RegClass(const wchar_t *name, WNDPROC proc, UINT style);
 struct BB { BYTE *p; DWORD n, cap; };
 
@@ -87,6 +103,7 @@ static BOOL g_elev;
 static HICON g_icon;
 static int g_mouseSlow = 4;   // [General] MouseSlow: во сколько раз замедлять мышь при зажатом Alt в пипетке (0/1 - выкл)
 static volatile LONG g_pickActive;
+static BOOL g_rNoTb = TRUE, g_rCur = TRUE; static int g_rFps = 30, g_rPos[2] = {-99999, -99999}, g_rAll; static wchar_t g_rMic[80];   // [Record] в ini: без панели задач, курсор, кадры/с, позиция кнопки
 static BOOL g_dLive; static int g_dCol, g_dWid = 1; static wchar_t g_dSaveDir[MAX_PATH];   // [Draw] в ini: режим, цвет, толщина, папка
 static COLORREF g_tmFg = RGB(255, 255, 255), g_tmBg = RGB(0, 0, 0);               // [Timer] в ini
 static int g_tmFav[10], g_tmNFav;                                                  // избранное: секунды
@@ -119,6 +136,19 @@ X(L_TRAY_LAUNCH, "tray.launcher", L"Быстрый запуск…") \
 X(L_TRAY_CAM, "tray.webcam", L"Вебкамеры…") \
 X(L_TRAY_DRAW, "tray.draw", L"Рисовалка на экране…") \
 X(L_TRAY_PICK, "tray.picker", L"Пипетка (цвет в буфер)…") \
+X(L_TRAY_REC, "tray.record", L"Запись экрана…") \
+X(L_TRAY_RECSTOP, "tray.record_stop", L"Остановить запись") \
+X(L_TRAY_RECSET, "tray.record_settings", L"Настройки записи") \
+X(L_REC_NOTB, "rec.no_taskbar", L"Не снимать панель задач") \
+X(L_REC_CUR, "rec.cursor", L"Снимать курсор мыши") \
+X(L_REC_FPS, "rec.fps", L"%d кадров/с") \
+X(L_REC_ALL, "rec.all_screens", L"Весь рабочий стол (иначе монитор с кнопкой)") \
+X(L_REC_MIC, "rec.mic", L"Микрофон") \
+X(L_REC_MICDEF, "rec.mic_default", L"По умолчанию") \
+X(L_REC_MICOFF, "rec.mic_off", L"Без звука") \
+X(L_REC_DIR, "rec.open_dir", L"Папка с видео") \
+X(L_REC_SAVED, "rec.saved", L"Видео сохранено: %s") \
+X(L_REC_FAIL, "rec.fail", L"Не удалось начать запись") \
 X(L_PK_COPIED, "picker.copied", L"Цвет %s скопирован в буфер") \
 X(L_TRAY_TIMER, "tray.timer", L"Секундомер и таймер") \
 X(L_TRAY_HISTON, "tray.history_on", L"Своя история буфера") \
@@ -489,7 +519,21 @@ static const char *kIni1 = u8R"INI(; DKeys - настройки. Коммент�
 ;     webcam                    окно предпросмотра веб-камеры (есть и в меню значка)
 ;     stopwatch / timer         секундомер / таймер: старт-пауза (настройки - в меню значка, секция [Timer])
 ;     colorpicker               пипетка: клик - цвет пикселя (#RRGGBB) в буфер, стрелки - сдвиг на 1 пиксель, Esc - отмена
+;     picker                    то же, что colorpicker
 ;     draw                      рисовалка на экране (пометки, стрелки, номера, скрытие; стоп-кадр или поверх живого экрана; секция [Draw])
+;     record                    запись экрана в mp4 (папка videos): кнопка-кружок: клик - старт/стоп, Ctrl+клик - пауза (на паузе клик - продолжить, Ctrl+клик - стоп), Shift+клик - выбрать область
+;                               (Shift при рисовании - пропорции экрана; клик без рамки - сбросить область); хоткей при записи = стоп
+;
+; Внутри рисовалки (draw): P перо, M маркер, A стрелка, L линия, R прямоугольник, O овал, T текст (Enter - готово), N номер, B размытие, E ластик,
+;   S затемнить всё кроме области, C область сохранения, Z лупа, 1-3 толщина, H подсветка курсора, Tab живой экран / снимок,
+;   D и Shift+D - следующий / предыдущий монитор, Ctrl+мышь - двигать, менять размер и поворачивать готовую фигуру,
+;   Ctrl+Z / Ctrl+Y - отмена / возврат, Enter или Ctrl+C - в буфер и закрыть, Ctrl+S - PNG в папку shots, Esc - закрыть.
+; Настройки модулей (правятся и из меню значка, руками - по желанию):
+;   [Draw]    Mode=live|static  Color=0-7  Width=0-2  SaveDir=папка для PNG
+;   [Record]  NoTaskbar=1|0 (не снимать панель задач)  Cursor=1|0  Fps=15|30|60  AllScreens=1|0 (весь рабочий стол, иначе монитор с кнопкой)
+;             Mic= пусто - микрофон по умолчанию, "-" - без звука, иначе имя устройства  Pos=x,y (кнопка)
+;   [Timer]   FontColor BgColor (RRGGBB)  BgAlpha 0-100  Size  EndAction 0 сигнал|1 выключить|2 перезагрузить  Favorites=секунды,...  Pos=x,y
+;   [Camera]  Device  Resolution=ШxВ  Window=x,y,ш,в
 ; Win+цифры буферов перекрывают запуск закреплённых программ на панели задач.
 ; В меню буфера: Del - удалить, F2 - править, Ins - новая запись, Ctrl+Вверх/Вниз - переставить,
 ; Влево/Вправо или Win+цифра - другой буфер, Ctrl+цифра - скопировать запись в буфер, Tab - история/запуск.
@@ -547,6 +591,10 @@ Win+O=topmost
 Win+NumMul=totray
 Win+W=run python.exe wm.py @ D:\woodman
 Win+Y=pyrun
+Win+K=webcam
+Win+S=draw
+Win+Shift+C=colorpicker
+Win+Shift+R=record
 )INI";
 static const char *kIni2 = u8R"INI(
 [Launcher]
@@ -678,7 +726,7 @@ static BOOL ParseAction(const wchar_t *v, Bind *b) {
     static const Act T[] = {
         {L"copy", A_COPY, 1}, {L"paste", A_PASTE, 3}, {L"buffer", A_BUFFER, 4}, {L"slots", A_BUFFER, 4}, {L"layout", A_LAYOUT, 0}, {L"history", A_HIST, 0}, {L"launcher", A_LAUNCH, 0},
         {L"run", A_RUN, 2}, {L"admin", A_ADMIN, 2}, {L"py", A_PY, 2}, {L"pyrun", A_PYRUN, 0}, {L"topmost", A_TOPMOST, 0},
-        {L"totray", A_TOTRAY, 0}, {L"pause", A_PAUSE, 0}, {L"webcam", A_WEBCAM, 0}, {L"stopwatch", A_STOPWATCH, 0}, {L"timer", A_TIMER, 0}, {L"draw", A_DRAW, 0}, {L"colorpicker", A_PICKER, 0}, {L"picker", A_PICKER, 0},
+        {L"totray", A_TOTRAY, 0}, {L"pause", A_PAUSE, 0}, {L"webcam", A_WEBCAM, 0}, {L"stopwatch", A_STOPWATCH, 0}, {L"timer", A_TIMER, 0}, {L"draw", A_DRAW, 0}, {L"record", A_RECORD, 0}, {L"colorpicker", A_PICKER, 0}, {L"picker", A_PICKER, 0},
     };
     for (int i = 0; i < (int)(sizeof T / sizeof T[0]); i++) {
         if (lstrcmpiW(name, T[i].n)) continue;
@@ -732,6 +780,13 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
         else if (!lstrcmpiW(k, L"Color")) { g_dCol = ToInt(v); if (g_dCol < 0 || g_dCol > 7) g_dCol = 0; }
         else if (!lstrcmpiW(k, L"Width")) { g_dWid = ToInt(v); if (g_dWid < 0 || g_dWid > 2) g_dWid = 1; }
         else if (!lstrcmpiW(k, L"SaveDir")) lstrcpynW(g_dSaveDir, v, MAX_PATH);
+    } else if (!lstrcmpiW(s, L"Record")) {
+        if (!lstrcmpiW(k, L"NoTaskbar")) g_rNoTb = ToInt(v) != 0;
+        else if (!lstrcmpiW(k, L"Cursor")) g_rCur = ToInt(v) != 0;
+        else if (!lstrcmpiW(k, L"AllScreens")) g_rAll = ToInt(v) != 0;
+        else if (!lstrcmpiW(k, L"Mic")) lstrcpynW(g_rMic, v, 80);
+        else if (!lstrcmpiW(k, L"Fps")) { g_rFps = ToInt(v); if (g_rFps != 15 && g_rFps != 60) g_rFps = 30; }
+        else if (!lstrcmpiW(k, L"Pos")) { const wchar_t *q = v; g_rPos[0] = ToInt(q); while (*q && *q != L',') q++; g_rPos[1] = *q ? ToInt(q + 1) : -99999; }
     } else if (!lstrcmpiW(s, L"Timer")) {
         if (!lstrcmpiW(k, L"FontColor")) g_tmFg = HexRgb(v);
         else if (!lstrcmpiW(k, L"BgColor")) g_tmBg = HexRgb(v);
@@ -1727,6 +1782,7 @@ static void ExecBind(const Bind *b) {
     case A_TIMER: TmToggle(2); break;
     case A_DRAW: DrawOpen(); break;
     case A_PICKER: PickerOpen(); break;
+    case A_RECORD: RecOpen(); break;
     case A_PAUSE: InterlockedExchange(&g_paused, !g_paused); Toast(g_paused ? Tr(L_T_PAUSED) : Tr(L_T_WORKING)); break;
     }
 }
@@ -3575,6 +3631,358 @@ static void Open(void) {
 }   // namespace PickNs
 static void PickerOpen(void) { PickNs::Open(); }
 
+/* ---------- запись экрана: монитор -> H.264 mp4 (Media Foundation), кнопка-кружок скрыта из кадра ---------- */
+namespace RecNs {
+static HWND hw; static HANDLE th, ev; static volatile LONG stopF, okF; static BOOL recording, moved;
+static RECT cr; static wchar_t path[MAX_PATH], fname[64]; static int fps; static POINT dn, wp; static BOOL areaOn; static RECT area; static HWND selw; static POINT selA; static RECT selR; static BOOL selHas; static RECT selMon;
+
+static void Dir(wchar_t *d) { lstrcpynW(d, g_dir, MAX_PATH); Cat(d, MAX_PATH, L"\\videos"); }
+static const PROPERTYKEY kFriendly = {{0xa45c254e, 0xdf1c, 0x4efd, {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}}, 14};   // PKEY_Device_FriendlyName
+static CRITICAL_SECTION cs; static LARGE_INTEGER fq, t0; static volatile LONG paused; static volatile long long pauseAcc, pauseStart;
+static IAudioClient *aclient; static IAudioCaptureClient *aclip; static IMFSinkWriter *swr; static int aStream = -1;
+
+static long long ToU(long long ticks) { return ticks / fq.QuadPart * 10000000LL + ticks % fq.QuadPart * 10000000LL / fq.QuadPart; }   // тики QPC -> 100 нс без переполнения
+static long long Now(void) { LARGE_INTEGER t; QueryPerformanceCounter(&t); return t.QuadPart; }
+static void WriteBuf(int stream, const void *data, DWORD bytes, long long ts, long long dur) {
+    IMFMediaBuffer *mb = NULL; IMFSample *sm = NULL;
+    if (ts < 0) ts = 0;
+    if (FAILED(MFCreateMemoryBuffer(bytes, &mb))) return;
+    BYTE *p = NULL; if (SUCCEEDED(mb->Lock(&p, NULL, NULL))) { if (data) memcpy(p, data, bytes); else memset(p, 0, bytes); mb->Unlock(); }
+    mb->SetCurrentLength(bytes);
+    if (SUCCEEDED(MFCreateSample(&sm))) {
+        sm->AddBuffer(mb); sm->SetSampleTime(ts); sm->SetSampleDuration(dur);
+        EnterCriticalSection(&cs); swr->WriteSample(stream, sm); LeaveCriticalSection(&cs);
+        sm->Release();
+    }
+    mb->Release();
+}
+// Микрофон (WASAPI, общий режим, 16 бит 48 кГц стерео с автопреобразованием). Имя пустое - по умолчанию, "-" - без звука.
+static BOOL AudioInit(void) {
+    if (g_rMic[0] == L'-' && !g_rMic[1]) return FALSE;
+    BOOL ok = FALSE; IMMDeviceEnumerator *en = NULL; IMMDevice *dev = NULL;
+    if (FAILED(CoCreateInstance(CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, IID_IMMDeviceEnumerator, (void **)&en))) return FALSE;
+    if (g_rMic[0]) {
+        IMMDeviceCollection *col = NULL; UINT n = 0;
+        if (SUCCEEDED(en->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, &col))) {
+            col->GetCount(&n);
+            for (UINT i = 0; i < n && !dev; i++) {
+                IMMDevice *d = NULL; IPropertyStore *ps = NULL; PROPVARIANT pv; PropVariantInit(&pv);
+                if (SUCCEEDED(col->Item(i, &d)) && SUCCEEDED(d->OpenPropertyStore(STGM_READ, &ps)) && SUCCEEDED(ps->GetValue(kFriendly, &pv)) && pv.vt == VT_LPWSTR && !lstrcmpW(pv.pwszVal, g_rMic)) { dev = d; d = NULL; }
+                PropVariantClear(&pv); if (ps) ps->Release(); if (d) d->Release();
+            }
+            col->Release();
+        }
+    }
+    if (!dev) en->GetDefaultAudioEndpoint(eCapture, eConsole, &dev);
+    if (dev) {
+        WAVEFORMATEX wf; memset(&wf, 0, sizeof wf); wf.wFormatTag = WAVE_FORMAT_PCM; wf.nChannels = 2; wf.nSamplesPerSec = 48000; wf.wBitsPerSample = 16; wf.nBlockAlign = 4; wf.nAvgBytesPerSec = 192000;
+        if (SUCCEEDED(dev->Activate(IID_IAudioClient, CLSCTX_ALL, NULL, (void **)&aclient))
+            && SUCCEEDED(aclient->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, 10000000, 0, &wf, NULL))
+            && SUCCEEDED(aclient->GetService(IID_IAudioCaptureClient, (void **)&aclip))) ok = TRUE;
+        dev->Release();
+    }
+    en->Release();
+    if (!ok) { if (aclip) { aclip->Release(); aclip = NULL; } if (aclient) { aclient->Release(); aclient = NULL; } }
+    return ok;
+}
+static DWORD WINAPI AudioWorker(LPVOID) {
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    long long t0u = ToU(t0.QuadPart);
+    aclient->Start();
+    while (!stopF) {
+        Sleep(10);
+        UINT32 n = 0;
+        while (SUCCEEDED(aclip->GetNextPacketSize(&n)) && n) {
+            BYTE *d = NULL; UINT32 fr = 0; DWORD fl = 0; UINT64 dpos = 0, qpc = 0;
+            if (FAILED(aclip->GetBuffer(&d, &fr, &fl, &dpos, &qpc))) break;
+            if (!paused && fr) WriteBuf(aStream, (fl & AUDCLNT_BUFFERFLAGS_SILENT) ? NULL : d, fr * 4, (long long)qpc - t0u - ToU(pauseAcc), (long long)fr * 10000000LL / 48000);
+            aclip->ReleaseBuffer(fr);
+        }
+    }
+    aclient->Stop();
+    CoUninitialize(); return 0;
+}
+static DWORD WINAPI Worker(LPVOID) {
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    BOOL started = FALSE, mf = SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_LITE)), audio = FALSE; HANDLE ath = NULL;
+    int w = cr.right - cr.left, h = cr.bottom - cr.top;
+    swr = NULL; aStream = -1;
+    if (mf) {
+        IMFMediaType *mo = NULL, *mi = NULL; DWORD si = 0;
+        audio = AudioInit();
+        if (SUCCEEDED(MFCreateSinkWriterFromURL(path, NULL, NULL, &swr)) && SUCCEEDED(MFCreateMediaType(&mo)) && SUCCEEDED(MFCreateMediaType(&mi))) {
+            unsigned long long br = (unsigned long long)w * h * fps / 10; if (br < 2000000) br = 2000000; if (br > 40000000) br = 40000000;
+            mo->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video); mo->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264); mo->SetUINT32(MF_MT_AVG_BITRATE, (UINT32)br);
+            mi->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video); mi->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
+            IMFMediaType *ts[2] = {mo, mi};
+            for (int i = 0; i < 2; i++) {
+                ts[i]->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+                MFSetAttributeSize(ts[i], MF_MT_FRAME_SIZE, w, h); MFSetAttributeRatio(ts[i], MF_MT_FRAME_RATE, fps, 1); MFSetAttributeRatio(ts[i], MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+            }
+            started = SUCCEEDED(swr->AddStream(mo, &si)) && SUCCEEDED(swr->SetInputMediaType(si, mi, NULL));
+            if (started && audio) {                                    // звук - вторая дорожка (AAC); не получилось - пишем без звука
+                IMFMediaType *ao = NULL, *ai = NULL; DWORD sa = 0;
+                if (SUCCEEDED(MFCreateMediaType(&ao)) && SUCCEEDED(MFCreateMediaType(&ai))) {
+                    ao->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio); ao->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_AAC);
+                    ao->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16); ao->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, 48000); ao->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, 2);
+                    ao->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 16000); ao->SetUINT32(MF_MT_AAC_PAYLOAD_TYPE, 0);
+                    ai->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio); ai->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_PCM);
+                    ai->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16); ai->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, 48000); ai->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, 2);
+                    ai->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, 4); ai->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 192000);
+                    if (SUCCEEDED(swr->AddStream(ao, &sa)) && SUCCEEDED(swr->SetInputMediaType(sa, ai, NULL))) aStream = (int)sa;
+                }
+                if (ao) ao->Release(); if (ai) ai->Release();
+            }
+            started = started && SUCCEEDED(swr->BeginWriting());
+        }
+        if (mo) mo->Release(); if (mi) mi->Release();
+    }
+    okF = started; SetEvent(ev);
+    if (started) {
+        HDC sdc = GetDC(NULL), mdc = CreateCompatibleDC(sdc);
+        BITMAPINFO bi; memset(&bi, 0, sizeof bi);
+        bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER); bi.bmiHeader.biWidth = w; bi.bmiHeader.biHeight = h;     // снизу вверх - как RGB32 в Media Foundation
+        bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32;
+        void *bits = NULL; HBITMAP hb = CreateDIBSection(sdc, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+        if (hb) {
+            HGDIOBJ ob = SelectObject(mdc, hb);
+            DWORD bytes = (DWORD)w * h * 4;
+            QueryPerformanceFrequency(&fq); QueryPerformanceCounter(&t0); pauseAcc = 0; paused = 0;
+            if (aStream >= 0) ath = CreateThread(NULL, 0, AudioWorker, NULL, 0, NULL);
+            long long interval = fq.QuadPart / fps, next = t0.QuadPart;
+            timeBeginPeriod(1);
+            while (!stopF) {
+                if (paused) { Sleep(20); next = Now(); continue; }
+                long long tn = Now();
+                BitBlt(mdc, 0, 0, w, h, sdc, cr.left, cr.top, SRCCOPY | CAPTUREBLT);
+                if (g_rCur) {
+                    CURSORINFO ci; ci.cbSize = sizeof ci; ICONINFO ii;
+                    if (GetCursorInfo(&ci) && (ci.flags & CURSOR_SHOWING) && GetIconInfo(ci.hCursor, &ii)) {
+                        DrawIconEx(mdc, ci.ptScreenPos.x - (int)ii.xHotspot - cr.left, ci.ptScreenPos.y - (int)ii.yHotspot - cr.top, ci.hCursor, 0, 0, 0, NULL, DI_NORMAL);
+                        if (ii.hbmMask) DeleteObject(ii.hbmMask); if (ii.hbmColor) DeleteObject(ii.hbmColor);
+                    }
+                }
+                WriteBuf(0, bits, bytes, ToU(tn - t0.QuadPart - pauseAcc), 10000000LL / fps);
+                next += interval; tn = Now();
+                long long wait = (next - tn) * 1000 / fq.QuadPart;
+                if (wait > 0) Sleep((DWORD)wait); else next = tn;        // отстали - долг не копим
+            }
+            timeEndPeriod(1);
+            if (ath) { WaitForSingleObject(ath, 5000); CloseHandle(ath); }
+            SelectObject(mdc, ob); DeleteObject(hb);
+        }
+        DeleteDC(mdc); ReleaseDC(NULL, sdc);
+    }
+    if (swr) { if (started) swr->Finalize(); swr->Release(); swr = NULL; }
+    if (aclip) { aclip->Release(); aclip = NULL; } if (aclient) { aclient->Release(); aclient = NULL; }
+    if (mf) MFShutdown();
+    CoUninitialize(); return 0;
+}
+static void Repaint(void) { if (hw) InvalidateRect(hw, NULL, FALSE); }
+static void Start(void) {
+    if (recording || !hw) return;
+    MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoW(MonitorFromWindow(hw, MONITOR_DEFAULTTONEAREST), &mi);
+    cr = g_rNoTb ? mi.rcWork : mi.rcMonitor;                 // рабочая область = без панели задач
+    if (g_rAll) { cr.left = GetSystemMetrics(SM_XVIRTUALSCREEN); cr.top = GetSystemMetrics(SM_YVIRTUALSCREEN); cr.right = cr.left + GetSystemMetrics(SM_CXVIRTUALSCREEN); cr.bottom = cr.top + GetSystemMetrics(SM_CYVIRTUALSCREEN); }
+    if (areaOn) cr = area;                                    // выбранная область важнее настроек монитора
+    static BOOL csInit; if (!csInit) { InitializeCriticalSection(&cs); csInit = TRUE; }
+    paused = 0;
+    cr.right -= (cr.right - cr.left) & 1; cr.bottom -= (cr.bottom - cr.top) & 1;     // H.264: чётные размеры
+    wchar_t d[MAX_PATH]; Dir(d); CreateDirectoryW(d, NULL);
+    SYSTEMTIME st; GetLocalTime(&st);
+    wsprintfW(fname, L"Rec_%04d-%02d-%02d_%02d-%02d-%02d.mp4", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    lstrcpynW(path, d, MAX_PATH); Cat(path, MAX_PATH, L"\\"); Cat(path, MAX_PATH, fname);
+    fps = g_rFps; stopF = 0; okF = 0; ev = CreateEventW(NULL, TRUE, FALSE, NULL);
+    th = CreateThread(NULL, 0, Worker, NULL, 0, NULL);
+    if (th) WaitForSingleObject(ev, 8000);
+    CloseHandle(ev); ev = NULL;
+    if (!th || !okF) {
+        if (th) { stopF = 1; WaitForSingleObject(th, 5000); CloseHandle(th); th = NULL; }
+        DeleteFileW(path); Toast(Tr(L_REC_FAIL)); return;
+    }
+    recording = TRUE; Repaint();
+}
+static void Pause(void) {
+    if (!recording) return;
+    if (!paused) { pauseStart = Now(); paused = 1; }
+    else { pauseAcc += Now() - pauseStart; paused = 0; }
+    Repaint();
+}
+static void Stop(void) {
+    if (!recording) return;
+    if (paused) { pauseAcc += Now() - pauseStart; paused = 0; }
+    stopF = 1; WaitForSingleObject(th, 20000); CloseHandle(th); th = NULL; recording = FALSE; Repaint();
+    wchar_t m[160]; wsprintfW(m, Tr(L_REC_SAVED), fname); Toast(m);
+}
+/* --- выбор области записи: затемнение монитора, рамка мышью, Shift - пропорции экрана --- */
+static LRESULT CALLBACK SelProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    int W = selMon.right - selMon.left, H = selMon.bottom - selMon.top;
+    switch (m) {
+    case WM_ERASEBKGND: return 1;
+    case WM_SETCURSOR: SetCursor(LoadCursorW(NULL, IDC_CROSS)); return TRUE;
+    case WM_PAINT: {
+        PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps);
+        HDC md = CreateCompatibleDC(dc); HBITMAP hb = CreateCompatibleBitmap(dc, W, H); HGDIOBJ ob = SelectObject(md, hb);
+        RECT all = {0, 0, W, H}; HBRUSH bk = CreateSolidBrush(RGB(0, 0, 0)); FillRect(md, &all, bk); DeleteObject(bk);
+        if (selHas) {
+            HBRUSH key = CreateSolidBrush(RGB(255, 0, 255)); FillRect(md, &selR, key); DeleteObject(key);     // "дырка" - прозрачный цвет окна
+            HPEN pw = CreatePen(PS_INSIDEFRAME, 2, RGB(255, 255, 255)); HGDIOBJ op = SelectObject(md, pw), obr = SelectObject(md, GetStockObject(NULL_BRUSH));
+            Rectangle(md, selR.left - 2, selR.top - 2, selR.right + 2, selR.bottom + 2); SelectObject(md, op); SelectObject(md, obr); DeleteObject(pw);
+            wchar_t t[32]; wsprintfW(t, L"%d x %d", selR.right - selR.left, selR.bottom - selR.top);
+            SetBkMode(md, TRANSPARENT); SetTextColor(md, RGB(255, 255, 255)); TextOutW(md, selR.left, selR.top > 20 ? selR.top - 20 : selR.bottom + 4, t, lstrlenW(t));
+        }
+        BitBlt(dc, 0, 0, W, H, md, 0, 0, SRCCOPY);
+        SelectObject(md, ob); DeleteObject(hb); DeleteDC(md); EndPaint(h, &ps); return 0;
+    }
+    case WM_LBUTTONDOWN: selA.x = (short)LOWORD(l); selA.y = (short)HIWORD(l); selHas = FALSE; SetCapture(h); return 0;
+    case WM_MOUSEMOVE:
+        if (GetCapture() == h) {
+            int x = (short)LOWORD(l), y = (short)HIWORD(l);
+            if (x < 0) x = 0; if (y < 0) y = 0; if (x > W) x = W; if (y > H) y = H;
+            int dx = x - selA.x, dy = y - selA.y, ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
+            if (w & MK_SHIFT) {                                          // пропорционально экрану: ширина/высота как у монитора
+                int mw = ax, mh = ay; float asp = (float)W / H;
+                if (ax < ay * asp) mw = (int)(ay * asp); else mh = (int)(ax / asp);
+                int mxw = dx < 0 ? selA.x : W - selA.x, mxh = dy < 0 ? selA.y : H - selA.y;
+                if (mw > mxw) { mw = mxw; mh = (int)(mw / asp); } if (mh > mxh) { mh = mxh; mw = (int)(mh * asp); }
+                ax = mw; ay = mh; dx = dx < 0 ? -ax : ax; dy = dy < 0 ? -ay : ay;
+            }
+            selR.left = dx < 0 ? selA.x + dx : selA.x; selR.right = selR.left + ax; selR.top = dy < 0 ? selA.y + dy : selA.y; selR.bottom = selR.top + ay;
+            selHas = TRUE; InvalidateRect(h, NULL, FALSE);
+        }
+        return 0;
+    case WM_LBUTTONUP:
+        if (GetCapture() == h) {
+            ReleaseCapture();
+            if (selHas && selR.right - selR.left >= 32 && selR.bottom - selR.top >= 32) {
+                area = selR; OffsetRect(&area, selMon.left, selMon.top); areaOn = TRUE;
+            } else areaOn = FALSE;                                       // простой клик без рамки - сбросить область
+            DestroyWindow(h);
+        }
+        return 0;
+    case WM_KEYDOWN: case WM_RBUTTONUP: if (m == WM_RBUTTONUP || w == VK_ESCAPE) DestroyWindow(h); return 0;
+    case WM_DESTROY: selw = NULL; if (hw) { ShowWindow(hw, SW_SHOWNOACTIVATE); Repaint(); } return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+static void SelectArea(void) {
+    if (selw || recording || !hw) return;
+    MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoW(MonitorFromWindow(hw, MONITOR_DEFAULTTONEAREST), &mi);
+    selMon = mi.rcMonitor; selHas = FALSE;
+    RegClass(L"DKRecSel", SelProc, 0);
+    selw = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW, L"DKRecSel", L"", WS_POPUP, selMon.left, selMon.top, selMon.right - selMon.left, selMon.bottom - selMon.top, NULL, NULL, g_inst, NULL);
+    if (!selw) return;
+    SetLayeredWindowAttributes(selw, RGB(255, 0, 255), 130, LWA_COLORKEY | LWA_ALPHA);
+    ShowWindow(hw, SW_HIDE); ShowWindow(selw, SW_SHOW); ForceFg(selw); SetFocus(selw);
+}
+static void SavePos(void) {
+    RECT r; if (!hw || !GetWindowRect(hw, &r)) return;
+    wchar_t v[32]; wsprintfW(v, L"%d,%d", r.left, r.top); IniSet(L"Record", L"Pos", v); g_rPos[0] = r.left; g_rPos[1] = r.top;
+}
+static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    switch (m) {
+    case WM_ERASEBKGND: return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); RECT r; GetClientRect(h, &r); int S = r.right;
+        HBRUSH bg = CreateSolidBrush(RGB(32, 33, 36)); FillRect(dc, &r, bg); DeleteObject(bg);
+        HPEN pw = CreatePen(PS_SOLID, 2, RGB(255, 255, 255)); HBRUSH red = CreateSolidBrush(RGB(255, 59, 48));
+        HGDIOBJ op = SelectObject(dc, pw), ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+        Ellipse(dc, 2, 2, S - 2, S - 2);
+        SelectObject(dc, GetStockObject(NULL_PEN)); SelectObject(dc, red);
+        if (recording && paused) { RoundRect(dc, S * 32 / 100, S * 30 / 100, S * 45 / 100, S * 70 / 100 + 1, 3, 3); RoundRect(dc, S * 55 / 100, S * 30 / 100, S * 68 / 100 + 1, S * 70 / 100 + 1, 3, 3); }
+        else if (recording) RoundRect(dc, S * 31 / 100, S * 31 / 100, S * 69 / 100 + 1, S * 69 / 100 + 1, S / 10, S / 10);
+        else Ellipse(dc, S * 27 / 100, S * 27 / 100, S * 73 / 100 + 1, S * 73 / 100 + 1);
+        SelectObject(dc, op); SelectObject(dc, ob); DeleteObject(pw); DeleteObject(red);
+        if (areaOn && !recording) { HPEN pa = CreatePen(PS_SOLID, 1, RGB(255, 255, 255)); HGDIOBJ o1 = SelectObject(dc, pa), o2 = SelectObject(dc, GetStockObject(NULL_BRUSH)); Rectangle(dc, S * 62 / 100, S * 62 / 100, S * 86 / 100, S * 82 / 100); SelectObject(dc, o1); SelectObject(dc, o2); DeleteObject(pa); }
+        EndPaint(h, &ps); return 0;
+    }
+    case WM_LBUTTONDOWN: { GetCursorPos(&dn); RECT r; GetWindowRect(h, &r); wp.x = r.left; wp.y = r.top; moved = FALSE; SetCapture(h); return 0; }
+    case WM_MOUSEMOVE:
+        if (GetCapture() == h) {
+            POINT p; GetCursorPos(&p);
+            if (!moved && (p.x - dn.x) * (p.x - dn.x) + (p.y - dn.y) * (p.y - dn.y) > 36) moved = TRUE;
+            if (moved) SetWindowPos(h, NULL, wp.x + p.x - dn.x, wp.y + p.y - dn.y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        return 0;
+    case WM_LBUTTONUP:
+        if (GetCapture() == h) {
+            ReleaseCapture();
+            if (moved) SavePos(); else if (recording) { BOOL c = (w & MK_CONTROL) != 0; if (paused ? c : !c) Stop(); else Pause(); }
+            else if (w & MK_SHIFT) SelectArea(); else Start();
+        }
+        return 0;
+    case WM_RBUTTONUP: if (!recording) DestroyWindow(h); return 0;
+    case WM_DESTROY: Stop(); SavePos(); hw = NULL; return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+static void Open(void) {
+    if (recording) { Stop(); return; }
+    if (hw) { Start(); return; }
+    POINT pt; GetCursorPos(&pt);
+    MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoW(MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST), &mi);
+    int S = MulDiv(48, GetDpiForSystem(), 96), x = mi.rcMonitor.right - S - S / 2, y = mi.rcMonitor.top + S / 2;
+    POINT sp = {g_rPos[0], g_rPos[1]};
+    if (g_rPos[0] != -99999 && MonitorFromPoint(sp, MONITOR_DEFAULTTONULL)) { x = g_rPos[0]; y = g_rPos[1]; }
+    RegClass(L"DKRec", Proc, 0);
+    hw = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"DKRec", L"", WS_POPUP, x, y, S, S, NULL, NULL, g_inst, NULL);
+    if (!hw) return;
+    SetWindowRgn(hw, CreateEllipticRgn(0, 0, S + 1, S + 1), TRUE);
+    SetWindowDisplayAffinity(hw, 0x11);                      // WDA_EXCLUDEFROMCAPTURE: кнопка не попадает в видео
+    ShowWindow(hw, SW_SHOWNOACTIVATE);
+}
+static wchar_t micList[16][80];
+static HMENU MicMenu(void) {
+    HMENU m = CreatePopupMenu(); BOOL off = g_rMic[0] == L'-' && !g_rMic[1], def = !g_rMic[0]; int nm = 0;
+    AppendMenuW(m, MF_STRING | (def ? MF_CHECKED : 0), 30, Tr(L_REC_MICDEF));
+    AppendMenuW(m, MF_STRING | (off ? MF_CHECKED : 0), 31, Tr(L_REC_MICOFF));
+    IMMDeviceEnumerator *en = NULL; IMMDeviceCollection *col = NULL; UINT n = 0;
+    if (SUCCEEDED(CoCreateInstance(CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, IID_IMMDeviceEnumerator, (void **)&en))) {
+        if (SUCCEEDED(en->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, &col))) {
+            col->GetCount(&n); if (n) AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+            for (UINT i = 0; i < n && nm < 16; i++) {
+                IMMDevice *d = NULL; IPropertyStore *ps = NULL; PROPVARIANT pv; PropVariantInit(&pv);
+                if (SUCCEEDED(col->Item(i, &d)) && SUCCEEDED(d->OpenPropertyStore(STGM_READ, &ps)) && SUCCEEDED(ps->GetValue(kFriendly, &pv)) && pv.vt == VT_LPWSTR) {
+                    lstrcpynW(micList[nm], pv.pwszVal, 80);
+                    wchar_t e[170]; int o = 0; for (int j = 0; micList[nm][j] && o < 160; j++) { if (micList[nm][j] == L'&') e[o++] = L'&'; e[o++] = micList[nm][j]; } e[o] = 0;
+                    AppendMenuW(m, MF_STRING | (!lstrcmpW(g_rMic, micList[nm]) ? MF_CHECKED : 0), 32 + nm, e); nm++;
+                }
+                PropVariantClear(&pv); if (ps) ps->Release(); if (d) d->Release();
+            }
+            col->Release();
+        }
+        en->Release();
+    }
+    return m;
+}
+static HMENU Menu(void) {
+    HMENU m = CreatePopupMenu(); wchar_t t[64];
+    AppendMenuW(m, MF_STRING | (g_rNoTb ? MF_CHECKED : 0), 20, Tr(L_REC_NOTB));
+    AppendMenuW(m, MF_STRING | (g_rCur ? MF_CHECKED : 0), 21, Tr(L_REC_CUR));
+    AppendMenuW(m, MF_STRING | (g_rAll ? MF_CHECKED : 0), 26, Tr(L_REC_ALL));
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)MicMenu(), Tr(L_REC_MIC));
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    static const int f[3] = {15, 30, 60};
+    for (int i = 0; i < 3; i++) { wsprintfW(t, Tr(L_REC_FPS), f[i]); AppendMenuW(m, MF_STRING | (g_rFps == f[i] ? MF_CHECKED : 0), 22 + i, t); }
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(m, MF_STRING, 25, Tr(L_REC_DIR));
+    return m;
+}
+static void Cmd(int c) {
+    wchar_t v[8];
+    if (c == 20) { g_rNoTb = !g_rNoTb; IniSet(L"Record", L"NoTaskbar", g_rNoTb ? L"1" : L"0"); }
+    else if (c == 21) { g_rCur = !g_rCur; IniSet(L"Record", L"Cursor", g_rCur ? L"1" : L"0"); }
+    else if (c >= 22 && c <= 24) { g_rFps = c == 22 ? 15 : c == 23 ? 30 : 60; wsprintfW(v, L"%d", g_rFps); IniSet(L"Record", L"Fps", v); }
+    else if (c == 26) { g_rAll = !g_rAll; IniSet(L"Record", L"AllScreens", g_rAll ? L"1" : L"0"); }
+    else if (c >= 30 && c < 48) {
+        if (c == 30) g_rMic[0] = 0; else if (c == 31) { g_rMic[0] = L'-'; g_rMic[1] = 0; } else lstrcpynW(g_rMic, micList[c - 32], 80);
+        IniSet(L"Record", L"Mic", g_rMic);
+    }
+    else if (c == 25) { wchar_t d[MAX_PATH]; Dir(d); CreateDirectoryW(d, NULL); ShellExecuteW(NULL, L"open", d, NULL, NULL, SW_SHOWNORMAL); }
+}
+}   // namespace RecNs
+static void RecOpen(void) { RecNs::Open(); }
+
 static void TrayMenu(void) {
     POINT pt; GetCursorPos(&pt);
     HMENU m = CreatePopupMenu(), hm = NULL;
@@ -3584,6 +3992,8 @@ static void TrayMenu(void) {
     AddHk(m, MF_STRING, 4, Tr(L_TRAY_CAM), A_WEBCAM);
     AddHk(m, MF_STRING, 5, Tr(L_TRAY_DRAW), A_DRAW);
     AddHk(m, MF_STRING, 6, Tr(L_TRAY_PICK), A_PICKER);
+    AddHk(m, MF_STRING, 7, RecNs::recording ? Tr(L_TRAY_RECSTOP) : Tr(L_TRAY_REC), A_RECORD);
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)RecNs::Menu(), Tr(L_TRAY_RECSET));
     AppendMenuW(m, MF_POPUP, (UINT_PTR)TmMenu(), Tr(L_TRAY_TIMER));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AddHk(m, MF_STRING | (g_histOn ? MF_CHECKED : 0), 10, Tr(L_TRAY_HISTON), A_HIST);
@@ -3619,6 +4029,7 @@ static void TrayMenu(void) {
     case 4: CamOpen(); break;
     case 5: Sleep(150); DrawOpen(); break;      // пауза: меню успевает исчезнуть с экрана
     case 6: Sleep(150); PickerOpen(); break;
+    case 7: Sleep(150); RecOpen(); break;
     case 10: SetHistory(!g_histOn); break;
     case 11: AutoSet(!AutoGet()); break;
     case 15: InterlockedExchange(&g_paused, !g_paused); break;
@@ -3628,7 +4039,8 @@ static void TrayMenu(void) {
     case 14: Reload(); break;
     case 16: DestroyWindow(g_hwnd); break;
     default:
-        if (c >= TM_ID && c < TM_ID + 80) TmCommand(c);
+        if (c >= 20 && c < 50) RecNs::Cmd(c);
+        else if (c >= TM_ID && c < TM_ID + 80) TmCommand(c);
         else if (c >= 200 && c < 200 + 32) ShowHidden(c - 200);
     }
 }
@@ -3661,7 +4073,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_APP_RENDERED: if (g_psPending) SetTimer(g_hwnd, TID_RESTORE, g_pasteDelay, NULL); return 0;
     case WM_QUERYENDSESSION: return TRUE;
     case WM_ENDSESSION: if (w) { for (int i = 0; i < g_nhid; i++) if (IsWindow(g_hid[i])) ShowWindow(g_hid[i], SW_SHOW); } return 0;
-    case WM_DESTROY: PostQuitMessage(0); return 0;
+    case WM_DESTROY: if (RecNs::hw) DestroyWindow(RecNs::hw); PostQuitMessage(0); return 0;     // запись корректно дописывается
     }
     if (m == g_msgTaskbar && m) { TrayAdd(); return 0; }
     return DefWindowProcW(h, m, w, l);
