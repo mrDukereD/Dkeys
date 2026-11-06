@@ -8,6 +8,8 @@
 #include <windows.h>
 #include <objbase.h>
 #include <shellapi.h>
+#define NO_DSHOW_STRSAFE
+#include <dshow.h>
 #include <stdarg.h>
 
 #pragma comment(lib, "kernel32.lib")
@@ -16,11 +18,19 @@
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "oleaut32.lib")
+#pragma comment(lib, "strmiids.lib")
+#pragma comment(lib, "uuid.lib")
 
 #pragma optimize("", off)
 extern "C" {
 void *memset(void *d, int c, size_t n) { BYTE *p = (BYTE *)d; while (n--) *p++ = (BYTE)c; return d; }
 void *memcpy(void *d, const void *s, size_t n) { BYTE *p = (BYTE *)d; const BYTE *q = (const BYTE *)s; while (n--) *p++ = *q++; return d; }
+int memcmp(const void *a, const void *b, size_t n) {
+    const BYTE *p = (const BYTE *)a, *q = (const BYTE *)b;
+    while (n--) { if (*p != *q) return *p < *q ? -1 : 1; p++; q++; }
+    return 0;
+}
 void *memmove(void *d, const void *s, size_t n) {
     BYTE *p = (BYTE *)d; const BYTE *q = (const BYTE *)s;
     if (p < q) { while (n--) *p++ = *q++; } else { p += n; q += n; while (n--) *--p = *--q; }
@@ -31,7 +41,7 @@ void *memmove(void *d, const void *s, size_t n) {
 
 #define DKMARK ((ULONG_PTR)0x444B4559)
 enum { DM_CTRL = 1, DM_ALT = 2, DM_SHIFT = 4, DM_WIN = 8 };
-enum { A_NONE, A_COPY, A_PASTE, A_BUFFER, A_HIST, A_LAUNCH, A_RUN, A_ADMIN, A_PY, A_PYRUN, A_TOPMOST, A_TOTRAY, A_LAYOUT, A_PAUSE };
+enum { A_NONE, A_COPY, A_PASTE, A_BUFFER, A_HIST, A_LAUNCH, A_RUN, A_ADMIN, A_PY, A_PYRUN, A_TOPMOST, A_TOTRAY, A_LAYOUT, A_PAUSE, A_WEBCAM };
 enum { PM_BUF, PM_HIST, PM_LAUNCH };
 enum {
     WM_APP_HOT = WM_APP + 1, WM_APP_KEY, WM_APP_CLOSE, WM_APP_PCLICK, WM_APP_PTAB, WM_TRAY, WM_APP_RENDERED,
@@ -41,6 +51,7 @@ enum {
 #define TID_POPWATCH 2
 #define TID_LAYOUT 3
 #define TID_POPFG 4
+#define TID_TRAY 5
 #define VISROWS 10
 
 struct Bind { UINT mods, key; int act, n, n2; wchar_t *arg, *dir; };
@@ -48,6 +59,8 @@ struct KV { wchar_t *k, *v; };
 struct Row { wchar_t *label, *title, *text; int ref; };
 struct Snap { UINT fmt[64]; HGLOBAL h[64]; int n; };
 struct Buf { wchar_t *p; int n, cap; };
+static void CamOpen(void);
+static BOOL RegClass(const wchar_t *name, WNDPROC proc, UINT style);
 struct BB { BYTE *p; DWORD n, cap; };
 
 /* ---------- globals ---------- */
@@ -329,6 +342,7 @@ static const char *kIni1 = u8R"INI(; DKeys - настройки. Коммент�
 ;     topmost                   окно "поверх всех" вкл/выкл
 ;     totray                    спрятать окно (вернуть - из меню значка в трее)
 ;     pause                     пауза/продолжить хоткеи
+;     webcam                    окно предпросмотра веб-камеры (есть и в меню значка)
 ; Win+цифры буферов перекрывают запуск закреплённых программ на панели задач.
 ; В меню буфера: Del - удалить, F2 - править, Ins - новая запись, Ctrl+Вверх/Вниз - переставить,
 ; Влево/Вправо или Win+цифра - другой буфер, Ctrl+цифра - скопировать запись в буфер, Tab - история/запуск.
@@ -485,7 +499,7 @@ static BOOL ParseAction(const wchar_t *v, Bind *b) {
     static const Act T[] = {
         {L"copy", A_COPY, 1}, {L"paste", A_PASTE, 3}, {L"buffer", A_BUFFER, 4}, {L"slots", A_BUFFER, 4}, {L"layout", A_LAYOUT, 0}, {L"history", A_HIST, 0}, {L"launcher", A_LAUNCH, 0},
         {L"run", A_RUN, 2}, {L"admin", A_ADMIN, 2}, {L"py", A_PY, 2}, {L"pyrun", A_PYRUN, 0}, {L"topmost", A_TOPMOST, 0},
-        {L"totray", A_TOTRAY, 0}, {L"pause", A_PAUSE, 0},
+        {L"totray", A_TOTRAY, 0}, {L"pause", A_PAUSE, 0}, {L"webcam", A_WEBCAM, 0},
     };
     for (int i = 0; i < (int)(sizeof T / sizeof T[0]); i++) {
         if (lstrcmpiW(name, T[i].n)) continue;
@@ -1450,6 +1464,7 @@ static void ExecBind(const Bind *b) {
     case A_TOPMOST: ToggleTopmost(); break;
     case A_TOTRAY: HideToTray(); break;
     case A_LAYOUT: FixLayout(); break;
+    case A_WEBCAM: CamOpen(); break;
     case A_PAUSE: InterlockedExchange(&g_paused, !g_paused); Toast(g_paused ? L"DKeys: пауза" : L"DKeys: работает"); break;
     }
 }
@@ -1702,7 +1717,9 @@ static void TrayAdd(void) {
     g_nid.cbSize = sizeof g_nid; g_nid.hWnd = g_hwnd; g_nid.uID = 1;
     g_nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP; g_nid.uCallbackMessage = WM_TRAY; g_nid.hIcon = g_icon;
     lstrcpyW(g_nid.szTip, g_elev ? L"DKeys (администратор)" : L"DKeys");
-    Shell_NotifyIconW(NIM_ADD, &g_nid);
+    // при автозапуске панель задач может быть ещё не готова - повторяем, пока значок не добавится
+    if (Shell_NotifyIconW(NIM_ADD, &g_nid)) KillTimer(g_hwnd, TID_TRAY);
+    else SetTimer(g_hwnd, TID_TRAY, 2000, NULL);
 }
 static BOOL IsElevated(void) {
     HANDLE t; TOKEN_ELEVATION e; DWORD n; BOOL r = FALSE;
@@ -1766,12 +1783,266 @@ static void Reload(void) {
     PostThreadMessageW(g_hookTid, TM_REHOOK, 0, 0);
     Toast(L"Настройки перечитаны");
 }
+/* ---------- веб-камера (DirectShow): предпросмотр в окне ---------- */
+struct CamRes { int w, h, idx; LONGLONG iv; };
+#define CAMSTYLE (WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX)
+enum { CAM_DEV = 0x6000, CAM_RES = 0x6100, CAM_FULL = 0x6200 };
+static HWND g_hwndCam;
+static HMENU g_camMenu, g_camPopDev, g_camPopRes;
+static IGraphBuilder *g_gb; static ICaptureGraphBuilder2 *g_cgb; static IBaseFilter *g_capf;
+static IMediaControl *g_mc; static IVideoWindow *g_vwin;
+static wchar_t g_camName[16][80];
+static int g_ncam, g_curDev, g_curRes, g_nres, g_vidW, g_vidH;
+static CamRes g_res[64];
+static BOOL g_camFull; static RECT g_camSaved;
+
+static void FreeMT(AM_MEDIA_TYPE *mt) {
+    if (mt->cbFormat) CoTaskMemFree(mt->pbFormat);
+    if (mt->pUnk) mt->pUnk->Release();
+    CoTaskMemFree(mt);
+}
+// перечисляет камеры (имена в g_camName); если bind >= 0 - отдаёт её фильтр в *pf
+static int CamEnum(int bind, IBaseFilter **pf) {
+    ICreateDevEnum *de; IEnumMoniker *em; int n = 0;
+    if (pf) *pf = NULL;
+    if (FAILED(CoCreateInstance(CLSID_SystemDeviceEnum, NULL, CLSCTX_INPROC_SERVER, IID_ICreateDevEnum, (void **)&de))) return 0;
+    if (de->CreateClassEnumerator(CLSID_VideoInputDeviceCategory, &em, 0) == S_OK) {
+        IMoniker *mk;
+        while (n < 16 && em->Next(1, &mk, NULL) == S_OK) {
+            IPropertyBag *pb; g_camName[n][0] = 0;
+            if (SUCCEEDED(mk->BindToStorage(NULL, NULL, IID_IPropertyBag, (void **)&pb))) {
+                VARIANT v; VariantInit(&v);
+                if (SUCCEEDED(pb->Read(L"FriendlyName", &v, NULL)) && v.vt == VT_BSTR) lstrcpynW(g_camName[n], v.bstrVal, 80);
+                VariantClear(&v); pb->Release();
+            }
+            if (!g_camName[n][0]) lstrcpyW(g_camName[n], L"Камера");
+            if (n == bind && pf) mk->BindToObject(NULL, NULL, IID_IBaseFilter, (void **)pf);
+            mk->Release(); n++;
+        }
+        em->Release();
+    }
+    de->Release();
+    return n;
+}
+static void CamStop(void) {
+    if (g_mc) g_mc->Stop();
+    if (g_vwin) { g_vwin->put_Visible(OAFALSE); g_vwin->put_Owner(NULL); g_vwin->Release(); g_vwin = NULL; }
+    if (g_mc) { g_mc->Release(); g_mc = NULL; }
+    if (g_cgb) { g_cgb->Release(); g_cgb = NULL; }
+    if (g_gb) { g_gb->Release(); g_gb = NULL; }
+    if (g_capf) { g_capf->Release(); g_capf = NULL; }
+    g_vidW = g_vidH = 0;
+}
+static IAMStreamConfig *CamCfg(void) {
+    IAMStreamConfig *c = NULL;
+    if (FAILED(g_cgb->FindInterface(&PIN_CATEGORY_PREVIEW, &MEDIATYPE_Video, g_capf, IID_IAMStreamConfig, (void **)&c)))
+        g_cgb->FindInterface(&PIN_CATEGORY_CAPTURE, &MEDIATYPE_Video, g_capf, IID_IAMStreamConfig, (void **)&c);
+    return c;
+}
+// список разрешений: на каждый размер - режим с самой высокой частотой кадров, от большего к меньшему
+static void CamLoadRes(void) {
+    g_nres = 0;
+    IAMStreamConfig *c = CamCfg(); if (!c) return;
+    int n = 0, sz = 0; BYTE caps[512];
+    c->GetNumberOfCapabilities(&n, &sz);
+    if (sz > (int)sizeof caps) { c->Release(); return; }
+    for (int i = 0; i < n; i++) {
+        AM_MEDIA_TYPE *mt;
+        if (c->GetStreamCaps(i, &mt, caps) != S_OK) continue;
+        if (mt->formattype == FORMAT_VideoInfo && mt->cbFormat >= sizeof(VIDEOINFOHEADER)) {
+            VIDEOINFOHEADER *vi = (VIDEOINFOHEADER *)mt->pbFormat;
+            int w = vi->bmiHeader.biWidth, h = vi->bmiHeader.biHeight; if (h < 0) h = -h;
+            LONGLONG iv = ((VIDEO_STREAM_CONFIG_CAPS *)caps)->MinFrameInterval;
+            if (iv <= 0) iv = vi->AvgTimePerFrame;
+            if (iv <= 0) iv = 1000000000;
+            int k = 0; while (k < g_nres && !(g_res[k].w == w && g_res[k].h == h)) k++;
+            if (k < g_nres) { if (iv < g_res[k].iv) { g_res[k].idx = i; g_res[k].iv = iv; } }
+            else if (g_nres < 64 && w > 0 && h > 0) { CamRes r = {w, h, i, iv}; g_res[g_nres++] = r; }
+        }
+        FreeMT(mt);
+    }
+    c->Release();
+    for (int i = 1; i < g_nres; i++) {            // вставками, по убыванию числа пикселей
+        CamRes t = g_res[i]; int j = i - 1;
+        while (j >= 0 && (LONGLONG)g_res[j].w * g_res[j].h < (LONGLONG)t.w * t.h) { g_res[j + 1] = g_res[j]; j--; }
+        g_res[j + 1] = t;
+    }
+}
+static void CamSetFmt(int ri) {
+    IAMStreamConfig *c = CamCfg(); if (!c) return;
+    AM_MEDIA_TYPE *mt; BYTE caps[512];
+    if (c->GetStreamCaps(g_res[ri].idx, &mt, caps) == S_OK) {
+        if (mt->formattype == FORMAT_VideoInfo && mt->cbFormat >= sizeof(VIDEOINFOHEADER)) ((VIDEOINFOHEADER *)mt->pbFormat)->AvgTimePerFrame = g_res[ri].iv;
+        c->SetFormat(mt); FreeMT(mt);
+    }
+    c->Release();
+}
+static void CamLayout(void) {            // картинка по центру окна с сохранением пропорций, по бокам чёрное
+    if (!g_vwin || g_vidW <= 0 || g_vidH <= 0) return;
+    RECT c; GetClientRect(g_hwndCam, &c);
+    int w = c.right, h = c.bottom;
+    if (MulDiv(w, g_vidH, g_vidW) > h) w = MulDiv(h, g_vidW, g_vidH); else h = MulDiv(w, g_vidH, g_vidW);
+    g_vwin->SetWindowPosition((c.right - w) / 2, (c.bottom - h) / 2, w, h);
+}
+static void CamMenuBuild(void) {
+    while (GetMenuItemCount(g_camPopDev) > 0) DeleteMenu(g_camPopDev, 0, MF_BYPOSITION);
+    while (GetMenuItemCount(g_camPopRes) > 0) DeleteMenu(g_camPopRes, 0, MF_BYPOSITION);
+    for (int i = 0; i < g_ncam; i++) AppendMenuW(g_camPopDev, MF_STRING, CAM_DEV + i, g_camName[i]);
+    if (g_ncam) CheckMenuRadioItem(g_camPopDev, 0, g_ncam - 1, g_curDev, MF_BYPOSITION);
+    for (int i = 0; i < g_nres; i++) {
+        wchar_t t[48]; int fps = (int)((10000000 + g_res[i].iv / 2) / g_res[i].iv);
+        wsprintfW(t, L"%d×%d  %d fps", g_res[i].w, g_res[i].h, fps);
+        AppendMenuW(g_camPopRes, MF_STRING, CAM_RES + i, t);
+    }
+    if (g_nres) CheckMenuRadioItem(g_camPopRes, 0, g_nres - 1, g_curRes, MF_BYPOSITION);
+    DrawMenuBar(g_hwndCam);
+}
+static BOOL CamStart(int dev, int ri) {
+    CamStop();
+    g_curDev = dev; g_curRes = 0;
+    CamEnum(dev, &g_capf);
+    BOOL ok = g_capf != NULL;
+    if (ok) ok = SUCCEEDED(CoCreateInstance(CLSID_FilterGraph, NULL, CLSCTX_INPROC_SERVER, IID_IGraphBuilder, (void **)&g_gb))
+              && SUCCEEDED(CoCreateInstance(CLSID_CaptureGraphBuilder2, NULL, CLSCTX_INPROC_SERVER, IID_ICaptureGraphBuilder2, (void **)&g_cgb));
+    if (ok) {
+        g_cgb->SetFiltergraph(g_gb); g_gb->AddFilter(g_capf, L"Cam");
+        CamLoadRes();
+        if (ri >= g_nres) ri = 0;
+        if (g_nres) CamSetFmt(ri);
+        g_curRes = ri;
+        ok = SUCCEEDED(g_cgb->RenderStream(&PIN_CATEGORY_PREVIEW, &MEDIATYPE_Video, g_capf, NULL, NULL))
+          && SUCCEEDED(g_gb->QueryInterface(IID_IVideoWindow, (void **)&g_vwin))
+          && SUCCEEDED(g_gb->QueryInterface(IID_IMediaControl, (void **)&g_mc));
+    }
+    if (!ok) { CamStop(); g_nres = 0; Toast(L"Не удалось открыть камеру (занята другим приложением?)"); return FALSE; }
+    g_vidW = g_nres ? g_res[ri].w : 640; g_vidH = g_nres ? g_res[ri].h : 480;
+    IBasicVideo *bv;
+    if (SUCCEEDED(g_gb->QueryInterface(IID_IBasicVideo, (void **)&bv))) {
+        long a = 0, b = 0;
+        if (SUCCEEDED(bv->GetVideoSize(&a, &b)) && a > 0 && b > 0) { g_vidW = a; g_vidH = b; }
+        bv->Release();
+    }
+    g_vwin->put_Owner((OAHWND)g_hwndCam);
+    g_vwin->put_MessageDrain((OAHWND)g_hwndCam);
+    g_vwin->put_WindowStyle(WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN);
+    CamLayout();
+    g_vwin->put_Visible(OATRUE);
+    g_mc->Run();
+    wchar_t t[120]; wsprintfW(t, L"Вебкамера - %s", g_camName[dev]); SetWindowTextW(g_hwndCam, t);
+    return TRUE;
+}
+// отступы рамки окна и предельный размер клиентской области: 3/4 монитора
+static void CamLimits(HMONITOR mon, int *dw, int *dh, int *mcw, int *mch) {
+    MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoW(mon, &mi);
+    RECT r = {0, 0, 0, 0}; AdjustWindowRectEx(&r, CAMSTYLE, TRUE, 0);
+    *dw = r.right - r.left; *dh = r.bottom - r.top;
+    *mcw = (mi.rcMonitor.right - mi.rcMonitor.left) * 3 / 4 - *dw;
+    *mch = (mi.rcMonitor.bottom - mi.rcMonitor.top) * 3 / 4 - *dh;
+}
+static void CamSizeWindow(BOOL center) {      // родной размер картинки, но не больше 3/4 монитора; не увеличиваем
+    if (g_camFull || g_vidW <= 0) return;
+    POINT pt; GetCursorPos(&pt);
+    HMONITOR mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+    if (!center) mon = MonitorFromWindow(g_hwndCam, MONITOR_DEFAULTTONEAREST);
+    int dw, dh, mcw, mch; CamLimits(mon, &dw, &dh, &mcw, &mch);
+    int cw = g_vidW, ch = g_vidH;
+    if (cw > mcw) { cw = mcw; ch = MulDiv(cw, g_vidH, g_vidW); }
+    if (ch > mch) { ch = mch; cw = MulDiv(ch, g_vidW, g_vidH); }
+    int W = cw + dw, H = ch + dh;
+    if (center) {
+        MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoW(mon, &mi);
+        SetWindowPos(g_hwndCam, NULL, (mi.rcMonitor.left + mi.rcMonitor.right - W) / 2, (mi.rcMonitor.top + mi.rcMonitor.bottom - H) / 2, W, H, SWP_NOZORDER | SWP_NOACTIVATE);
+    } else SetWindowPos(g_hwndCam, NULL, 0, 0, W, H, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE);
+    CamLayout();
+}
+static void CamFull(BOOL on) {
+    if (on == g_camFull) return;
+    if (on) {
+        MONITORINFO mi; mi.cbSize = sizeof mi;
+        GetMonitorInfoW(MonitorFromWindow(g_hwndCam, MONITOR_DEFAULTTONEAREST), &mi);
+        GetWindowRect(g_hwndCam, &g_camSaved);
+        g_camFull = TRUE;
+        SetMenu(g_hwndCam, NULL);
+        SetWindowLongW(g_hwndCam, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+        SetWindowPos(g_hwndCam, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    } else {
+        g_camFull = FALSE;
+        SetWindowLongW(g_hwndCam, GWL_STYLE, CAMSTYLE | WS_VISIBLE);
+        SetMenu(g_hwndCam, g_camMenu);
+        SetWindowPos(g_hwndCam, NULL, g_camSaved.left, g_camSaved.top, g_camSaved.right - g_camSaved.left, g_camSaved.bottom - g_camSaved.top, SWP_FRAMECHANGED | SWP_NOZORDER | SWP_SHOWWINDOW);
+    }
+    CamLayout();
+}
+static LRESULT CALLBACK CamProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    switch (m) {
+    case WM_COMMAND: {
+        int id = LOWORD(w);
+        if (id >= CAM_DEV && id < CAM_DEV + 16) { if (CamStart(id - CAM_DEV, 0)) CamSizeWindow(FALSE); CamMenuBuild(); }
+        else if (id >= CAM_RES && id < CAM_RES + 64) { if (CamStart(g_curDev, id - CAM_RES)) CamSizeWindow(FALSE); CamMenuBuild(); }
+        else if (id == CAM_FULL) CamFull(!g_camFull);
+        return 0;
+    }
+    case WM_KEYDOWN:
+        if (w == VK_F11) CamFull(!g_camFull); else if (w == VK_ESCAPE) CamFull(FALSE);
+        return 0;
+    case WM_SIZE: CamLayout(); return 0;
+    case WM_ERASEBKGND: { RECT r; GetClientRect(h, &r); FillRect((HDC)w, &r, (HBRUSH)GetStockObject(BLACK_BRUSH)); return 1; }
+    case WM_GETMINMAXINFO:
+        if (!g_camFull) {
+            MINMAXINFO *mm = (MINMAXINFO *)l; int dw, dh, mcw, mch;
+            CamLimits(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &dw, &dh, &mcw, &mch);
+            mm->ptMaxTrackSize.x = mcw + dw; mm->ptMaxTrackSize.y = mch + dh;
+            mm->ptMinTrackSize.x = 360; mm->ptMinTrackSize.y = 160;
+        }
+        return 0;
+    case WM_SIZING:
+        if (!g_camFull && g_vidW > 0) {          // тянем рамку - держим пропорции картинки
+            RECT *r = (RECT *)l, wr, cr; GetWindowRect(h, &wr); GetClientRect(h, &cr);
+            int dw = wr.right - wr.left - cr.right, dh = wr.bottom - wr.top - cr.bottom, a, b, mcw, mch;
+            CamLimits(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &a, &b, &mcw, &mch);
+            int cw = r->right - r->left - dw, ch = r->bottom - r->top - dh;
+            if (w == WMSZ_TOP || w == WMSZ_BOTTOM) cw = MulDiv(ch, g_vidW, g_vidH); else ch = MulDiv(cw, g_vidH, g_vidW);
+            if (cw > mcw) { cw = mcw; ch = MulDiv(cw, g_vidH, g_vidW); }
+            if (ch > mch) { ch = mch; cw = MulDiv(ch, g_vidW, g_vidH); }
+            if (w == WMSZ_LEFT || w == WMSZ_TOPLEFT || w == WMSZ_BOTTOMLEFT) r->left = r->right - (cw + dw); else r->right = r->left + cw + dw;
+            if (w == WMSZ_TOP || w == WMSZ_TOPLEFT || w == WMSZ_TOPRIGHT) r->top = r->bottom - (ch + dh); else r->bottom = r->top + ch + dh;
+            return TRUE;
+        }
+        break;
+    case WM_CLOSE: DestroyWindow(h); return 0;
+    case WM_DESTROY:
+        CamStop();
+        if (g_camFull) DestroyMenu(g_camMenu);
+        g_camFull = FALSE; g_hwndCam = NULL;
+        return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+static void CamOpen(void) {
+    if (g_hwndCam) { if (IsIconic(g_hwndCam)) ShowWindow(g_hwndCam, SW_RESTORE); SetForegroundWindow(g_hwndCam); return; }
+    g_ncam = CamEnum(-1, NULL);
+    if (!g_ncam) { Toast(L"Камеры не найдены"); return; }
+    RegClass(L"DKCam", CamProc, 0);
+    g_camMenu = CreateMenu(); g_camPopDev = CreatePopupMenu(); g_camPopRes = CreatePopupMenu();
+    AppendMenuW(g_camMenu, MF_POPUP, (UINT_PTR)g_camPopDev, L"Камера");
+    AppendMenuW(g_camMenu, MF_POPUP, (UINT_PTR)g_camPopRes, L"Разрешение");
+    AppendMenuW(g_camMenu, MF_STRING, CAM_FULL, L"Полный экран (F11)");
+    g_hwndCam = CreateWindowExW(0, L"DKCam", L"Вебкамера", CAMSTYLE, CW_USEDEFAULT, CW_USEDEFAULT, 640, 480, NULL, g_camMenu, g_inst, NULL);
+    if (!g_hwndCam) { DestroyMenu(g_camMenu); return; }
+    CamStart(0, 0);
+    CamMenuBuild();
+    CamSizeWindow(TRUE);
+    ShowWindow(g_hwndCam, SW_SHOW);
+    SetForegroundWindow(g_hwndCam);
+}
+
 static void TrayMenu(void) {
     POINT pt; GetCursorPos(&pt);
     HMENU m = CreatePopupMenu(), hm = NULL;
     AppendMenuW(m, MF_STRING, 1, L"Буферы…");
     AppendMenuW(m, g_histOn ? MF_STRING : MF_STRING | MF_GRAYED, 2, L"История…");
     AppendMenuW(m, MF_STRING, 3, L"Быстрый запуск…");
+    AppendMenuW(m, MF_STRING, 4, L"Вебкамеры…");
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING | (g_histOn ? MF_CHECKED : 0), 10, L"Своя история буфера (Win+V)");
     AppendMenuW(m, MF_STRING | (AutoGet() ? MF_CHECKED : 0), 11, L"Автозапуск");
@@ -1803,6 +2074,7 @@ static void TrayMenu(void) {
     case 1: PopupOpen(PM_BUF); break;
     case 2: PopupOpen(PM_HIST); break;
     case 3: PopupOpen(PM_LAUNCH); break;
+    case 4: CamOpen(); break;
     case 10: SetHistory(!g_histOn); break;
     case 11: AutoSet(!AutoGet()); break;
     case 15: InterlockedExchange(&g_paused, !g_paused); break;
@@ -1837,6 +2109,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         else if (w == TID_POPWATCH) PopupClose();
         else if (w == TID_LAYOUT) OnLayoutTimer();
         else if (w == TID_POPFG) OnPopFg();
+        else if (w == TID_TRAY) TrayAdd();
         return 0;
     case WM_CLIPBOARDUPDATE: OnClip(); return 0;
     case WM_APP_RENDERED: if (g_psPending) SetTimer(g_hwnd, TID_RESTORE, g_pasteDelay, NULL); return 0;
@@ -1891,6 +2164,7 @@ static int Run(void) {
     if (!g_hwnd) return 1;
     InitFormats();
     g_msgTaskbar = RegisterWindowMessageW(L"TaskbarCreated");
+    ChangeWindowMessageFilterEx(g_hwnd, g_msgTaskbar, MSGFLT_ALLOW, NULL);   // от админа иначе не получим сообщение от explorer
     g_icon = (HICON)LoadImageW(g_inst, MAKEINTRESOURCEW(1), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR);
     TrayAdd();
     g_caps = GetKeyState(VK_CAPITAL) & 1;
