@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <objbase.h>
 #include <shellapi.h>
+#include <commdlg.h>
 #define NO_DSHOW_STRSAFE
 #include <dshow.h>
 #include <stdarg.h>
@@ -21,6 +22,7 @@
 #pragma comment(lib, "oleaut32.lib")
 #pragma comment(lib, "strmiids.lib")
 #pragma comment(lib, "uuid.lib")
+#pragma comment(lib, "comdlg32.lib")
 
 #pragma optimize("", off)
 extern "C" {
@@ -41,7 +43,7 @@ void *memmove(void *d, const void *s, size_t n) {
 
 #define DKMARK ((ULONG_PTR)0x444B4559)
 enum { DM_CTRL = 1, DM_ALT = 2, DM_SHIFT = 4, DM_WIN = 8 };
-enum { A_NONE, A_COPY, A_PASTE, A_BUFFER, A_HIST, A_LAUNCH, A_RUN, A_ADMIN, A_PY, A_PYRUN, A_TOPMOST, A_TOTRAY, A_LAYOUT, A_PAUSE, A_WEBCAM };
+enum { A_NONE, A_COPY, A_PASTE, A_BUFFER, A_HIST, A_LAUNCH, A_RUN, A_ADMIN, A_PY, A_PYRUN, A_TOPMOST, A_TOTRAY, A_LAYOUT, A_PAUSE, A_WEBCAM, A_STOPWATCH, A_TIMER };
 enum { PM_BUF, PM_HIST, PM_LAUNCH };
 enum {
     WM_APP_HOT = WM_APP + 1, WM_APP_KEY, WM_APP_CLOSE, WM_APP_PCLICK, WM_APP_PTAB, WM_TRAY, WM_APP_RENDERED,
@@ -61,6 +63,7 @@ struct Snap { UINT fmt[64]; HGLOBAL h[64]; int n; };
 struct Buf { wchar_t *p; int n, cap; };
 static void CamOpen(void);
 static IUnknown *CamObj(int k);
+static void TmToggle(int mode);
 static BOOL RegClass(const wchar_t *name, WNDPROC proc, UINT style);
 struct BB { BYTE *p; DWORD n, cap; };
 
@@ -76,6 +79,9 @@ static DWORD g_hookTid;
 static UINT g_msgTaskbar;
 static BOOL g_elev;
 static HICON g_icon;
+static COLORREF g_tmFg = RGB(255, 255, 255), g_tmBg = RGB(0, 0, 0);               // [Timer] в ini
+static int g_tmFav[10], g_tmNFav;                                                  // избранное: секунды
+static int g_tmAlpha = 60, g_tmSize = 48, g_tmEnd, g_tmPos[2] = {80, 80};          // прозрачность фона %, высота шрифта, действие по окончании, место
 static wchar_t g_cfgCamDev[80]; static int g_cfgCamW, g_cfgCamH, g_cfgWin[4];   // [Camera] в ini: камера, разрешение, x,y,ширина,высота окна
 static DWORD g_ignoreSeq, g_ownSeq;
 
@@ -345,6 +351,7 @@ static const char *kIni1 = u8R"INI(; DKeys - настройки. Коммент�
 ;     totray                    спрятать окно (вернуть - из меню значка в трее)
 ;     pause                     пауза/продолжить хоткеи
 ;     webcam                    окно предпросмотра веб-камеры (есть и в меню значка)
+;     stopwatch / timer         секундомер / таймер: старт-пауза (настройки - в меню значка, секция [Timer])
 ; Win+цифры буферов перекрывают запуск закреплённых программ на панели задач.
 ; В меню буфера: Del - удалить, F2 - править, Ins - новая запись, Ctrl+Вверх/Вниз - переставить,
 ; Влево/Вправо или Win+цифра - другой буфер, Ctrl+цифра - скопировать запись в буфер, Tab - история/запуск.
@@ -501,7 +508,7 @@ static BOOL ParseAction(const wchar_t *v, Bind *b) {
     static const Act T[] = {
         {L"copy", A_COPY, 1}, {L"paste", A_PASTE, 3}, {L"buffer", A_BUFFER, 4}, {L"slots", A_BUFFER, 4}, {L"layout", A_LAYOUT, 0}, {L"history", A_HIST, 0}, {L"launcher", A_LAUNCH, 0},
         {L"run", A_RUN, 2}, {L"admin", A_ADMIN, 2}, {L"py", A_PY, 2}, {L"pyrun", A_PYRUN, 0}, {L"topmost", A_TOPMOST, 0},
-        {L"totray", A_TOTRAY, 0}, {L"pause", A_PAUSE, 0}, {L"webcam", A_WEBCAM, 0},
+        {L"totray", A_TOTRAY, 0}, {L"pause", A_PAUSE, 0}, {L"webcam", A_WEBCAM, 0}, {L"stopwatch", A_STOPWATCH, 0}, {L"timer", A_TIMER, 0},
     };
     for (int i = 0; i < (int)(sizeof T / sizeof T[0]); i++) {
         if (lstrcmpiW(name, T[i].n)) continue;
@@ -519,6 +526,18 @@ static BOOL ParseAction(const wchar_t *v, Bind *b) {
     return *start != 0;
 }
 
+static COLORREF HexRgb(const wchar_t *s) {
+    DWORD v = 0; while (*s == L'#' || *s == L' ') s++;
+    for (;; s++) {
+        int d;
+        if (*s >= L'0' && *s <= L'9') d = *s - L'0';
+        else if (*s >= L'a' && *s <= L'f') d = *s - L'a' + 10;
+        else if (*s >= L'A' && *s <= L'F') d = *s - L'A' + 10;
+        else break;
+        v = v * 16 + d;
+    }
+    return RGB((v >> 16) & 255, (v >> 8) & 255, v & 255);
+}
 static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
     if (!lstrcmpiW(s, L"General")) {
         if (!lstrcmpiW(k, L"HistoryEnabled")) g_histOn = ToInt(v) != 0;
@@ -536,6 +555,17 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
         if (!ParseHotkey(k, &b.mods, &b.key) || !ParseAction(v, &b)) { Free(b.arg); Free(b.dir); return; }
         if (g_nbnew >= g_bnewCap) { g_bnewCap = g_bnewCap ? g_bnewCap * 2 : 64; g_bnew = (Bind *)Realloc(g_bnew, g_bnewCap * sizeof(Bind)); }
         g_bnew[g_nbnew++] = b;
+    } else if (!lstrcmpiW(s, L"Timer")) {
+        if (!lstrcmpiW(k, L"FontColor")) g_tmFg = HexRgb(v);
+        else if (!lstrcmpiW(k, L"BgColor")) g_tmBg = HexRgb(v);
+        else if (!lstrcmpiW(k, L"BgAlpha")) { g_tmAlpha = ToInt(v); if (g_tmAlpha < 0) g_tmAlpha = 0; if (g_tmAlpha > 100) g_tmAlpha = 100; }
+        else if (!lstrcmpiW(k, L"Size")) { g_tmSize = ToInt(v); if (g_tmSize < 12) g_tmSize = 12; if (g_tmSize > 300) g_tmSize = 300; }
+        else if (!lstrcmpiW(k, L"EndAction")) { g_tmEnd = ToInt(v); if (g_tmEnd < 0 || g_tmEnd > 2) g_tmEnd = 0; }
+        else if (!lstrcmpiW(k, L"Favorites")) {
+            g_tmNFav = 0; const wchar_t *q = v;
+            while (*q && g_tmNFav < 10) { int t = ToInt(q); if (t > 0) g_tmFav[g_tmNFav++] = t; while (*q && *q != L',') q++; if (*q) q++; }
+        }
+        else if (!lstrcmpiW(k, L"Pos")) { const wchar_t *q = v; g_tmPos[0] = ToInt(q); while (*q && *q != L',') q++; g_tmPos[1] = *q ? ToInt(q + 1) : 80; }
     } else if (!lstrcmpiW(s, L"Camera")) {
         if (!lstrcmpiW(k, L"Device")) lstrcpynW(g_cfgCamDev, v, 80);
         else if (!lstrcmpiW(k, L"Resolution")) {
@@ -1154,6 +1184,7 @@ static void PopupEnsureVisible(void) {
 
 /* ---------- edit dialog ---------- */
 static HWND g_edDlg, g_edEdit; static int g_edDone; static wchar_t *g_edText;
+static BOOL g_edLine;     // однострочный режим: маленькое окно, Enter = OK
 static LRESULT CALLBACK EdProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
     case WM_COMMAND:
@@ -1192,22 +1223,23 @@ static wchar_t *EditDialog(const wchar_t *title, const wchar_t *text) {
                               0, 0, 100, 100, NULL, NULL, g_inst, NULL);
     int d = GetDpiForWindow(g_edDlg);
     HFONT f = CreateFontW(-MulDiv(10, d, 72), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
-    g_edEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN,
+    g_edEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | (g_edLine ? ES_AUTOHSCROLL : (WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN)),
                                0, 0, 10, 10, g_edDlg, (HMENU)3, g_inst, NULL);
-    HWND ok = CreateWindowExW(0, L"BUTTON", L"OK  (Ctrl+Enter)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 10, 10, g_edDlg, (HMENU)IDOK, g_inst, NULL);
+    HWND ok = CreateWindowExW(0, L"BUTTON", g_edLine ? L"OK  (Enter)" : L"OK  (Ctrl+Enter)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 10, 10, g_edDlg, (HMENU)IDOK, g_inst, NULL);
     HWND cn = CreateWindowExW(0, L"BUTTON", L"Отмена", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 10, 10, g_edDlg, (HMENU)IDCANCEL, g_inst, NULL);
     SendMessageW(g_edEdit, WM_SETFONT, (WPARAM)f, TRUE); SendMessageW(ok, WM_SETFONT, (WPARAM)f, TRUE); SendMessageW(cn, WM_SETFONT, (WPARAM)f, TRUE);
     SendMessageW(g_edEdit, EM_SETLIMITTEXT, 4000000, 0);
     SetWindowTextW(g_edEdit, text);
-    int W = MulDiv(640, d, 96), H = MulDiv(420, d, 96);
+    int W = MulDiv(g_edLine ? 380 : 640, d, 96), H = MulDiv(g_edLine ? 150 : 420, d, 96);
     SetWindowPos(g_edDlg, HWND_TOPMOST, (mi.rcWork.left + mi.rcWork.right - W) / 2, (mi.rcWork.top + mi.rcWork.bottom - H) / 2, W, H, SWP_SHOWWINDOW);
     ForceFg(g_edDlg); SetFocus(g_edEdit);
+    if (g_edLine) SendMessageW(g_edEdit, EM_SETSEL, 0, -1);
     InterlockedExchange(&g_modal, 1);
     MSG msg;
     while (!g_edDone && GetMessageW(&msg, NULL, 0, 0) > 0) {
         if (msg.message == WM_KEYDOWN) {
             if (msg.wParam == VK_ESCAPE) { g_edDone = 2; break; }
-            if (msg.wParam == VK_RETURN && (GetKeyState(VK_CONTROL) & 0x8000)) { SendMessageW(g_edDlg, WM_COMMAND, IDOK, 0); continue; }
+            if (msg.wParam == VK_RETURN && (g_edLine || (GetKeyState(VK_CONTROL) & 0x8000))) { SendMessageW(g_edDlg, WM_COMMAND, IDOK, 0); continue; }
         }
         TranslateMessage(&msg); DispatchMessageW(&msg);
     }
@@ -1476,6 +1508,8 @@ static void ExecBind(const Bind *b) {
     case A_TOTRAY: HideToTray(); break;
     case A_LAYOUT: FixLayout(); break;
     case A_WEBCAM: CamOpen(); break;
+    case A_STOPWATCH: TmToggle(1); break;
+    case A_TIMER: TmToggle(2); break;
     case A_PAUSE: InterlockedExchange(&g_paused, !g_paused); Toast(g_paused ? L"DKeys: пауза" : L"DKeys: работает"); break;
     }
 }
@@ -2114,6 +2148,216 @@ static void CamOpen(void) {
     SetForegroundWindow(g_hwndCam);
 }
 
+/* ---------- секундомер и таймер: только цифры на экране, окно без рамки ---------- */
+#define TM_ID 0x7000
+static HWND g_hwndTm;
+static int g_tmMode;                                  // 0 - выключено, 1 - секундомер, 2 - таймер
+static BOOL g_tmRun, g_shutPend;
+static ULONGLONG g_tmStart, g_tmAcc, g_tmTarget;      // мс
+static wchar_t g_tmLast[16];
+
+static ULONGLONG TmElapsed(void) { return g_tmAcc + (g_tmRun ? GetTickCount64() - g_tmStart : 0); }
+static void TmText(wchar_t *b) {
+    ULONGLONG ms = TmElapsed(), t;
+    if (g_tmMode == 2) t = ms >= g_tmTarget ? 0 : (g_tmTarget - ms + 999) / 1000; else t = ms / 1000;
+    int h = (int)(t / 3600), m = (int)(t / 60 % 60), s = (int)(t % 60);
+    if (h) wsprintfW(b, L"%d:%02d:%02d", h, m, s); else wsprintfW(b, L"%02d:%02d", m, s);
+}
+static void TmSave(void) {
+    wchar_t v[32];
+    wsprintfW(v, L"%02X%02X%02X", GetRValue(g_tmFg), GetGValue(g_tmFg), GetBValue(g_tmFg)); IniSet(L"Timer", L"FontColor", v);
+    wsprintfW(v, L"%02X%02X%02X", GetRValue(g_tmBg), GetGValue(g_tmBg), GetBValue(g_tmBg)); IniSet(L"Timer", L"BgColor", v);
+    wsprintfW(v, L"%d", g_tmAlpha); IniSet(L"Timer", L"BgAlpha", v);
+    wsprintfW(v, L"%d", g_tmSize); IniSet(L"Timer", L"Size", v);
+    wsprintfW(v, L"%d", g_tmEnd); IniSet(L"Timer", L"EndAction", v);
+    wsprintfW(v, L"%d,%d", g_tmPos[0], g_tmPos[1]); IniSet(L"Timer", L"Pos", v);
+    wchar_t f[128]; int o = 0; f[0] = 0;
+    for (int i = 0; i < g_tmNFav; i++) o += wsprintfW(f + o, i ? L",%d" : L"%d", g_tmFav[i]);
+    IniSet(L"Timer", L"Favorites", f);
+}
+static void TmFmt(int sec, wchar_t *b) {
+    if (sec >= 3600) wsprintfW(b, L"%d:%02d:%02d", sec / 3600, sec / 60 % 60, sec % 60); else wsprintfW(b, L"%d:%02d", sec / 60, sec % 60);
+}
+static int ParseTime(const wchar_t *s) {       // секунды: "5" - минуты, "1:30" - м:с, "1:02:03" или "1 2 3" - ч:м:с
+    int v[3], n = 0;
+    while (*s && n < 3) {
+        while (*s && (*s < L'0' || *s > L'9')) s++;
+        if (!*s) break;
+        v[n] = ToInt(s); if (v[n] > 99999) v[n] = 99999; n++;
+        while (*s >= L'0' && *s <= L'9') s++;
+    }
+    int t = n == 1 ? v[0] * 60 : n == 2 ? v[0] * 60 + v[1] : n == 3 ? v[0] * 3600 + v[1] * 60 + v[2] : 0;
+    return t > 359999 ? 359999 : t;
+}
+// рисуем цифры в слое с попиксельной прозрачностью: фон - цвет с заданной прозрачностью, цифры - непрозрачные
+static void TmPaint(void) {
+    if (!g_hwndTm) return;
+    wchar_t txt[16]; TmText(txt); int n = lstrlenW(txt);
+    lstrcpyW(g_tmLast, txt);
+    HDC sdc = GetDC(NULL), dc = CreateCompatibleDC(sdc);
+    HFONT f = CreateFontW(-g_tmSize, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
+    HGDIOBJ of = SelectObject(dc, f);
+    SIZE sz; GetTextExtentPoint32W(dc, txt, n, &sz);
+    int pad = g_tmSize / 4, w = sz.cx + 2 * pad, h = sz.cy + pad;
+    BITMAPINFO bi; memset(&bi, 0, sizeof bi);
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER); bi.bmiHeader.biWidth = w; bi.bmiHeader.biHeight = -h;
+    bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32;
+    DWORD *px = NULL; HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, (void **)&px, NULL, 0);
+    if (px) {
+        HGDIOBJ ob = SelectObject(dc, bmp);
+        memset(px, 0, (size_t)w * h * 4);
+        SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255, 255, 255));
+        RECT r = {0, 0, w, h}; DrawTextW(dc, txt, n, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        GdiFlush();
+        int bgA = g_tmAlpha * 255 / 100; if (bgA < 1) bgA = 1;        // alpha 0 пропускал бы клики сквозь окно
+        int fr = GetRValue(g_tmFg), fg = GetGValue(g_tmFg), fb = GetBValue(g_tmFg), br = GetRValue(g_tmBg), bg = GetGValue(g_tmBg), bb = GetBValue(g_tmBg);
+        for (int i = 0; i < w * h; i++) {
+            int cov = (px[i] >> 8) & 255, A = bgA + (255 - bgA) * cov / 255;
+            int R = (br * (255 - cov) + fr * cov) / 255, G = (bg * (255 - cov) + fg * cov) / 255, B = (bb * (255 - cov) + fb * cov) / 255;
+            px[i] = ((DWORD)A << 24) | ((DWORD)(R * A / 255) << 16) | ((DWORD)(G * A / 255) << 8) | (DWORD)(B * A / 255);
+        }
+        POINT src = {0, 0}, pos; SIZE ws = {w, h}; RECT wr; GetWindowRect(g_hwndTm, &wr); pos.x = wr.left; pos.y = wr.top;
+        BLENDFUNCTION bf; bf.BlendOp = AC_SRC_OVER; bf.BlendFlags = 0; bf.SourceConstantAlpha = 255; bf.AlphaFormat = AC_SRC_ALPHA;
+        UpdateLayeredWindow(g_hwndTm, sdc, &pos, &ws, dc, &src, 0, &bf, ULW_ALPHA);
+        SelectObject(dc, ob);
+    }
+    SelectObject(dc, of); DeleteObject(f); if (bmp) DeleteObject(bmp);
+    DeleteDC(dc); ReleaseDC(NULL, sdc);
+}
+static void TmFinish(void) {
+    g_tmAcc = g_tmTarget; g_tmRun = FALSE;
+    TmPaint();
+    MessageBeep(MB_ICONEXCLAMATION);
+    Toast(L"Таймер: время вышло");
+    if (g_tmEnd) {
+        RunHidden(g_tmEnd == 1 ? L"shutdown.exe /s /t 30 /c \"DKeys: таймер\"" : L"shutdown.exe /r /t 30 /c \"DKeys: таймер\"");
+        g_shutPend = TRUE;
+    }
+}
+static LRESULT CALLBACK TmProc(HWND h, UINT m, WPARAM w, LPARAM l);
+static void TmMenuPopup(void);
+static void TmEnsure(int mode) {
+    if (g_tmMode != mode) { g_tmMode = mode; g_tmRun = FALSE; g_tmAcc = 0; }
+    if (g_hwndTm) return;
+    RegClass(L"DKTimer", TmProc, 0);
+    POINT p = {g_tmPos[0], g_tmPos[1]};
+    if (!MonitorFromPoint(p, MONITOR_DEFAULTTONULL)) { p.x = 80; p.y = 80; }
+    g_hwndTm = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"DKTimer", L"", WS_POPUP, p.x, p.y, 10, 10, NULL, NULL, g_inst, NULL);
+    if (!g_hwndTm) { g_tmMode = 0; return; }
+    SetTimer(g_hwndTm, 1, 250, NULL);
+    TmPaint();
+    ShowWindow(g_hwndTm, SW_SHOWNA);
+}
+static void TmClose(void) { g_tmMode = 0; g_tmRun = FALSE; if (g_hwndTm) DestroyWindow(g_hwndTm); }
+static void TmToggle(int mode) {
+    TmEnsure(mode); if (!g_hwndTm) return;
+    if (mode == 2 && g_tmTarget == 0) { Toast(L"Задайте время: меню - Время таймера"); return; }
+    if (g_tmRun) { g_tmAcc = TmElapsed(); g_tmRun = FALSE; }
+    else { if (mode == 2 && TmElapsed() >= g_tmTarget) g_tmAcc = 0; g_tmStart = GetTickCount64(); g_tmRun = TRUE; }
+    TmPaint();
+}
+static void TmStartFor(int sec) {
+    TmEnsure(2); if (!g_hwndTm) return;
+    g_tmTarget = (ULONGLONG)sec * 1000; g_tmAcc = 0; g_tmStart = GetTickCount64(); g_tmRun = TRUE;
+    TmPaint();
+}
+static void TmReset(int mode) { TmEnsure(mode); g_tmAcc = 0; g_tmRun = FALSE; TmPaint(); }
+static void TmPick(BOOL font) {
+    static COLORREF cust[16];
+    CHOOSECOLORW cc; memset(&cc, 0, sizeof cc);
+    cc.lStructSize = sizeof cc; cc.hwndOwner = g_hwndTm; cc.rgbResult = font ? g_tmFg : g_tmBg;
+    cc.lpCustColors = cust; cc.Flags = CC_RGBINIT | CC_FULLOPEN;
+    if (ChooseColorW(&cc)) { if (font) g_tmFg = cc.rgbResult; else g_tmBg = cc.rgbResult; TmSave(); TmPaint(); }
+}
+static const int kTmSize[5] = {24, 36, 48, 72, 120};
+static void TmCommand(int id) {
+    int k = id - TM_ID;
+    if (k == 1) TmToggle(1);
+    else if (k == 2) TmReset(1);
+    else if (k == 3) TmToggle(2);
+    else if (k == 4) TmReset(2);
+    else if (k == 5) {                                   // ввести время и сразу запустить
+        wchar_t cur[16] = L"";
+        if (g_tmTarget) TmFmt((int)(g_tmTarget / 1000), cur);
+        g_edLine = TRUE; wchar_t *s = EditDialog(L"Таймер: минуты, м:с или ч:м:с", cur); g_edLine = FALSE;
+        if (s) { int t = ParseTime(s); Free(s); if (t > 0) TmStartFor(t); }
+    }
+    else if (k == 6) {                                   // текущее время таймера - в избранное
+        int t = (int)(g_tmTarget / 1000), i = 0;
+        while (i < g_tmNFav && g_tmFav[i] != t) i++;
+        if (t > 0 && i == g_tmNFav && g_tmNFav < 10) { g_tmFav[g_tmNFav++] = t; TmSave(); }
+    }
+    else if (k >= 50 && k < 50 + g_tmNFav) TmStartFor(g_tmFav[k - 50]);
+    else if (k >= 60 && k < 60 + g_tmNFav) {
+        memmove(g_tmFav + k - 60, g_tmFav + k - 59, (g_tmNFav - (k - 60) - 1) * sizeof(int)); g_tmNFav--; TmSave();
+    }
+    else if (k >= 12 && k <= 14) { g_tmEnd = k - 12; TmSave(); }
+    else if (k == 15 || k == 16) { TmEnsure(g_tmMode ? g_tmMode : 1); if (g_hwndTm) TmPick(k == 15); }
+    else if (k >= 20 && k <= 24) { TmEnsure(g_tmMode ? g_tmMode : 1); g_tmAlpha = (k - 20) * 25; TmSave(); TmPaint(); }
+    else if (k >= 30 && k <= 34) { TmEnsure(g_tmMode ? g_tmMode : 1); g_tmSize = kTmSize[k - 30]; TmSave(); TmPaint(); }
+    else if (k == 40) TmClose();
+    else if (k == 41) { RunHidden(L"shutdown.exe /a"); g_shutPend = FALSE; Toast(L"Выключение отменено"); }
+}
+static HMENU TmMenu(void) {
+    HMENU m = CreatePopupMenu(), add = CreatePopupMenu(), en = CreatePopupMenu(), view = CreatePopupMenu(), al = CreatePopupMenu(), sz = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING, TM_ID + 1, g_tmMode == 1 && g_tmRun ? L"Секундомер: пауза" : L"Секундомер: старт");
+    AppendMenuW(m, MF_STRING, TM_ID + 2, L"Секундомер: сбросить");
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(m, MF_STRING, TM_ID + 3, g_tmMode == 2 && g_tmRun ? L"Таймер: пауза" : L"Таймер: старт");
+    AppendMenuW(m, MF_STRING, TM_ID + 4, L"Таймер: сбросить");
+    HMENU rm = CreatePopupMenu();
+    AppendMenuW(add, MF_STRING, TM_ID + 5, L"Ввести время…");
+    if (g_tmNFav) AppendMenuW(add, MF_SEPARATOR, 0, NULL);
+    for (int i = 0; i < g_tmNFav; i++) {
+        wchar_t t[16]; TmFmt(g_tmFav[i], t);
+        AppendMenuW(add, MF_STRING, TM_ID + 50 + i, t); AppendMenuW(rm, MF_STRING, TM_ID + 60 + i, t);
+    }
+    AppendMenuW(add, MF_SEPARATOR, 0, NULL);
+    int cur = (int)(g_tmTarget / 1000), ci = 0; while (ci < g_tmNFav && g_tmFav[ci] != cur) ci++;
+    AppendMenuW(add, MF_STRING | (cur > 0 && ci == g_tmNFav && g_tmNFav < 10 ? 0 : MF_GRAYED), TM_ID + 6, L"Добавить текущее в избранное");
+    if (g_tmNFav) AppendMenuW(add, MF_POPUP, (UINT_PTR)rm, L"Убрать из избранного"); else DestroyMenu(rm);
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)add, L"Время таймера");
+    static const wchar_t *const en_[3] = {L"Только сигнал", L"Выключить компьютер", L"Перезагрузить компьютер"};
+    for (int i = 0; i < 3; i++) AppendMenuW(en, MF_STRING | (g_tmEnd == i ? MF_CHECKED : 0), TM_ID + 12 + i, en_[i]);
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)en, L"По окончании таймера");
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(view, MF_STRING, TM_ID + 15, L"Цвет цифр…");
+    AppendMenuW(view, MF_STRING, TM_ID + 16, L"Цвет фона…");
+    for (int i = 0; i < 5; i++) { wchar_t t[16]; wsprintfW(t, L"%d%%", i * 25); AppendMenuW(al, MF_STRING | (g_tmAlpha == i * 25 ? MF_CHECKED : 0), TM_ID + 20 + i, t); }
+    AppendMenuW(view, MF_POPUP, (UINT_PTR)al, L"Непрозрачность фона");
+    for (int i = 0; i < 5; i++) { wchar_t t[16]; wsprintfW(t, L"%d", kTmSize[i]); AppendMenuW(sz, MF_STRING | (g_tmSize == kTmSize[i] ? MF_CHECKED : 0), TM_ID + 30 + i, t); }
+    AppendMenuW(view, MF_POPUP, (UINT_PTR)sz, L"Размер цифр");
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)view, L"Вид");
+    if (g_shutPend) AppendMenuW(m, MF_STRING, TM_ID + 41, L"Отменить выключение/перезагрузку");
+    if (g_tmMode) AppendMenuW(m, MF_STRING, TM_ID + 40, L"Закрыть");
+    return m;
+}
+static void TmMenuPopup(void) {
+    POINT pt; GetCursorPos(&pt);
+    HMENU m = TmMenu();
+    SetForegroundWindow(g_hwndTm);
+    int c = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, g_hwndTm, NULL);
+    PostMessageW(g_hwndTm, WM_NULL, 0, 0);
+    DestroyMenu(m);
+    if (c) TmCommand(c);
+}
+static LRESULT CALLBACK TmProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    switch (m) {
+    case WM_NCHITTEST: return HTCAPTION;                              // перетаскивание за любое место
+    case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
+    case WM_NCLBUTTONDBLCLK: TmToggle(g_tmMode ? g_tmMode : 1); return 0;
+    case WM_NCRBUTTONUP: TmMenuPopup(); return 0;
+    case WM_EXITSIZEMOVE: { RECT r; GetWindowRect(h, &r); g_tmPos[0] = r.left; g_tmPos[1] = r.top; TmSave(); return 0; }
+    case WM_TIMER: {
+        if (g_tmMode == 2 && g_tmRun && TmElapsed() >= g_tmTarget) { TmFinish(); return 0; }
+        wchar_t t[16]; TmText(t); if (lstrcmpW(t, g_tmLast)) TmPaint();
+        return 0;
+    }
+    case WM_DESTROY: KillTimer(h, 1); g_hwndTm = NULL; return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+
 static void TrayMenu(void) {
     POINT pt; GetCursorPos(&pt);
     HMENU m = CreatePopupMenu(), hm = NULL;
@@ -2121,6 +2365,7 @@ static void TrayMenu(void) {
     AppendMenuW(m, g_histOn ? MF_STRING : MF_STRING | MF_GRAYED, 2, L"История…");
     AppendMenuW(m, MF_STRING, 3, L"Быстрый запуск…");
     AppendMenuW(m, MF_STRING, 4, L"Вебкамеры…");
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)TmMenu(), L"Секундомер и таймер");
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING | (g_histOn ? MF_CHECKED : 0), 10, L"Своя история буфера (Win+V)");
     AppendMenuW(m, MF_STRING | (AutoGet() ? MF_CHECKED : 0), 11, L"Автозапуск");
@@ -2161,7 +2406,9 @@ static void TrayMenu(void) {
     case 13: ShellExecuteW(NULL, L"open", g_memDir, NULL, NULL, SW_SHOWNORMAL); break;
     case 14: Reload(); break;
     case 16: DestroyWindow(g_hwnd); break;
-    default: if (c >= 200 && c < 200 + 32) ShowHidden(c - 200);
+    default:
+        if (c >= TM_ID && c < TM_ID + 80) TmCommand(c);
+        else if (c >= 200 && c < 200 + 32) ShowHidden(c - 200);
     }
 }
 
