@@ -3098,7 +3098,7 @@ static void DrawOpen(void) { DrawNs::Open(); }
 
 /* ---------- пипетка: снимок виртуального экрана на весь экран + круглая лупа 4x (11x11 пикселей) у курсора ---------- */
 namespace PickNs {
-enum { SRC = 11, ZOOM = 4, LD = SRC * ZOOM, LABW = 96, LABH = 24 };
+enum { SRC = 13, ZOOM = 4, LD = SRC * ZOOM, LABW = 96, LABH = 24 };   // круг 52 px (~50), 13x13 пикселей источника, центр - курсор
 static HWND hw; static HDC mdc; static HBITMAP hb, hbOld; static DWORD *bits; static HFONT font;
 static int VX, VY, VW, VH; static RECT prev; static BOOL havePrev;
 
@@ -3111,26 +3111,24 @@ static void Update(void) {
     POINT c; Cur(&c);
     HDC dc = GetDC(hw);
     if (havePrev) BitBlt(dc, prev.left, prev.top, prev.right - prev.left, prev.bottom - prev.top, mdc, prev.left, prev.top, SRCCOPY);
-    int tw = LABW, th = LD + 4 + LABH, bx = c.x + 22, by = c.y + 22;
-    if (bx + tw > VW) bx = c.x - 22 - tw;
-    if (by + th > VH) by = c.y - 22 - th;
-    int lx = bx + (tw - LD) / 2, ly = by;
+    int tw = LABW, lx = c.x - LD / 2, ly = c.y - LD / 2, bx = c.x - tw / 2;
+    int ty = ly + LD + 4;                                   // плашка под кругом, а у нижнего края - над ним
+    if (ty + LABH > VH) ty = ly - 4 - LABH;
+    if (bx < 0) bx = 0; if (bx + tw > VW) bx = VW - tw;
     HRGN rg = CreateEllipticRgn(lx, ly, lx + LD + 1, ly + LD + 1);
     SelectClipRgn(dc, rg);
     SetStretchBltMode(dc, COLORONCOLOR);
     StretchBlt(dc, lx, ly, LD, LD, mdc, c.x - SRC / 2, c.y - SRC / 2, SRC, SRC, SRCCOPY);
     SelectClipRgn(dc, NULL); DeleteObject(rg);
-    HPEN pw = CreatePen(PS_SOLID, 2, RGB(255, 255, 255)), pk = CreatePen(PS_SOLID, 1, RGB(0, 0, 0));
-    HGDIOBJ ob = SelectObject(dc, GetStockObject(NULL_BRUSH)), op = SelectObject(dc, pk);
-    Ellipse(dc, lx - 1, ly - 1, lx + LD + 1, ly + LD + 1);
-    SelectObject(dc, pw); Ellipse(dc, lx + 1, ly + 1, lx + LD - 1, ly + LD - 1);
+    HPEN pw = CreatePen(PS_SOLID, 1, RGB(255, 255, 255)), pk = CreatePen(PS_SOLID, 1, RGB(0, 0, 0));
+    HGDIOBJ ob = SelectObject(dc, GetStockObject(NULL_BRUSH)), op = SelectObject(dc, pw);
+    Ellipse(dc, lx, ly, lx + LD, ly + LD);                  // тонкая обводка 1 px
     int cx = lx + (SRC / 2) * ZOOM, cy = ly + (SRC / 2) * ZOOM;       // клетка под курсором
     SelectObject(dc, pk); Rectangle(dc, cx - 1, cy - 1, cx + ZOOM + 1, cy + ZOOM + 1);
     SelectObject(dc, pw); Rectangle(dc, cx, cy, cx + ZOOM, cy + ZOOM);
     DWORD v = bits[(size_t)c.y * VW + c.x] & 0xFFFFFF;
     COLORREF col = RGB((v >> 16) & 255, (v >> 8) & 255, v & 255);
     HBRUSH bl = CreateSolidBrush(RGB(32, 33, 36)), bs = CreateSolidBrush(col);
-    int ty = ly + LD + 4;
     SelectObject(dc, pk); SelectObject(dc, bl); RoundRect(dc, bx, ty, bx + tw, ty + LABH, 8, 8);
     SelectObject(dc, pw); SelectObject(dc, bs); Rectangle(dc, bx + 6, ty + 5, bx + 20, ty + LABH - 5);
     wchar_t t[16]; wsprintfW(t, L"#%06X", v);
@@ -3141,7 +3139,8 @@ static void Update(void) {
     SelectObject(dc, of); SelectObject(dc, op); SelectObject(dc, ob);
     DeleteObject(pw); DeleteObject(pk); DeleteObject(bl); DeleteObject(bs);
     ReleaseDC(hw, dc);
-    prev.left = bx - 3; prev.top = by - 3; prev.right = bx + tw + 3; prev.bottom = by + th + 3; havePrev = TRUE;
+    prev.left = (lx < bx ? lx : bx) - 3; prev.right = (lx + LD > bx + tw ? lx + LD : bx + tw) + 3;
+    prev.top = (ty < ly ? ty : ly) - 3; prev.bottom = (ty + LABH > ly + LD ? ty + LABH : ly + LD) + 3; havePrev = TRUE;
 }
 static void Pick(void) {
     POINT c; Cur(&c);
@@ -3165,7 +3164,7 @@ static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         BitBlt(dc, 0, 0, VW, VH, mdc, 0, 0, SRCCOPY);
         EndPaint(h, &ps); havePrev = FALSE; Update(); return 0;
     }
-    case WM_SETCURSOR: SetCursor(LoadCursorW(NULL, IDC_CROSS)); return TRUE;
+    case WM_SETCURSOR: SetCursor(NULL); return TRUE;           // курсор скрыт: его место занимает центр лупы
     case WM_MOUSEMOVE: Update(); return 0;
     case WM_LBUTTONDOWN: Pick(); return 0;
     case WM_RBUTTONDOWN: Close(); return 0;
