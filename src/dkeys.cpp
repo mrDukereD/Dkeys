@@ -47,7 +47,7 @@ void *memmove(void *d, const void *s, size_t n) {
 
 #define DKMARK ((ULONG_PTR)0x444B4559)
 enum { DM_CTRL = 1, DM_ALT = 2, DM_SHIFT = 4, DM_WIN = 8 };
-enum { A_NONE, A_COPY, A_PASTE, A_BUFFER, A_HIST, A_LAUNCH, A_RUN, A_ADMIN, A_PY, A_PYRUN, A_TOPMOST, A_TOTRAY, A_LAYOUT, A_PAUSE, A_WEBCAM, A_STOPWATCH, A_TIMER, A_DRAW };
+enum { A_NONE, A_COPY, A_PASTE, A_BUFFER, A_HIST, A_LAUNCH, A_RUN, A_ADMIN, A_PY, A_PYRUN, A_TOPMOST, A_TOTRAY, A_LAYOUT, A_PAUSE, A_WEBCAM, A_STOPWATCH, A_TIMER, A_DRAW, A_PICKER };
 enum { PM_BUF, PM_HIST, PM_LAUNCH };
 enum {
     WM_APP_HOT = WM_APP + 1, WM_APP_KEY, WM_APP_CLOSE, WM_APP_PCLICK, WM_APP_PTAB, WM_TRAY, WM_APP_RENDERED,
@@ -69,6 +69,7 @@ static void CamOpen(void);
 static IUnknown *CamObj(int k);
 static void TmToggle(int mode);
 static void DrawOpen(void);
+static void PickerOpen(void);
 static BOOL RegClass(const wchar_t *name, WNDPROC proc, UINT style);
 struct BB { BYTE *p; DWORD n, cap; };
 
@@ -115,6 +116,8 @@ X(L_TRAY_HIST, "tray.history", L"История…") \
 X(L_TRAY_LAUNCH, "tray.launcher", L"Быстрый запуск…") \
 X(L_TRAY_CAM, "tray.webcam", L"Вебкамеры…") \
 X(L_TRAY_DRAW, "tray.draw", L"Рисовалка на экране…") \
+X(L_TRAY_PICK, "tray.picker", L"Пипетка (цвет в буфер)…") \
+X(L_PK_COPIED, "picker.copied", L"Цвет %s скопирован в буфер") \
 X(L_TRAY_TIMER, "tray.timer", L"Секундомер и таймер") \
 X(L_TRAY_HISTON, "tray.history_on", L"Своя история буфера") \
 X(L_TRAY_AUTO, "tray.autostart", L"Автозапуск") \
@@ -478,6 +481,7 @@ static const char *kIni1 = u8R"INI(; DKeys - настройки. Коммент�
 ;     pause                     пауза/продолжить хоткеи
 ;     webcam                    окно предпросмотра веб-камеры (есть и в меню значка)
 ;     stopwatch / timer         секундомер / таймер: старт-пауза (настройки - в меню значка, секция [Timer])
+;     colorpicker               пипетка: клик - цвет пикселя (#RRGGBB) в буфер, стрелки - сдвиг на 1 пиксель, Esc - отмена
 ;     draw                      рисовалка на экране (пометки, стрелки, номера, скрытие; стоп-кадр или поверх живого экрана; секция [Draw])
 ; Win+цифры буферов перекрывают запуск закреплённых программ на панели задач.
 ; В меню буфера: Del - удалить, F2 - править, Ins - новая запись, Ctrl+Вверх/Вниз - переставить,
@@ -665,7 +669,7 @@ static BOOL ParseAction(const wchar_t *v, Bind *b) {
     static const Act T[] = {
         {L"copy", A_COPY, 1}, {L"paste", A_PASTE, 3}, {L"buffer", A_BUFFER, 4}, {L"slots", A_BUFFER, 4}, {L"layout", A_LAYOUT, 0}, {L"history", A_HIST, 0}, {L"launcher", A_LAUNCH, 0},
         {L"run", A_RUN, 2}, {L"admin", A_ADMIN, 2}, {L"py", A_PY, 2}, {L"pyrun", A_PYRUN, 0}, {L"topmost", A_TOPMOST, 0},
-        {L"totray", A_TOTRAY, 0}, {L"pause", A_PAUSE, 0}, {L"webcam", A_WEBCAM, 0}, {L"stopwatch", A_STOPWATCH, 0}, {L"timer", A_TIMER, 0}, {L"draw", A_DRAW, 0},
+        {L"totray", A_TOTRAY, 0}, {L"pause", A_PAUSE, 0}, {L"webcam", A_WEBCAM, 0}, {L"stopwatch", A_STOPWATCH, 0}, {L"timer", A_TIMER, 0}, {L"draw", A_DRAW, 0}, {L"colorpicker", A_PICKER, 0}, {L"picker", A_PICKER, 0},
     };
     for (int i = 0; i < (int)(sizeof T / sizeof T[0]); i++) {
         if (lstrcmpiW(name, T[i].n)) continue;
@@ -1712,6 +1716,7 @@ static void ExecBind(const Bind *b) {
     case A_STOPWATCH: TmToggle(1); break;
     case A_TIMER: TmToggle(2); break;
     case A_DRAW: DrawOpen(); break;
+    case A_PICKER: PickerOpen(); break;
     case A_PAUSE: InterlockedExchange(&g_paused, !g_paused); Toast(g_paused ? Tr(L_T_PAUSED) : Tr(L_T_WORKING)); break;
     }
 }
@@ -3091,6 +3096,115 @@ static void Open(void) {
 }   // namespace DrawNs
 static void DrawOpen(void) { DrawNs::Open(); }
 
+/* ---------- пипетка: снимок виртуального экрана на весь экран + круглая лупа 4x (11x11 пикселей) у курсора ---------- */
+namespace PickNs {
+enum { SRC = 11, ZOOM = 4, LD = SRC * ZOOM, LABW = 96, LABH = 24 };
+static HWND hw; static HDC mdc; static HBITMAP hb, hbOld; static DWORD *bits; static HFONT font;
+static int VX, VY, VW, VH; static RECT prev; static BOOL havePrev;
+
+static void Close(void) { if (hw) DestroyWindow(hw); }
+static void Cur(POINT *c) {
+    GetCursorPos(c); c->x -= VX; c->y -= VY;
+    if (c->x < 0) c->x = 0; if (c->y < 0) c->y = 0; if (c->x >= VW) c->x = VW - 1; if (c->y >= VH) c->y = VH - 1;
+}
+static void Update(void) {
+    POINT c; Cur(&c);
+    HDC dc = GetDC(hw);
+    if (havePrev) BitBlt(dc, prev.left, prev.top, prev.right - prev.left, prev.bottom - prev.top, mdc, prev.left, prev.top, SRCCOPY);
+    int tw = LABW, th = LD + 4 + LABH, bx = c.x + 22, by = c.y + 22;
+    if (bx + tw > VW) bx = c.x - 22 - tw;
+    if (by + th > VH) by = c.y - 22 - th;
+    int lx = bx + (tw - LD) / 2, ly = by;
+    HRGN rg = CreateEllipticRgn(lx, ly, lx + LD + 1, ly + LD + 1);
+    SelectClipRgn(dc, rg);
+    SetStretchBltMode(dc, COLORONCOLOR);
+    StretchBlt(dc, lx, ly, LD, LD, mdc, c.x - SRC / 2, c.y - SRC / 2, SRC, SRC, SRCCOPY);
+    SelectClipRgn(dc, NULL); DeleteObject(rg);
+    HPEN pw = CreatePen(PS_SOLID, 2, RGB(255, 255, 255)), pk = CreatePen(PS_SOLID, 1, RGB(0, 0, 0));
+    HGDIOBJ ob = SelectObject(dc, GetStockObject(NULL_BRUSH)), op = SelectObject(dc, pk);
+    Ellipse(dc, lx - 1, ly - 1, lx + LD + 1, ly + LD + 1);
+    SelectObject(dc, pw); Ellipse(dc, lx + 1, ly + 1, lx + LD - 1, ly + LD - 1);
+    int cx = lx + (SRC / 2) * ZOOM, cy = ly + (SRC / 2) * ZOOM;       // клетка под курсором
+    SelectObject(dc, pk); Rectangle(dc, cx - 1, cy - 1, cx + ZOOM + 1, cy + ZOOM + 1);
+    SelectObject(dc, pw); Rectangle(dc, cx, cy, cx + ZOOM, cy + ZOOM);
+    DWORD v = bits[(size_t)c.y * VW + c.x] & 0xFFFFFF;
+    COLORREF col = RGB((v >> 16) & 255, (v >> 8) & 255, v & 255);
+    HBRUSH bl = CreateSolidBrush(RGB(32, 33, 36)), bs = CreateSolidBrush(col);
+    int ty = ly + LD + 4;
+    SelectObject(dc, pk); SelectObject(dc, bl); RoundRect(dc, bx, ty, bx + tw, ty + LABH, 8, 8);
+    SelectObject(dc, pw); SelectObject(dc, bs); Rectangle(dc, bx + 6, ty + 5, bx + 20, ty + LABH - 5);
+    wchar_t t[16]; wsprintfW(t, L"#%06X", v);
+    RECT tr = {bx + 26, ty, bx + tw - 4, ty + LABH};
+    SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255, 255, 255));
+    HGDIOBJ of = SelectObject(dc, font);
+    DrawTextW(dc, t, -1, &tr, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+    SelectObject(dc, of); SelectObject(dc, op); SelectObject(dc, ob);
+    DeleteObject(pw); DeleteObject(pk); DeleteObject(bl); DeleteObject(bs);
+    ReleaseDC(hw, dc);
+    prev.left = bx - 3; prev.top = by - 3; prev.right = bx + tw + 3; prev.bottom = by + th + 3; havePrev = TRUE;
+}
+static void Pick(void) {
+    POINT c; Cur(&c);
+    DWORD v = bits[(size_t)c.y * VW + c.x] & 0xFFFFFF;
+    wchar_t t[16]; wsprintfW(t, L"#%06X", v);
+    HGLOBAL hg = GlobalAlloc(GMEM_MOVEABLE, sizeof t);
+    BOOL ok = FALSE;
+    if (hg) {
+        memcpy(GlobalLock(hg), t, sizeof t); GlobalUnlock(hg);
+        if (OpenClipboard(hw)) { EmptyClipboard(); ok = SetClipboardData(CF_UNICODETEXT, hg) != NULL; CloseClipboard(); }
+        if (!ok) GlobalFree(hg);
+    }
+    Close();
+    if (ok) { wchar_t m[80]; wsprintfW(m, Tr(L_PK_COPIED), t); Toast(m); }
+}
+static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    switch (m) {
+    case WM_ERASEBKGND: return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps);
+        BitBlt(dc, 0, 0, VW, VH, mdc, 0, 0, SRCCOPY);
+        EndPaint(h, &ps); havePrev = FALSE; Update(); return 0;
+    }
+    case WM_SETCURSOR: SetCursor(LoadCursorW(NULL, IDC_CROSS)); return TRUE;
+    case WM_MOUSEMOVE: Update(); return 0;
+    case WM_LBUTTONDOWN: Pick(); return 0;
+    case WM_RBUTTONDOWN: Close(); return 0;
+    case WM_KEYDOWN: {
+        if (w == VK_ESCAPE) { Close(); return 0; }
+        if (w == VK_RETURN) { Pick(); return 0; }
+        int dx = w == VK_LEFT ? -1 : w == VK_RIGHT ? 1 : 0, dy = w == VK_UP ? -1 : w == VK_DOWN ? 1 : 0;
+        if (dx || dy) { POINT p; GetCursorPos(&p); SetCursorPos(p.x + dx, p.y + dy); Update(); }
+        return 0;
+    }
+    case WM_DESTROY:
+        if (mdc) { SelectObject(mdc, hbOld); DeleteDC(mdc); mdc = NULL; }
+        if (hb) { DeleteObject(hb); hb = NULL; }
+        if (font) { DeleteObject(font); font = NULL; }
+        hw = NULL; return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+static void Open(void) {
+    if (hw) { DestroyWindow(hw); return; }
+    VX = GetSystemMetrics(SM_XVIRTUALSCREEN); VY = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    VW = GetSystemMetrics(SM_CXVIRTUALSCREEN); VH = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    BITMAPINFO bi; memset(&bi, 0, sizeof bi);
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER); bi.bmiHeader.biWidth = VW; bi.bmiHeader.biHeight = -VH;
+    bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32;
+    hb = CreateDIBSection(NULL, &bi, DIB_RGB_COLORS, (void **)&bits, NULL, 0);
+    if (!hb) return;
+    mdc = CreateCompatibleDC(NULL); hbOld = (HBITMAP)SelectObject(mdc, hb);
+    HDC sdc = GetDC(NULL); BitBlt(mdc, 0, 0, VW, VH, sdc, VX, VY, SRCCOPY | CAPTUREBLT); ReleaseDC(NULL, sdc);
+    font = CreateFontW(-MulDiv(10, GetDpiForSystem(), 72), 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+    RegClass(L"DKPick", Proc, 0);
+    hw = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, L"DKPick", L"", WS_POPUP, VX, VY, VW, VH, NULL, NULL, g_inst, NULL);
+    if (!hw) { SelectObject(mdc, hbOld); DeleteDC(mdc); mdc = NULL; DeleteObject(hb); hb = NULL; DeleteObject(font); font = NULL; return; }
+    havePrev = FALSE;
+    ShowWindow(hw, SW_SHOW); ForceFg(hw); SetFocus(hw);
+}
+}   // namespace PickNs
+static void PickerOpen(void) { PickNs::Open(); }
+
 static void TrayMenu(void) {
     POINT pt; GetCursorPos(&pt);
     HMENU m = CreatePopupMenu(), hm = NULL;
@@ -3099,6 +3213,7 @@ static void TrayMenu(void) {
     AddHk(m, MF_STRING, 3, Tr(L_TRAY_LAUNCH), A_LAUNCH);
     AddHk(m, MF_STRING, 4, Tr(L_TRAY_CAM), A_WEBCAM);
     AddHk(m, MF_STRING, 5, Tr(L_TRAY_DRAW), A_DRAW);
+    AddHk(m, MF_STRING, 6, Tr(L_TRAY_PICK), A_PICKER);
     AppendMenuW(m, MF_POPUP, (UINT_PTR)TmMenu(), Tr(L_TRAY_TIMER));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AddHk(m, MF_STRING | (g_histOn ? MF_CHECKED : 0), 10, Tr(L_TRAY_HISTON), A_HIST);
@@ -3133,6 +3248,7 @@ static void TrayMenu(void) {
     case 3: PopupOpen(PM_LAUNCH); break;
     case 4: CamOpen(); break;
     case 5: Sleep(150); DrawOpen(); break;      // пауза: меню успевает исчезнуть с экрана
+    case 6: Sleep(150); PickerOpen(); break;
     case 10: SetHistory(!g_histOn); break;
     case 11: AutoSet(!AutoGet()); break;
     case 15: InterlockedExchange(&g_paused, !g_paused); break;
