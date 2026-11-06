@@ -213,14 +213,13 @@ X(L_D_TT9, "draw.tip_eraser", L"Ластик (убирает фигуру цел
 X(L_D_TT10, "draw.tip_spot", L"Выделить область: всё остальное затемняется") \
 X(L_D_TT11, "draw.tip_crop", L"Область сохранения: в буфер и в файл попадёт только она") \
 X(L_D_TT12, "draw.tip_loupe", L"Лупа: увеличивает круг (радиус - до курсора, толщина - степень)") \
-X(L_D_TT13, "draw.tip_move", L"Переместить готовую фигуру") \
-X(L_D_TT14, "draw.tip_undo", L"Отменить") \
-X(L_D_TT15, "draw.tip_redo", L"Вернуть") \
-X(L_D_TT16, "draw.tip_mode", L"Режим: снимок экрана / поверх живого экрана") \
-X(L_D_TT17, "draw.tip_monitor", L"Следующий монитор, с Shift - предыдущий (рисунки очищаются)") \
-X(L_D_TT18, "draw.tip_copy", L"Копировать в буфер и закрыть") \
-X(L_D_TT19, "draw.tip_save", L"Сохранить в PNG и закрыть") \
-X(L_D_TT20, "draw.tip_close", L"Закрыть без сохранения") \
+X(L_D_TT13, "draw.tip_undo", L"Отменить") \
+X(L_D_TT14, "draw.tip_redo", L"Вернуть") \
+X(L_D_TT15, "draw.tip_mode", L"Режим: снимок экрана / поверх живого экрана") \
+X(L_D_TT16, "draw.tip_monitor", L"Следующий монитор, с Shift - предыдущий (рисунки очищаются)") \
+X(L_D_TT17, "draw.tip_copy", L"Копировать в буфер и закрыть") \
+X(L_D_TT18, "draw.tip_save", L"Сохранить в PNG и закрыть") \
+X(L_D_TT19, "draw.tip_close", L"Закрыть без сохранения") \
 X(L_D_TTHALO, "draw.tip_halo", L"Подсветка курсора (для показа экрана)") \
 X(L_D_TTCOL, "draw.tip_color", L"Цвет") \
 X(L_D_TTWID, "draw.tip_width", L"Толщина") \
@@ -2597,10 +2596,10 @@ namespace DrawNs {
 using namespace Gdiplus;
 using namespace Gdiplus::DllExports;
 
-enum { T_PEN, T_MARK, T_ARROW, T_LINE, T_RECT, T_ELL, T_TEXT, T_NUM, T_BLUR, T_ERASE, T_SPOT, T_CROP, T_LOUPE, T_MOVE, NTOOL, S_DEL = 20, S_MOVE };
+enum { T_PEN, T_MARK, T_ARROW, T_LINE, T_RECT, T_ELL, T_TEXT, T_NUM, T_BLUR, T_ERASE, T_SPOT, T_CROP, T_LOUPE, NTOOL, S_DEL = 20, S_XF };
 // кнопки панели: 0..NTOOL-1 инструменты, дальше действия, цвета, толщины, подсветка мыши
 enum { B_UNDO = NTOOL, B_REDO, B_MODE, B_MON, B_COPY, B_SAVE, B_CLOSE, B_COL, B_WID = B_COL + 8, B_HALO = B_WID + 3, NIT };
-struct Shp { int t; unsigned col; float w, x1, y1, x2, y2; PointF *pts; int n, cap; wchar_t *txt; int num, ref; BOOL hid; };
+struct Shp { int t; unsigned col; float w, x1, y1, x2, y2; PointF *pts; int n, cap; wchar_t *txt; int num, ref; BOOL hid; float rc, rs; struct Shp *alt; };   // rc,rs: поворот (cos,sin) прямоугольника/овала; alt: запасная копия для S_XF
 struct Surf { HBITMAP hb; DWORD *bits; HDC dc; GpBitmap *bmp; GpGraphics *g; };
 struct FR { float x, y, w, h; };
 static const unsigned kCol[8] = {0xFFFF3B30, 0xFFFF9500, 0xFFFFD60A, 0xFF34C759, 0xFF0A84FF, 0xFFAF52DE, 0xFFFFFFFF, 0xFF000000};
@@ -2702,6 +2701,13 @@ static float LensR(Shp *s) { float dx = s->x2 - s->x1, dy = s->y2 - s->y1; retur
 static float TxtPx(float w) { return w < 4 ? 20.f : w < 8 ? 30.f : 46.f; }
 static float NumR(float w) { return w < 4 ? 13.f : w < 8 ? 18.f : 26.f; }
 
+// Поворот прямоугольника/овала вокруг центра: матрица мира GDI+ из (cos, sin), без тригонометрии CRT.
+static BOOL RotOn(GpGraphics *g, Shp *s, float cx, float cy) {
+    if ((s->rc == 0 && s->rs == 0) || (s->rc == 1 && s->rs == 0)) return FALSE;
+    GpMatrix *m = NULL; GdipCreateMatrix2(s->rc, s->rs, -s->rs, s->rc, cx - s->rc * cx + s->rs * cy, cy - s->rs * cx - s->rc * cy, &m);
+    if (!m) return FALSE;
+    GdipSetWorldTransform(g, m); GdipDeleteMatrix(m); return TRUE;
+}
 static void DrawShape(GpGraphics *g, Shp *s) {
     float x = s->x1 < s->x2 ? s->x1 : s->x2, y = s->y1 < s->y2 ? s->y1 : s->y2;
     float w = s->x1 < s->x2 ? s->x2 - s->x1 : s->x1 - s->x2, h = s->y1 < s->y2 ? s->y2 - s->y1 : s->y1 - s->y2;
@@ -2714,8 +2720,8 @@ static void DrawShape(GpGraphics *g, Shp *s) {
     }
     case T_ARROW: Arrow(g, s->col, s->w, s->x1, s->y1, s->x2, s->y2); break;
     case T_LINE: { GpPen *p = MkPen(s->col, s->w, 2); GdipDrawLine(g, p, s->x1, s->y1, s->x2, s->y2); GdipDeletePen(p); break; }
-    case T_RECT: { GpPen *p = MkPen(s->col, s->w, 2); GdipDrawRectangle(g, p, x, y, w, h); GdipDeletePen(p); break; }
-    case T_ELL: { GpPen *p = MkPen(s->col, s->w, 2); GdipDrawEllipse(g, p, x, y, w, h); GdipDeletePen(p); break; }
+    case T_RECT: { BOOL r = RotOn(g, s, x + w / 2, y + h / 2); GpPen *p = MkPen(s->col, s->w, 2); GdipDrawRectangle(g, p, x, y, w, h); GdipDeletePen(p); if (r) GdipResetWorldTransform(g); break; }
+    case T_ELL: { BOOL r = RotOn(g, s, x + w / 2, y + h / 2); GpPen *p = MkPen(s->col, s->w, 2); GdipDrawEllipse(g, p, x, y, w, h); GdipDeletePen(p); if (r) GdipResetWorldTransform(g); break; }
     case T_TEXT: {
         wchar_t t[520]; lstrcpynW(t, s->txt, 512);
         if (s == act && typing) Cat(t, 520, L"|");
@@ -2804,7 +2810,7 @@ static void Rebuild(BOOL withBg) {
     for (int i = 0; i < shN; i++) if (shp[i]->t == T_BLUR && !shp[i]->hid) Pixelate(&base, shp[i]);
     for (int i = 0; i < shN; i++) if (shp[i]->t == T_LOUPE && !shp[i]->hid) Lens(&base, shp[i]);
     Dim(&base);
-    for (int i = 0; i < shN; i++) if (!shp[i]->hid && shp[i]->t != T_BLUR && shp[i]->t != S_DEL && shp[i]->t != T_SPOT && shp[i]->t != T_CROP && shp[i]->t != S_MOVE) DrawShape(base.g, shp[i]);
+    for (int i = 0; i < shN; i++) if (!shp[i]->hid && shp[i]->t != T_BLUR && shp[i]->t != S_DEL && shp[i]->t != T_SPOT && shp[i]->t != T_CROP && shp[i]->t != S_XF) DrawShape(base.g, shp[i]);
 }
 
 /* --- панель --- */
@@ -2849,9 +2855,6 @@ static void Icon(GpGraphics *g, int i, FR *r, unsigned ic) {
                    c[0].X = PX(.18f); c[0].Y = PY(.3f); c[1].X = PX(.7f); c[1].Y = PY(.3f); c[2].X = PX(.7f); c[2].Y = PY(.82f);
                    GdipDrawLines(g, p, a, 3); GdipDrawLines(g, p, c, 3); break; }
     case T_LOUPE: GdipDrawEllipse(g, p, PX(.18f), PY(.18f), r->w * .44f, r->h * .44f); GdipDrawLine(g, p, PX(.58f), PY(.58f), PX(.8f), PY(.8f)); break;
-    case T_MOVE: { PointF q[7]; const float c[7][2] = {{.3f, .2f}, {.3f, .78f}, {.45f, .64f}, {.56f, .84f}, {.66f, .79f}, {.55f, .6f}, {.74f, .6f}};
-                   for (int k = 0; k < 7; k++) { q[k].X = PX(c[k][0]); q[k].Y = PY(c[k][1]); }
-                   GdipFillPolygon2(g, b, q, 7); break; }
     case B_MON: GdipDrawRectangle(g, p, PX(.14f), PY(.26f), r->w * .44f, r->h * .34f); GdipDrawRectangle(g, p, PX(.46f), PY(.42f), r->w * .4f, r->h * .34f); break;
     case B_UNDO: Text(g, L"\x21B6", r->x, r->y, r->w, r->h, r->h * .62f, 0, ic, TRUE, L"Segoe UI Symbol"); break;
     case B_REDO: Text(g, L"\x21B7", r->x, r->y, r->w, r->h, r->h * .62f, 0, ic, TRUE, L"Segoe UI Symbol"); break;
@@ -2889,7 +2892,7 @@ static void DrawToolbar(GpGraphics *g) {
 
 /* --- подсказка над кнопкой панели --- */
 static int hov = -1; static DWORD hovTick; static BOOL tipOn;
-static const wchar_t *const kTipKey[NIT] = {L"P", L"M", L"A", L"L", L"R", L"O", L"T", L"N", L"B", L"E", L"S", L"C", L"Z", L"V", L"Ctrl+Z", L"Ctrl+Y", L"Tab", L"D / Shift+D",
+static const wchar_t *const kTipKey[NIT] = {L"P", L"M", L"A", L"L", L"R", L"O", L"T", L"N", L"B", L"E", L"S", L"C", L"Z", L"Ctrl+Z", L"Ctrl+Y", L"Tab", L"D / Shift+D",
     L"Enter / Ctrl+C", L"Ctrl+S", L"Esc", NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, L"1", L"2", L"3", L"H"};
 static float MeasureW(GpGraphics *g, const wchar_t *t, float px) {
     GpFontFamily *ff = NULL; GpFont *f = NULL; float w = 0;
@@ -2926,6 +2929,60 @@ static BOOL CropRect(int *x, int *y, int *w, int *h) {
     *x = x0; *y = y0; *w = x1 - x0; *h = y1 - y0; return TRUE;
 }
 
+/* --- выделение с Ctrl: рамка, 8 маркеров размера, маркер поворота --- */
+enum { XM_NONE, XM_MOVE, XM_SCALE, XM_ROT };
+struct Xf { float cx, cy, hx, hy, rc, rs; BOOL scl, rot; };           // рамка: центр, полуразмеры, поворот
+static int xsel = -1, xmode, xh; static BOOL xdrag, xchg; static Shp *xo; static float xmx, xmy; static Xf xf0;
+static const int kGX[8] = {-1, 0, 1, 1, 1, 0, -1, -1}, kGY[8] = {-1, -1, -1, 0, 1, 1, 1, 0};
+static void FrameOf(Shp *s, Xf *f) {
+    float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f, pad = 0;
+    f->rc = 1; f->rs = 0; f->scl = TRUE; f->rot = FALSE;
+    switch (s->t) {
+    case T_PEN: case T_MARK:
+        for (int i = 0; i < s->n; i++) {
+            PointF *p = &s->pts[i];
+            if (p->X < x0) x0 = p->X; if (p->X > x1) x1 = p->X; if (p->Y < y0) y0 = p->Y; if (p->Y > y1) y1 = p->Y;
+        }
+        pad = (s->t == T_MARK ? s->w * 1.75f : s->w / 2) + 5 * sc; f->rot = TRUE; break;
+    case T_ARROW: case T_LINE:
+        x0 = s->x1 < s->x2 ? s->x1 : s->x2; x1 = s->x1 < s->x2 ? s->x2 : s->x1; y0 = s->y1 < s->y2 ? s->y1 : s->y2; y1 = s->y1 < s->y2 ? s->y2 : s->y1;
+        pad = s->w * 2 + 5 * sc; f->rot = TRUE; break;
+    case T_RECT: case T_ELL: case T_BLUR: case T_SPOT: case T_CROP:
+        x0 = s->x1 < s->x2 ? s->x1 : s->x2; x1 = s->x1 < s->x2 ? s->x2 : s->x1; y0 = s->y1 < s->y2 ? s->y1 : s->y2; y1 = s->y1 < s->y2 ? s->y2 : s->y1;
+        if (s->t == T_RECT || s->t == T_ELL) { f->rot = TRUE; if (s->rc || s->rs) { f->rc = s->rc; f->rs = s->rs; } }
+        break;
+    case T_LOUPE: { float r = LensR(s); x0 = s->x1 - r; x1 = s->x1 + r; y0 = s->y1 - r; y1 = s->y1 + r; f->scl = FALSE; break; }
+    case T_NUM: { float r = NumR(s->w) + 2; x0 = s->x1 - r; x1 = s->x1 + r; y0 = s->y1 - r; y1 = s->y1 + r; f->scl = FALSE; break; }
+    case T_TEXT: {
+        float sz = TxtPx(s->w); int lines = 1, cur = 0, mx = 0;
+        for (const wchar_t *c = s->txt; *c; c++) { if (*c == L'\n') { lines++; cur = 0; } else if (++cur > mx) mx = cur; }
+        x0 = s->x1 - 4; x1 = s->x1 + mx * sz * 0.6f + 4; y0 = s->y1 - 4; y1 = s->y1 + lines * sz * 1.3f + 4; f->scl = FALSE; break;
+    }
+    }
+    x0 -= pad; x1 += pad; y0 -= pad; y1 += pad;
+    f->cx = (x0 + x1) / 2; f->cy = (y0 + y1) / 2; f->hx = (x1 - x0) / 2; f->hy = (y1 - y0) / 2;
+}
+static void XW(const Xf *f, float ox, float oy, float *x, float *y) { *x = f->cx + f->rc * ox - f->rs * oy; *y = f->cy + f->rs * ox + f->rc * oy; }
+static void DrawSel(GpGraphics *g, Shp *s) {
+    Xf f; FrameOf(s, &f);
+    static const float cx4[4] = {-1, 1, 1, -1}, cy4[4] = {-1, -1, 1, 1};
+    PointF q[4]; for (int k = 0; k < 4; k++) XW(&f, cx4[k] * f.hx, cy4[k] * f.hy, &q[k].X, &q[k].Y);
+    GpPen *pw = MkPen(0xCCFFFFFF, 3.5f * sc, 0), *pb = MkPen(0xFF0A84FF, 1.3f * sc, 0);
+    GdipDrawPolygon(g, pw, q, 4); GdipDrawPolygon(g, pb, q, 4);
+    GpBrush *bw = MkBr(0xFFFFFFFF), *bb = MkBr(0xFF0A84FF); float hs = 9 * sc;
+    if (f.rot) {
+        float tx, ty, rx, ry; XW(&f, 0, -f.hy, &tx, &ty); XW(&f, 0, -f.hy - 28 * sc, &rx, &ry);
+        GdipDrawLine(g, pw, tx, ty, rx, ry); GdipDrawLine(g, pb, tx, ty, rx, ry);
+        GdipFillEllipse(g, bb, rx - hs * .6f, ry - hs * .6f, hs * 1.2f, hs * 1.2f);
+        GpPen *p2 = MkPen(0xFFFFFFFF, 1.6f * sc, 0); GdipDrawEllipse(g, p2, rx - hs * .6f, ry - hs * .6f, hs * 1.2f, hs * 1.2f); GdipDeletePen(p2);
+    }
+    if (f.scl) for (int i = 0; i < 8; i++) {
+        float px, py; XW(&f, kGX[i] * f.hx, kGY[i] * f.hy, &px, &py);
+        GdipFillRectangle(g, bw, px - hs / 2, py - hs / 2, hs, hs); GdipDrawRectangle(g, pb, px - hs / 2, py - hs / 2, hs, hs);
+    }
+    GdipDeleteBrush(bw); GdipDeleteBrush(bb); GdipDeletePen(pw); GdipDeletePen(pb);
+}
+
 /* --- вывод на экран --- */
 static void Present(void) {
     memcpy(back.bits, base.bits, (size_t)W * H * 4);
@@ -2952,6 +3009,7 @@ static void Present(void) {
         GpBrush *b = MkBr(0x55FFD60A); GdipFillEllipse(back.g, b, hx - hr, hy - hr, hr * 2, hr * 2); GdipDeleteBrush(b);
         GpPen *p = MkPen(0xCCFFD60A, 2, 2); GdipDrawEllipse(back.g, p, hx - hr, hy - hr, hr * 2, hr * 2); GdipDeletePen(p);
     }
+    if (xsel >= 0 && xsel < shN && !shp[xsel]->hid) DrawSel(back.g, shp[xsel]);
     DrawToolbar(back.g);
     if (TipVisible()) DrawTip(back.g);
     POINT pd = {OX, OY}, ps = {0, 0}; SIZE sz = {W, H};
@@ -2964,9 +3022,16 @@ static Shp *NewShp(int t) {
     Shp *s = (Shp *)Alloc(sizeof(Shp)); s->t = t; s->col = kCol[g_dCol]; s->w = kWid[g_dWid];
     if (t == T_MARK) s->col = (s->col & 0xFFFFFF) | 0x73000000;
     if (t == T_TEXT) s->txt = (wchar_t *)Alloc(520 * sizeof(wchar_t));
+    s->rc = 1; s->rs = 0;
     return s;
 }
-static void FreeShp(Shp *s) { if (!s) return; Free(s->pts); Free(s->txt); Free(s); }
+static void FreeShp(Shp *s) { if (!s) return; FreeShp(s->alt); Free(s->pts); Free(s->txt); Free(s); }
+static Shp *CloneShp(Shp *s) {
+    Shp *n = (Shp *)Alloc(sizeof(Shp)); memcpy(n, s, sizeof(Shp)); n->alt = NULL; n->pts = NULL; n->txt = NULL; n->cap = 0;
+    if (s->n) { n->pts = (PointF *)Alloc(s->n * sizeof(PointF)); memcpy(n->pts, s->pts, s->n * sizeof(PointF)); n->cap = s->n; }
+    if (s->txt) { n->txt = (wchar_t *)Alloc(520 * sizeof(wchar_t)); memcpy(n->txt, s->txt, 520 * sizeof(wchar_t)); }
+    return n;
+}
 static void AddShp(Shp *s) {
     for (int i = shN; i < shTot; i++) FreeShp(shp[i]);
     shTot = shN;
@@ -2985,6 +3050,10 @@ static void CommitText(void) {
 }
 static BOOL HitShp(Shp *s, float px, float py) {
     float tol = 8 + s->w / 2;
+    if ((s->t == T_RECT || s->t == T_ELL) && (s->rc || s->rs)) {          // повёрнутая фигура: точку в её систему координат
+        float cx = (s->x1 + s->x2) / 2, cy = (s->y1 + s->y2) / 2, dx = px - cx, dy = py - cy;
+        px = cx + s->rc * dx + s->rs * dy; py = cy - s->rs * dx + s->rc * dy;
+    }
     float x0 = s->x1 < s->x2 ? s->x1 : s->x2, x1 = s->x1 < s->x2 ? s->x2 : s->x1, y0 = s->y1 < s->y2 ? s->y1 : s->y2, y1 = s->y1 < s->y2 ? s->y2 : s->y1;
     switch (s->t) {
     case T_PEN: case T_MARK: {
@@ -3018,15 +3087,81 @@ static void EraseAt(int x, int y) {
     }
 }
 
-// Сдвиг фигуры (координаты правятся на месте; запись S_MOVE хранит смещение для undo/redo).
-static void ShiftShp(Shp *s, float dx, float dy) {
-    s->x1 += dx; s->x2 += dx; s->y1 += dy; s->y2 += dy;
-    for (int i = 0; i < s->n; i++) { s->pts[i].X += dx; s->pts[i].Y += dy; }
-}
 static int TopAt(int x, int y) {
     for (int i = shN - 1; i >= 0; i--)
-        if (!shp[i]->hid && shp[i]->t != S_DEL && shp[i]->t != S_MOVE && HitShp(shp[i], (float)x, (float)y)) return i;
+        if (!shp[i]->hid && shp[i]->t != S_DEL && shp[i]->t != S_XF && HitShp(shp[i], (float)x, (float)y)) return i;
     return -1;
+}
+/* --- Ctrl: выделение и преобразование готовых фигур --- */
+static int XHandle(int x, int y, int *idx) {
+    if (xsel < 0 || xsel >= shN) return XM_NONE;
+    Xf f; FrameOf(shp[xsel], &f); float hr = 9 * sc, px, py;
+    if (f.rot) { XW(&f, 0, -f.hy - 28 * sc, &px, &py); if ((x - px) * (x - px) + (y - py) * (y - py) <= hr * hr) return XM_ROT; }
+    if (f.scl) for (int i = 0; i < 8; i++) {
+        XW(&f, kGX[i] * f.hx, kGY[i] * f.hy, &px, &py);
+        if (x - px <= hr && px - x <= hr && y - py <= hr && py - y <= hr) { *idx = i; return XM_SCALE; }
+    }
+    return XM_NONE;
+}
+static BOOL XInside(int x, int y, int i) {
+    if (i < 0 || i >= shN) return FALSE;
+    Xf f; FrameOf(shp[i], &f); float dx = x - f.cx, dy = y - f.cy, lx = f.rc * dx + f.rs * dy, ly = -f.rs * dx + f.rc * dy, m = 6 * sc;
+    return lx >= -f.hx - m && lx <= f.hx + m && ly >= -f.hy - m && ly <= f.hy + m;
+}
+// Выбор фигуры под курсором, пока зажат Ctrl; без Ctrl выделение снимается.
+static void XSync(int x, int y) {
+    if (xdrag) return;
+    int old = xsel, hi = 0;
+    if (!(GetKeyState(VK_CONTROL) & 0x8000) || typing || tbDrag || HitTb(x, y) >= 0) xsel = -1;
+    else if (xsel >= 0 && XHandle(x, y, &hi) != XM_NONE) {}
+    else {
+        int t = TopAt(x, y);
+        if (t < 0 && XInside(x, y, xsel)) t = xsel;                 // внутри рамки уже выбранной фигуры
+        if (t < 0) for (int i = shN - 1; i >= 0; i--)               // иначе - верхняя фигура, в рамке которой курсор (внутренность пустого прямоугольника)
+            if (!shp[i]->hid && shp[i]->t != S_DEL && shp[i]->t != S_XF && XInside(x, y, i)) { t = i; break; }
+        if (t >= 0) xsel = t;                                       // пока Ctrl зажат, выбор не слетает - до маркеров можно дотянуться снаружи
+    }
+    if (xsel != old) Present();
+}
+static void XSyncCur(void) { POINT p; GetCursorPos(&p); ScreenToClient(hw, &p); XSync(p.x, p.y); }
+static void ApplyAff(Shp *c, Shp *o, float a, float b, float cc, float d, float e, float f) {
+    c->x1 = a * o->x1 + cc * o->y1 + e; c->y1 = b * o->x1 + d * o->y1 + f;
+    c->x2 = a * o->x2 + cc * o->y2 + e; c->y2 = b * o->x2 + d * o->y2 + f;
+    for (int i = 0; i < o->n; i++) { c->pts[i].X = a * o->pts[i].X + cc * o->pts[i].Y + e; c->pts[i].Y = b * o->pts[i].X + d * o->pts[i].Y + f; }
+}
+// Пересчёт фигуры из исходной копии xo по текущему положению мыши (перенос / размер / поворот).
+static void XApply(int x, int y) {
+    Shp *c = shp[xsel], *o = xo; Xf f = xf0; float mx = (float)x, my = (float)y;
+    float a = 1, b = 0, cc = 0, d = 1, e = 0, ff = 0; BOOL aff = TRUE;
+    BOOL rl = o->t == T_RECT || o->t == T_ELL || o->t == T_BLUR || o->t == T_SPOT || o->t == T_CROP;
+    c->rc = o->rc; c->rs = o->rs;
+    if (xmode == XM_MOVE) { e = mx - xmx; ff = my - xmy; }
+    else if (xmode == XM_ROT) {
+        float ux = xmx - f.cx, uy = xmy - f.cy, vx = mx - f.cx, vy = my - f.cy, lu = Sqrt(ux * ux + uy * uy), lv = Sqrt(vx * vx + vy * vy);
+        if (lu < 1 || lv < 1) return;
+        ux /= lu; uy /= lu; vx /= lv; vy /= lv;
+        float dc = vx * ux + vy * uy, ds = vy * ux - vx * uy;
+        if (o->t == T_RECT || o->t == T_ELL) { c->rc = f.rc * dc - f.rs * ds; c->rs = f.rs * dc + f.rc * ds; }
+        else { a = dc; b = ds; cc = -ds; d = dc; e = f.cx - dc * f.cx + ds * f.cy; ff = f.cy - ds * f.cx - dc * f.cy; }
+    } else {
+        float gx = (float)kGX[xh], gy = (float)kGY[xh], dx = mx - f.cx, dy = my - f.cy;
+        if (rl) {                                                  // в осях фигуры: противоположная грань неподвижна
+            float lx = f.rc * dx + f.rs * dy, ly = -f.rs * dx + f.rc * dy, xa = -f.hx, xb = f.hx, ya = -f.hy, yb = f.hy;
+            if (gx) { float ox = -gx * f.hx; xa = ox < lx ? ox : lx; xb = ox < lx ? lx : ox; }
+            if (gy) { float oy = -gy * f.hy; ya = oy < ly ? oy : ly; yb = oy < ly ? ly : oy; }
+            float ncx = (xa + xb) / 2, ncy = (ya + yb) / 2, nhx = (xb - xa) / 2, nhy = (yb - ya) / 2;
+            float wx = f.cx + f.rc * ncx - f.rs * ncy, wy = f.cy + f.rs * ncx + f.rc * ncy;
+            c->x1 = wx - nhx; c->x2 = wx + nhx; c->y1 = wy - nhy; c->y2 = wy + nhy; aff = FALSE;
+        } else {                                                   // точки: масштаб относительно противоположного маркера
+            float ax = f.cx - gx * f.hx, ay = f.cy - gy * f.hy, sx = 1, sy = 1;
+            if (gx) { sx = (mx - ax) / (2 * gx * f.hx); if (sx > -0.02f && sx < 0.02f) sx = sx < 0 ? -0.02f : 0.02f; }
+            if (gy) { sy = (my - ay) / (2 * gy * f.hy); if (sy > -0.02f && sy < 0.02f) sy = sy < 0 ? -0.02f : 0.02f; }
+            a = sx; d = sy; e = ax * (1 - sx); ff = ay * (1 - sy);
+        }
+    }
+    if (aff) ApplyAff(c, o, a, b, cc, d, e, ff);
+    if (mx != xmx || my != xmy) xchg = TRUE;
+    Rebuild(FALSE); Present();
 }
 // Распознавание: штрих пера, на конце которого задержали мышь, превращается в линию / прямоугольник / овал.
 static void Recognize(Shp *s) {
@@ -3103,15 +3238,16 @@ static void DoSave(void) {
     wchar_t msg[160]; wsprintfW(msg, Tr(L_D_SAVED), nm);
     Toast(s == Ok ? msg : Tr(L_D_SAVEFAIL));
 }
+static void XSwap(Shp *r) { Shp *t = shp[r->ref]; shp[r->ref] = r->alt; r->alt = t; }   // S_XF: поменять фигуру в слоте и копию в записи
 static void Undo(void) {
     if (typing) { typing = FALSE; FreeShp(act); act = NULL; }
-    else if (shN > 0) { shN--; if (shp[shN]->t == S_MOVE) ShiftShp(shp[shp[shN]->ref], -shp[shN]->x1, -shp[shN]->y1); }
-    Rebuild(FALSE); Present();
+    else if (shN > 0) { shN--; if (shp[shN]->t == S_XF) XSwap(shp[shN]); }
+    xsel = -1; Rebuild(FALSE); Present();
 }
 static void Redo(void) {
     CommitText();
-    if (shN < shTot) { if (shp[shN]->t == S_MOVE) ShiftShp(shp[shp[shN]->ref], shp[shN]->x1, shp[shN]->y1); shN++; }
-    Rebuild(FALSE); Present();
+    if (shN < shTot) { if (shp[shN]->t == S_XF) XSwap(shp[shN]); shN++; }
+    xsel = -1; Rebuild(FALSE); Present();
 }
 static BOOL CALLBACK MonEnum(HMONITOR, HDC, LPRECT r, LPARAM l) {
     RECT *a = (RECT *)l; for (int i = 0; i < 8; i++) if (a[i].right == a[i].left) { a[i] = *r; break; }
@@ -3125,7 +3261,7 @@ static void NextMonitor(int dir) {
     CommitText();
     RECT nr = m[(cur + n + dir) % n];
     ShowWindow(hw, SW_HIDE); Sleep(150);
-    FreeShp(act); act = NULL;
+    FreeShp(act); act = NULL; xsel = -1;
     for (int i = 0; i < shTot; i++) FreeShp(shp[i]);
     shN = shTot = 0;
     SurfFree(&bg); SurfFree(&base); SurfFree(&back);
@@ -3163,14 +3299,19 @@ static void TbClick(int hit) {
 }
 
 /* --- ввод --- */
-static int mvIdx = -1; static float mvX, mvY, mvDX, mvDY; static DWORD lastMove;
+static DWORD lastMove;
 static void OnDown(int x, int y) {
     int hit = HitTb(x, y); hov = -1;
     if (hit == 99) { tbDrag = TRUE; tbDX = x - tbX; tbDY = y - tbY; SetCapture(hw); return; }
     if (hit >= 0) { TbClick(hit); return; }
     CommitText();
+    if (GetKeyState(VK_CONTROL) & 0x8000) {                      // Ctrl: двигать / менять размер / поворачивать готовую фигуру
+        XSync(x, y); if (xsel < 0) return;
+        int hi = 0; xmode = XHandle(x, y, &hi); xh = hi;
+        if (xmode == XM_NONE) { if (!XInside(x, y, xsel) && TopAt(x, y) != xsel) return; xmode = XM_MOVE; }
+        xo = CloneShp(shp[xsel]); FrameOf(xo, &xf0); xmx = (float)x; xmy = (float)y; xchg = FALSE; xdrag = TRUE; SetCapture(hw); return;
+    }
     if (tool == T_ERASE) { drag = TRUE; SetCapture(hw); EraseAt(x, y); return; }
-    if (tool == T_MOVE) { mvIdx = TopAt(x, y); if (mvIdx >= 0) { mvX = (float)x; mvY = (float)y; mvDX = mvDY = 0; drag = TRUE; SetCapture(hw); } return; }
     if (tool == T_NUM) { Shp *s = NewShp(T_NUM); s->x1 = (float)x; s->y1 = (float)y; s->num = nextNum; AddShp(s); Rebuild(FALSE); Present(); return; }
     Shp *s = NewShp(tool); s->x1 = s->x2 = (float)x; s->y1 = s->y2 = (float)y;
     if (tool == T_PEN || tool == T_MARK) AddPt(s, x, y);
@@ -3186,19 +3327,15 @@ static void OnMove(int x, int y) {
         if (tbX < 0) tbX = 0; if (tbY < 0) tbY = 0; if (tbX > W - tbW) tbX = W - tbW; if (tbY > H - tbH) tbY = H - tbH;
         TbLayout(); Present(); return;
     }
+    if (xdrag) { XApply(x, y); return; }
     if (!drag) {
+        XSync(x, y);
         int hit = HitTb(x, y); if (hit < 0 || hit >= NIT) hit = -1;
         if (hit != hov) { hov = hit; hovTick = GetTickCount(); Present(); }
         else if (halo) Present();
         return;
     }
     if (tool == T_ERASE) { EraseAt(x, y); return; }
-    if (tool == T_MOVE) {
-        if (mvIdx < 0) return;
-        float dx = x - mvX, dy = y - mvY; if (!dx && !dy) return;
-        ShiftShp(shp[mvIdx], dx, dy); mvX = (float)x; mvY = (float)y; mvDX += dx; mvDY += dy;
-        Rebuild(FALSE); Present(); return;
-    }
     if (!act) return;
     BOOL shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
     if (act->t == T_PEN || act->t == T_MARK) {
@@ -3218,12 +3355,14 @@ static void OnMove(int x, int y) {
 }
 static void OnUp(void) {
     if (tbDrag) { tbDrag = FALSE; ReleaseCapture(); return; }
+    if (xdrag) {
+        xdrag = FALSE; ReleaseCapture();
+        if (xchg) { Shp *r = (Shp *)Alloc(sizeof(Shp)); r->t = S_XF; r->ref = xsel; r->alt = xo; AddShp(r); }   // запись хранит исходную копию
+        else FreeShp(xo);
+        xo = NULL; Rebuild(FALSE); XSyncCur(); Present(); return;
+    }
     if (!drag) return;
     drag = FALSE; ReleaseCapture();
-    if (tool == T_MOVE) {
-        if (mvIdx >= 0 && (mvDX || mvDY)) { Shp *m = (Shp *)Alloc(sizeof(Shp)); m->t = S_MOVE; m->ref = mvIdx; m->x1 = mvDX; m->y1 = mvDY; AddShp(m); }
-        mvIdx = -1; Rebuild(FALSE); Present(); return;
-    }
     if (act) {
         float dx = act->x2 - act->x1, dy = act->y2 - act->y1;
         BOOL tiny = (dx < 3 && dx > -3 && dy < 3 && dy > -3) && act->t != T_PEN && act->t != T_MARK;
@@ -3248,7 +3387,7 @@ static void OnKey(WPARAM k) {
     }
     if (typing) return;
     if (k == 'D') { NextMonitor(shift ? -1 : 1); return; }
-    static const char keys[] = "PMALROTNBESCZV";
+    static const char keys[] = "PMALROTNBESCZ";
     for (int i = 0; i < NTOOL; i++) if (k == (WPARAM)keys[i]) { tool = i; Present(); return; }
     if (k == 'H') { halo = !halo; Present(); }
     else if (k >= '1' && k <= '3') { g_dWid = (int)k - '1'; Present(); }
@@ -3259,16 +3398,26 @@ static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_ERASEBKGND: return 1;
     case WM_SETCURSOR: {
         POINT p; GetCursorPos(&p); ScreenToClient(h, &p);
-        SetCursor(LoadCursorW(NULL, HitTb(p.x, p.y) >= 0 ? IDC_ARROW : tool == T_TEXT ? IDC_IBEAM : tool == T_MOVE ? IDC_SIZEALL : IDC_CROSS));
+        LPCWSTR cu = IDC_CROSS; int hi = 0;
+        if (HitTb(p.x, p.y) >= 0) cu = IDC_ARROW;
+        else if (xdrag || xsel >= 0) {
+            int m = xdrag ? xmode : XHandle(p.x, p.y, &hi); if (xdrag) hi = xh;
+            cu = m == XM_ROT ? IDC_HAND : m == XM_SCALE ? ((hi & 1) ? (hi == 1 || hi == 5 ? IDC_SIZENS : IDC_SIZEWE) : (hi == 0 || hi == 4 ? IDC_SIZENWSE : IDC_SIZENESW)) : IDC_SIZEALL;
+        }
+        else if (GetKeyState(VK_CONTROL) & 0x8000) cu = IDC_ARROW;
+        else if (tool == T_TEXT) cu = IDC_IBEAM;
+        SetCursor(LoadCursorW(NULL, cu));
         return TRUE;
     }
     case WM_TIMER: {
+        if (!drag && !xdrag && !tbDrag) XSyncCur();
         if (drag && act && act->t == T_PEN && act->n >= 8 && GetTickCount() - lastMove >= 500) { Recognize(act); if (act->t != T_PEN) Present(); }
         BOOL v = TipVisible(); if (v != tipOn) { tipOn = v; Present(); } return 0; }
     case WM_LBUTTONDOWN: OnDown((short)LOWORD(l), (short)HIWORD(l)); return 0;
     case WM_MOUSEMOVE: OnMove((short)LOWORD(l), (short)HIWORD(l)); return 0;
     case WM_LBUTTONUP: OnUp(); return 0;
-    case WM_KEYDOWN: OnKey(w); return 0;
+    case WM_KEYDOWN: if (w == VK_CONTROL) XSyncCur(); else OnKey(w); return 0;
+    case WM_KEYUP: if (w == VK_CONTROL) XSyncCur(); return 0;
     case WM_CHAR:
         if (typing && act) {
             int n = lstrlenW(act->txt);
@@ -3286,7 +3435,7 @@ static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         Free(shp); shp = NULL; shN = shTot = shCap = 0;
         SurfFree(&bg); SurfFree(&base); SurfFree(&back);
         GdiplusShutdown(gdiTok);
-        KillTimer(h, 1); typing = drag = tbDrag = tipOn = FALSE; hov = -1; hw = NULL;
+        KillTimer(h, 1); FreeShp(xo); xo = NULL; xsel = -1; typing = drag = tbDrag = xdrag = tipOn = FALSE; hov = -1; hw = NULL;
         return 0;
     }
     }
