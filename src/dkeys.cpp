@@ -126,7 +126,7 @@ static BOOL g_dLive; static int g_dCol, g_dWid = 1; static wchar_t g_dSaveDir[MA
 static COLORREF g_tmFg = RGB(255, 255, 255), g_tmBg = RGB(0, 0, 0);               // [Timer] в ini
 static int g_tmFav[10], g_tmNFav;                                                  // избранное: секунды
 static int g_tmAlpha = 60, g_tmSize = 48, g_tmEnd, g_tmPos[2] = {80, 80};          // прозрачность фона %, высота шрифта, действие по окончании, место
-struct CamRec { wchar_t name[64]; int on, interval, limitMB, quality; wchar_t dir[MAX_PATH]; };      // регистратор камеры: секция [Cam:имя]
+struct CamRec { wchar_t name[64]; int on, interval, limitMB, quality, minFree, hFrom, hTo, motion, dark, stamp; wchar_t dir[MAX_PATH]; };      // регистратор камеры: секция [Cam:имя]
 static CamRec g_cr[16]; static int g_ncr;
 static void CamRecSync(void); static void CamRecToggle(const wchar_t *n); static void CamRecDlg(const wchar_t *n); static BOOL CamRecOn(const wchar_t *n);
 static wchar_t g_cfgCamDev[80]; static int g_cfgCamW, g_cfgCamH, g_cfgWin[4];   // [Camera] в ini: камера, разрешение, x,y,ширина,высота окна
@@ -269,6 +269,12 @@ X(L_CR_DIR, "camrec.dir", L"Папка (кадры - в Камера\\год\\м
 X(L_CR_LIM, "camrec.limit", L"Лимит размера папки (МБ):") \
 X(L_CR_Q, "camrec.quality", L"Качество JPEG (10-100):") \
 X(L_CR_BAD, "camrec.bad", L"Проверьте значения") \
+X(L_CR_FREE, "camrec.minfree", L"Мин. свободно на диске, МБ (0 - не проверять):") \
+X(L_CR_HRS, "camrec.hours", L"Писать с часа (0-24) по час:") \
+X(L_CR_MOT, "camrec.motion", L"Только при движении, порог 1-50 (0 - выкл):") \
+X(L_CR_DARK, "camrec.dark", L"Пропускать тёмные кадры") \
+X(L_CR_STAMP, "camrec.stamp", L"Дата и время на кадре") \
+X(L_CR_OPEN, "camrec.open", L"Открыть папку") \
 X(L_CR_BROWSE, "camrec.browse", L"Папка для кадров") \
 X(L_TM_DONE, "timer.done", L"Таймер: время вышло") \
 X(L_TM_NEEDTIME, "timer.need_time", L"Задайте время: меню - Время таймера") \
@@ -766,6 +772,17 @@ PowerShell=powershell.exe
 ;LimitMB=2048
 ; Quality: качество JPEG 10-100
 ;Quality=85
+; MinFreeMB: не писать, если на диске свободно меньше МБ (0 - не проверять)
+;MinFreeMB=500
+; From, To: писать только с часа From по час To (0-24; 0 и 24 - круглосуточно; From больше To - через полночь)
+;From=0
+;To=24
+; Motion: писать только при изменении картинки, порог 1-50 (средняя разница яркости; 0 - писать всегда)
+;Motion=0
+; SkipDark: 1 пропускать почти чёрные кадры | 0 писать все
+;SkipDark=1
+; Stamp: 1 дата и время на кадре | 0 нет
+;Stamp=0
 
 [Volume]
 ; Стабильная громкость (действия volume, volumeset): громкость системы сама снижается, когда пик звука выше порога, и медленно возвращается к максимуму
@@ -913,7 +930,7 @@ static CamRec *CrGet(const wchar_t *nm, BOOL create) {
     wchar_t k[64]; CrKey(nm, k);
     for (int j = 0; j < g_ncr; j++) if (!lstrcmpiW(g_cr[j].name, k)) return &g_cr[j];
     if (!create || g_ncr >= 16) return NULL;
-    CamRec *c = &g_cr[g_ncr++]; memset(c, 0, sizeof *c); lstrcpyW(c->name, k); c->interval = 60; c->limitMB = 2048; c->quality = 85; return c;
+    CamRec *c = &g_cr[g_ncr++]; memset(c, 0, sizeof *c); lstrcpyW(c->name, k); c->interval = 60; c->limitMB = 2048; c->quality = 85; c->minFree = 500; c->hFrom = 0; c->hTo = 24; c->motion = 0; c->dark = 1; c->stamp = 0; return c;
 }
 static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
     if (s[0] == L'C' && s[1] == L'a' && s[2] == L'm' && s[3] == L':') {
@@ -922,6 +939,12 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
         else if (!lstrcmpiW(k, L"Interval")) { c->interval = ToInt(v); if (c->interval < 1) c->interval = 1; if (c->interval > 86400) c->interval = 86400; }
         else if (!lstrcmpiW(k, L"LimitMB")) { c->limitMB = ToInt(v); if (c->limitMB < 10) c->limitMB = 10; }
         else if (!lstrcmpiW(k, L"Quality")) { c->quality = ToInt(v); if (c->quality < 10) c->quality = 10; if (c->quality > 100) c->quality = 100; }
+        else if (!lstrcmpiW(k, L"MinFreeMB")) { c->minFree = ToInt(v); if (c->minFree < 0) c->minFree = 0; }
+        else if (!lstrcmpiW(k, L"From")) { c->hFrom = ToInt(v); if (c->hFrom < 0 || c->hFrom > 24) c->hFrom = 0; }
+        else if (!lstrcmpiW(k, L"To")) { c->hTo = ToInt(v); if (c->hTo < 0 || c->hTo > 24) c->hTo = 24; }
+        else if (!lstrcmpiW(k, L"Motion")) { c->motion = ToInt(v); if (c->motion < 0) c->motion = 0; if (c->motion > 50) c->motion = 50; }
+        else if (!lstrcmpiW(k, L"SkipDark")) c->dark = ToInt(v) != 0;
+        else if (!lstrcmpiW(k, L"Stamp")) c->stamp = ToInt(v) != 0;
         else if (!lstrcmpiW(k, L"Dir")) lstrcpynW(c->dir, v, MAX_PATH);
         return;
     }
@@ -2770,7 +2793,7 @@ using namespace Gdiplus;
 using namespace Gdiplus::DllExports;
 static const GUID kJpg = {0x557cf401, 0x1a04, 0x11d3, {0x9a, 0x73, 0x00, 0x00, 0xf8, 0x1e, 0xf3, 0x2e}};
 struct Grab { IGraphBuilder *gb; ICaptureGraphBuilder2 *cg; IBaseFilter *cap, *sgf, *nr; ISampleGrabber *sg; IMediaControl *mc; };
-struct Slot { Grab g; BOOL open, scanned, armed; DWORD next; ULONGLONG used; wchar_t root[MAX_PATH]; };
+struct Slot { Grab g; BOOL open, scanned, armed, hasPrev; DWORD next; ULONGLONG used; BYTE prev[768]; wchar_t root[MAX_PATH]; };
 static Slot sl[16]; static HANDLE th; static volatile LONG stopF; static CRITICAL_SECTION cs; static BOOL csInit;
 
 static void Sect(const wchar_t *key, wchar_t *out) { lstrcpyW(out, L"Cam:"); Cat(out, 80, key); }
@@ -2780,6 +2803,11 @@ static void SaveCam(CamRec *c) {
     wsprintfW(v, L"%d", c->interval); IniSet(s, L"Interval", v);
     wsprintfW(v, L"%d", c->limitMB); IniSet(s, L"LimitMB", v);
     wsprintfW(v, L"%d", c->quality); IniSet(s, L"Quality", v);
+    wsprintfW(v, L"%d", c->minFree); IniSet(s, L"MinFreeMB", v);
+    wsprintfW(v, L"%d", c->hFrom); IniSet(s, L"From", v);
+    wsprintfW(v, L"%d", c->hTo); IniSet(s, L"To", v);
+    wsprintfW(v, L"%d", c->motion); IniSet(s, L"Motion", v);
+    IniSet(s, L"SkipDark", c->dark ? L"1" : L"0"); IniSet(s, L"Stamp", c->stamp ? L"1" : L"0");
     if (c->dir[0]) IniSet(s, L"Dir", c->dir);
 }
 static void BaseDir(CamRec *c, wchar_t *d) {
@@ -2838,22 +2866,59 @@ static void Prune(const wchar_t *root, ULONGLONG *used, ULONGLONG limit) {      
         *used = *used > sz ? *used - sz : 0;
     }
 }
-static BOOL SaveJpg(const wchar_t *path, BYTE *buf, int w, int h, BOOL top, int q) {
+static BOOL SaveJpg(const wchar_t *path, BYTE *buf, int w, int h, BOOL top, int q, const wchar_t *stamp) {
     int stride = (w * 3 + 3) & ~3; GpBitmap *bmp = NULL;
     BYTE *scan0 = top ? buf : buf + (size_t)(h - 1) * stride;
     if (GdipCreateBitmapFromScan0(w, h, top ? stride : -stride, PixelFormat24bppRGB, scan0, &bmp) != Ok || !bmp) return FALSE;
+    if (stamp) {                                                                         // дата и время: белый текст с чёрной тенью внизу слева
+        GpGraphics *g = NULL; GpFontFamily *ff = NULL; GpFont *fo = NULL; GpSolidFill *wb = NULL, *kb = NULL;
+        if (GdipGetImageGraphicsContext((GpImage *)bmp, &g) == Ok && g) {
+            float sz = (float)(h / 24 < 12 ? 12 : h / 24);
+            GdipSetTextRenderingHint(g, TextRenderingHintAntiAlias);
+            if (GdipCreateFontFamilyFromName(L"Segoe UI", NULL, &ff) == Ok && GdipCreateFont(ff, sz, 1, UnitPixel, &fo) == Ok) {
+                GdipCreateSolidFill(0xFFFFFFFF, &wb); GdipCreateSolidFill(0xFF000000, &kb);
+                RectF r1, r2; r1.X = sz * 0.5f + 1; r1.Y = (float)h - sz * 1.9f + 1; r1.Width = (float)w; r1.Height = sz * 1.6f; r2 = r1; r2.X -= 1; r2.Y -= 1;
+                GdipDrawString(g, stamp, -1, fo, &r1, NULL, kb); GdipDrawString(g, stamp, -1, fo, &r2, NULL, wb);
+                GdipDeleteBrush(wb); GdipDeleteBrush(kb); GdipDeleteFont(fo);
+            }
+            if (ff) GdipDeleteFontFamily(ff);
+            GdipDeleteGraphics(g);
+        }
+    }
     EncoderParameters ep; ep.Count = 1; ep.Parameter[0].Guid = EncoderQuality; ep.Parameter[0].Type = EncoderParameterValueTypeLong; ep.Parameter[0].NumberOfValues = 1;
     ULONG qv = (ULONG)q; ep.Parameter[0].Value = &qv;
     BOOL ok = GdipSaveImageToFile((GpImage *)bmp, path, &kJpg, &ep) == Ok;
     GdipDisposeImage((GpImage *)bmp); return ok;
 }
+static void Grid(BYTE *buf, int w, int h, BYTE *out) {                                   // 32x24 точки яркости (одна на ячейку) - для тёмных кадров и движения
+    int stride = (w * 3 + 3) & ~3;
+    for (int gy = 0; gy < 24; gy++) for (int gx = 0; gx < 32; gx++) {
+        BYTE *px = buf + (size_t)((gy * h + h / 2) / 24) * stride + (size_t)((gx * w + w / 2) / 32) * 3;
+        out[gy * 32 + gx] = (BYTE)((px[0] + px[1] + px[2]) / 3);
+    }
+}
+static BOOL InHours(CamRec *c) {
+    if (c->hFrom == c->hTo || (c->hFrom == 0 && c->hTo == 24)) return TRUE;
+    SYSTEMTIME st; GetLocalTime(&st); int hr = st.wHour;
+    return c->hFrom < c->hTo ? (hr >= c->hFrom && hr < c->hTo) : (hr >= c->hFrom || hr < c->hTo);
+}
+static void CamRoot(CamRec *c, wchar_t *root) { wchar_t fs[64]; BaseDir(c, root); Cat(root, MAX_PATH, L"\\"); FsName(c->name, fs); Cat(root, MAX_PATH, fs); }
 static void Shot(CamRec *c, Slot *s, BYTE *buf, int w, int h, BOOL top) {
-    wchar_t root[MAX_PATH], fs[64], path[MAX_PATH]; SYSTEMTIME st; GetLocalTime(&st);
-    BaseDir(c, root); Cat(root, MAX_PATH, L"\\"); FsName(c->name, fs); Cat(root, MAX_PATH, fs);
+    wchar_t root[MAX_PATH], path[MAX_PATH]; SYSTEMTIME st; GetLocalTime(&st);
+    BYTE gr[768];
+    if (c->dark || c->motion) {
+        Grid(buf, w, h, gr);
+        if (c->dark) { int sum = 0; for (int i = 0; i < 768; i++) sum += gr[i]; if (sum / 768 < 6) return; }       // почти чёрный кадр (закрытая/виртуальная камера)
+        if (c->motion && s->hasPrev) { int df = 0; for (int i = 0; i < 768; i++) df += gr[i] > s->prev[i] ? gr[i] - s->prev[i] : s->prev[i] - gr[i]; if (df / 768 < c->motion) return; }
+    }
+    CamRoot(c, root);
     if (!s->scanned || lstrcmpiW(s->root, root)) { lstrcpynW(s->root, root, MAX_PATH); s->used = DirSize(root, 0); s->scanned = TRUE; }
     wsprintfW(path, L"%s\\%04d\\%02d\\%02d", root, st.wYear, st.wMonth, st.wDay); MkDirs(path);
+    if (c->minFree > 0) { ULARGE_INTEGER fb; if (GetDiskFreeSpaceExW(path, &fb, NULL, NULL) && fb.QuadPart / 1048576 < (ULONGLONG)c->minFree) return; }     // на диске мало места
     wsprintfW(path + lstrlenW(path), L"\\%02d-%02d-%02d.jpg", st.wHour, st.wMinute, st.wSecond);
-    if (SaveJpg(path, buf, w, h, top, c->quality)) {
+    wchar_t stp[24]; wsprintfW(stp, L"%04d-%02d-%02d %02d:%02d:%02d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    if (SaveJpg(path, buf, w, h, top, c->quality, c->stamp ? stp : NULL)) {
+        if (c->motion) { memcpy(s->prev, gr, 768); s->hasPrev = TRUE; }
         WIN32_FILE_ATTRIBUTE_DATA fa;
         if (GetFileAttributesExW(path, GetFileExInfoStandard, &fa)) s->used += ((ULONGLONG)fa.nFileSizeHigh << 32) | fa.nFileSizeLow;
         Prune(root, &s->used, (ULONGLONG)c->limitMB * 1048576);
@@ -2965,7 +3030,8 @@ static DWORD WINAPI Worker(LPVOID) {
             EnterCriticalSection(&cs);
             CamRec *c = &g_cr[i]; Slot *s = &sl[i]; DWORD now = GetTickCount();
             BOOL pv = !lstrcmpiW(g_camBusy, c->name), due = !s->armed || (int)(now - s->next) >= 0;
-            if (!c->on) { if (s->open) { GrabClose(&s->g); s->open = FALSE; } s->scanned = s->armed = FALSE; LeaveCriticalSection(&cs); continue; }
+            if (!c->on) { if (s->open) { GrabClose(&s->g); s->open = FALSE; } s->scanned = s->armed = s->hasPrev = FALSE; LeaveCriticalSection(&cs); continue; }
+            if (!InHours(c)) { if (s->open) { GrabClose(&s->g); s->open = FALSE; } s->armed = FALSE; LeaveCriticalSection(&cs); continue; }     // вне расписания
             if (pv) { if (s->open) { GrabClose(&s->g); s->open = FALSE; } if (!due || g_sgW <= 0) { LeaveCriticalSection(&cs); continue; } }
             else if (!due) { LeaveCriticalSection(&cs); continue; }
             {
@@ -2992,25 +3058,36 @@ static DWORD WINAPI Worker(LPVOID) {
 }
 static void Stop(void) { if (th) { stopF = 1; WaitForSingleObject(th, 20000); CloseHandle(th); th = NULL; } }
 /* --- красная точка на иконке в трее --- */
-static HICON MakeDot(void) {
-    HICON r = NULL; ULONG_PTR tok = 0; GdiplusStartupInput in;
-    if (!g_icon || GdiplusStartup(&tok, &in, NULL) != Ok) return NULL;
-    GpBitmap *bmp = NULL;
-    if (GdipCreateBitmapFromHICON(g_icon, &bmp) == Ok && bmp) {
-        UINT w = 0, h = 0; GdipGetImageWidth((GpImage *)bmp, &w); GdipGetImageHeight((GpImage *)bmp, &h);
-        GpGraphics *g = NULL;
-        if (GdipGetImageGraphicsContext((GpImage *)bmp, &g) == Ok && g) {
-            GdipSetSmoothingMode(g, SmoothingModeAntiAlias);
-            int d = (int)(w * 3 / 8); if (d < 6) d = 6;
-            int x = (int)w - d - 1, y = (int)h - d - 1;
-            GpSolidFill *wb = NULL, *rb = NULL; GdipCreateSolidFill(0xFFFFFFFF, &wb); GdipCreateSolidFill(0xFFFF3B30, &rb);
-            GdipFillEllipseI(g, wb, x - 1, y - 1, d + 2, d + 2); GdipFillEllipseI(g, rb, x, y, d, d);
-            GdipDeleteBrush(wb); GdipDeleteBrush(rb); GdipDeleteGraphics(g);
-            GdipCreateHICONFromBitmap(bmp, &r);
+static HICON MakeDot(void) {                                                          // иконка трея + красная точка справа снизу (рисуем иконку в 32-бит DIB, поверх - точка через GDI+)
+    if (!g_icon) return NULL;
+    int sz = GetSystemMetrics(SM_CXSMICON); if (sz < 16) sz = 16;
+    BITMAPINFO bi; memset(&bi, 0, sizeof bi); bi.bmiHeader.biSize = sizeof bi.bmiHeader; bi.bmiHeader.biWidth = sz; bi.bmiHeader.biHeight = -sz; bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32;
+    void *bits = NULL; HDC dc = CreateCompatibleDC(NULL); HBITMAP dib = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+    if (!dib || !bits) { DeleteDC(dc); return NULL; }
+    HGDIOBJ old = SelectObject(dc, dib); memset(bits, 0, (size_t)sz * sz * 4);
+    DrawIconEx(dc, 0, 0, g_icon, sz, sz, 0, NULL, DI_NORMAL); GdiFlush();
+    DWORD *px = (DWORD *)bits; for (int i = 0; i < sz * sz; i++) if (!(px[i] >> 24) && (px[i] & 0xFFFFFF)) px[i] |= 0xFF000000;      // иконка без альфа-канала
+    ULONG_PTR tok = 0; GdiplusStartupInput in; HICON r = NULL;
+    if (GdiplusStartup(&tok, &in, NULL) == Ok) {
+        GpBitmap *bmp = NULL;
+        if (GdipCreateBitmapFromScan0(sz, sz, sz * 4, PixelFormat32bppPARGB, (BYTE *)bits, &bmp) == Ok && bmp) {
+            GpGraphics *g = NULL;
+            if (GdipGetImageGraphicsContext((GpImage *)bmp, &g) == Ok && g) {
+                GdipSetSmoothingMode(g, SmoothingModeAntiAlias);
+                int dd = sz * 3 / 8; if (dd < 6) dd = 6;
+                int x = sz - dd - 1, y = sz - dd - 1;
+                GpSolidFill *wb = NULL, *rb = NULL; GdipCreateSolidFill(0xFFFFFFFF, &wb); GdipCreateSolidFill(0xFFFF3B30, &rb);
+                GdipFillEllipseI(g, wb, x - 1, y - 1, dd + 2, dd + 2); GdipFillEllipseI(g, rb, x, y, dd, dd);
+                GdipDeleteBrush(wb); GdipDeleteBrush(rb); GdipDeleteGraphics(g);
+            }
+            GdipDisposeImage((GpImage *)bmp);
         }
-        GdipDisposeImage((GpImage *)bmp);
+        GdiplusShutdown(tok);
     }
-    GdiplusShutdown(tok);
+    GdiFlush();
+    HBITMAP mask = CreateBitmap(sz, sz, 1, 1, NULL);
+    ICONINFO ii; memset(&ii, 0, sizeof ii); ii.fIcon = TRUE; ii.hbmMask = mask; ii.hbmColor = dib; r = CreateIconIndirect(&ii);
+    DeleteObject(mask); SelectObject(dc, old); DeleteObject(dib); DeleteDC(dc);
     return r;
 }
 static void Sync(void) {                                                              // поток работает, пока включена хотя бы одна камера; точка на иконке - тоже
@@ -3036,7 +3113,7 @@ static void Give(const wchar_t *name) {                                         
     }
 }
 /* --- окно настроек --- */
-static HWND eInt, eDir, eLim, eQ; static CamRec *dc_; static HFONT dfnt;
+static HWND eInt, eDir, eLim, eQ, eFree, eFrom, eTo, eMot, kDark, kStamp; static CamRec *dc_; static HFONT dfnt;
 static HWND Mk(HWND p, const wchar_t *cls, const wchar_t *txt, DWORD st, int x, int y, int w, int h, int id) {
     int dp = GetDpiForSystem();
     HWND c = CreateWindowExW(cls[0] == L'E' ? WS_EX_CLIENTEDGE : 0, cls, txt, WS_CHILD | WS_VISIBLE | st, MulDiv(x, dp, 96), MulDiv(y, dp, 96), MulDiv(w, dp, 96), MulDiv(h, dp, 96), p, (HMENU)(UINT_PTR)id, g_inst, NULL);
@@ -3047,18 +3124,23 @@ static int GetInt(HWND e) { wchar_t t[32]; GetWindowTextW(e, t, 32); const wchar
 static LRESULT CALLBACK RecProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
     case WM_COMMAND:
+        if (HIWORD(w) != BN_CLICKED) return 0;                                         // уведомления полей ввода (EN_*) не команды
         if (LOWORD(w) == 3) {                                                          // обзор папки
             BROWSEINFOW bi; memset(&bi, 0, sizeof bi); bi.hwndOwner = h; bi.lpszTitle = Tr(L_CR_BROWSE); bi.ulFlags = 0x41;    // BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE
             PIDLIST_ABSOLUTE pid = SHBrowseForFolderW(&bi);
             if (pid) { wchar_t p[MAX_PATH]; if (SHGetPathFromIDListW(pid, p)) SetWindowTextW(eDir, p); CoTaskMemFree(pid); }
         } else if (LOWORD(w) == IDOK) {
-            int iv = GetInt(eInt), lm = GetInt(eLim), q = GetInt(eQ); wchar_t d[MAX_PATH], def[MAX_PATH]; GetWindowTextW(eDir, d, MAX_PATH);
-            if (iv < 1 || iv > 86400 || lm < 10 || lm > 10000000 || q < 10 || q > 100) { Toast(Tr(L_CR_BAD)); return 0; }
+            int iv = GetInt(eInt), lm = GetInt(eLim), q = GetInt(eQ), fr = GetInt(eFree), hf = GetInt(eFrom), ht = GetInt(eTo), mo = GetInt(eMot); wchar_t d[MAX_PATH], def[MAX_PATH]; GetWindowTextW(eDir, d, MAX_PATH);
+            if (iv < 1 || iv > 86400 || lm < 10 || lm > 10000000 || q < 10 || q > 100 || fr < 0 || hf < 0 || hf > 24 || ht < 0 || ht > 24 || mo < 0 || mo > 50) { Toast(Tr(L_CR_BAD)); return 0; }
+            dc_->minFree = fr; dc_->hFrom = hf; dc_->hTo = ht; dc_->motion = mo;
+            dc_->dark = SendMessageW(kDark, BM_GETCHECK, 0, 0) == BST_CHECKED; dc_->stamp = SendMessageW(kStamp, BM_GETCHECK, 0, 0) == BST_CHECKED;
             CamRec t0; memset(&t0, 0, sizeof t0); BaseDir(&t0, def);
             dc_->interval = iv; dc_->limitMB = lm; dc_->quality = q;
             lstrcpynW(dc_->dir, lstrcmpiW(d, def) ? d : L"", MAX_PATH);
             SaveCam(dc_); { wchar_t s[80]; Sect(dc_->name, s); if (!dc_->dir[0]) IniSet(s, L"Dir", L""); }
             DestroyWindow(h);
+        } else if (LOWORD(w) == 12) {                                                  // открыть папку камеры
+            wchar_t r[MAX_PATH]; CamRoot(dc_, r); MkDirs(r); ShellExecuteW(h, L"open", r, NULL, NULL, SW_SHOWNORMAL);
         } else if (LOWORD(w) == IDCANCEL) DestroyWindow(h);
         return 0;
     case WM_CLOSE: DestroyWindow(h); return 0;
@@ -3072,7 +3154,7 @@ static void Dlg(const wchar_t *camName) {
     dc_ = c;
     RegClass(L"DKCamRec", RecProc, 0);
     int dp = GetDpiForSystem(); DWORD st = WS_CAPTION | WS_SYSMENU;
-    RECT r = {0, 0, MulDiv(440, dp, 96), MulDiv(196, dp, 96)}; AdjustWindowRectEx(&r, st, FALSE, 0);
+    RECT r = {0, 0, MulDiv(440, dp, 96), MulDiv(350, dp, 96)}; AdjustWindowRectEx(&r, st, FALSE, 0);
     POINT pt; GetCursorPos(&pt); MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoW(MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST), &mi);
     int W = r.right - r.left, H = r.bottom - r.top;
     wchar_t t[160]; wsprintfW(t, Tr(L_CR_TITLE), c->name);
@@ -3080,12 +3162,19 @@ static void Dlg(const wchar_t *camName) {
     g_hwndRec = CreateWindowExW(WS_EX_TOPMOST, L"DKCamRec", t, st, (mi.rcWork.left + mi.rcWork.right - W) / 2, (mi.rcWork.top + mi.rcWork.bottom - H) / 2, W, H, NULL, NULL, g_inst, NULL);
     if (!g_hwndRec) return;
     wchar_t v[16], dir[MAX_PATH];
-    Mk(g_hwndRec, L"STATIC", Tr(L_CR_INT), 0, 14, 18, 190, 22, 0); wsprintfW(v, L"%d", c->interval); eInt = Mk(g_hwndRec, L"EDIT", v, WS_TABSTOP | ES_NUMBER, 210, 14, 100, 24, 1);
+    Mk(g_hwndRec, L"STATIC", Tr(L_CR_INT), 0, 14, 18, 190, 22, 0); wsprintfW(v, L"%d", c->interval); eInt = Mk(g_hwndRec, L"EDIT", v, WS_TABSTOP | ES_NUMBER, 210, 14, 100, 24, 21);
     Mk(g_hwndRec, L"STATIC", Tr(L_CR_DIR), 0, 14, 52, 190, 22, 0); BaseDir(c, dir); eDir = Mk(g_hwndRec, L"EDIT", dir, WS_TABSTOP | ES_AUTOHSCROLL, 14, 74, 372, 24, 2);
     Mk(g_hwndRec, L"BUTTON", L"…", WS_TABSTOP, 392, 74, 34, 24, 3);
     Mk(g_hwndRec, L"STATIC", Tr(L_CR_LIM), 0, 14, 112, 190, 22, 0); wsprintfW(v, L"%d", c->limitMB); eLim = Mk(g_hwndRec, L"EDIT", v, WS_TABSTOP | ES_NUMBER, 210, 108, 100, 24, 4);
     Mk(g_hwndRec, L"STATIC", Tr(L_CR_Q), 0, 14, 146, 190, 22, 0); wsprintfW(v, L"%d", c->quality); eQ = Mk(g_hwndRec, L"EDIT", v, WS_TABSTOP | ES_NUMBER, 210, 142, 100, 24, 5);
-    Mk(g_hwndRec, L"BUTTON", L"OK", WS_TABSTOP | BS_DEFPUSHBUTTON, 330, 142, 96, 28, IDOK);
+    Mk(g_hwndRec, L"STATIC", Tr(L_CR_FREE), 0, 14, 180, 290, 22, 0); wsprintfW(v, L"%d", c->minFree); eFree = Mk(g_hwndRec, L"EDIT", v, WS_TABSTOP | ES_NUMBER, 320, 176, 100, 24, 6);
+    Mk(g_hwndRec, L"STATIC", Tr(L_CR_HRS), 0, 14, 214, 190, 22, 0); wsprintfW(v, L"%d", c->hFrom); eFrom = Mk(g_hwndRec, L"EDIT", v, WS_TABSTOP | ES_NUMBER, 210, 210, 50, 24, 7);
+    wsprintfW(v, L"%d", c->hTo); eTo = Mk(g_hwndRec, L"EDIT", v, WS_TABSTOP | ES_NUMBER, 270, 210, 50, 24, 8);
+    Mk(g_hwndRec, L"STATIC", Tr(L_CR_MOT), 0, 14, 248, 290, 22, 0); wsprintfW(v, L"%d", c->motion); eMot = Mk(g_hwndRec, L"EDIT", v, WS_TABSTOP | ES_NUMBER, 320, 244, 100, 24, 9);
+    kDark = Mk(g_hwndRec, L"BUTTON", Tr(L_CR_DARK), WS_TABSTOP | BS_AUTOCHECKBOX, 14, 280, 200, 22, 10); SendMessageW(kDark, BM_SETCHECK, c->dark ? BST_CHECKED : BST_UNCHECKED, 0);
+    kStamp = Mk(g_hwndRec, L"BUTTON", Tr(L_CR_STAMP), WS_TABSTOP | BS_AUTOCHECKBOX, 220, 280, 206, 22, 11); SendMessageW(kStamp, BM_SETCHECK, c->stamp ? BST_CHECKED : BST_UNCHECKED, 0);
+    Mk(g_hwndRec, L"BUTTON", Tr(L_CR_OPEN), WS_TABSTOP, 14, 312, 150, 28, 12);
+    Mk(g_hwndRec, L"BUTTON", L"OK", WS_TABSTOP | BS_DEFPUSHBUTTON, 330, 312, 96, 28, IDOK);
     ShowWindow(g_hwndRec, SW_SHOW); SetForegroundWindow(g_hwndRec); SetFocus(eInt);
 }
 static void Toggle(const wchar_t *camName) {
