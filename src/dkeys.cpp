@@ -20,10 +20,13 @@
 #include <initguid.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
+#include <endpointvolume.h>
 #include <propidl.h>
 DEFINE_GUID(CLSID_MMDeviceEnumerator, 0xBCDE0395, 0xE52F, 0x467C, 0x8E, 0x3D, 0xC4, 0x57, 0x92, 0x91, 0x69, 0x2E);
 DEFINE_GUID(IID_IMMDeviceEnumerator, 0xA95664D2, 0x9614, 0x4F35, 0xA7, 0x46, 0xDE, 0x8D, 0xB6, 0x36, 0x17, 0xE6);
-DEFINE_GUID(IID_IAudioClient, 0x1CB9AD4C, 0xDBFA, 0x4C32, 0xB1, 0x78, 0xC2, 0xF5, 0x68, 0xA7, 0x03, 0xB2);
+DEFINE_GUID(IID_IAudioMeterInformation, 0xC02216F6, 0x8C67, 0x4B5B, 0x9D, 0x00, 0xD0, 0x08, 0xE7, 0x3E, 0x00, 0x64);
+DEFINE_GUID(IID_IAudioEndpointVolume, 0x5CDF2C82, 0x841E, 0x4546, 0x97, 0x22, 0x0C, 0xF7, 0x40, 0x78, 0x22, 0x9A);
+DEFINE_GUID(IID_IAudioClient,0x1CB9AD4C, 0xDBFA, 0x4C32, 0xB1, 0x78, 0xC2, 0xF5, 0x68, 0xA7, 0x03, 0xB2);
 DEFINE_GUID(IID_IAudioCaptureClient, 0xC8ADBD64, 0xE71E, 0x48A0, 0xA4, 0xDE, 0x18, 0x5C, 0x39, 0x5C, 0xD3, 0x17);
 #include <stdarg.h>
 
@@ -63,7 +66,7 @@ void *memmove(void *d, const void *s, size_t n) {
 
 #define DKMARK ((ULONG_PTR)0x444B4559)
 enum { DM_CTRL = 1, DM_ALT = 2, DM_SHIFT = 4, DM_WIN = 8 };
-enum { A_NONE, A_COPY, A_PASTE, A_BUFFER, A_HIST, A_LAUNCH, A_RUN, A_ADMIN, A_PY, A_PYRUN, A_TOPMOST, A_TOTRAY, A_LAYOUT, A_PAUSE, A_WEBCAM, A_STOPWATCH, A_TIMER, A_DRAW, A_PICKER, A_RECORD, A_SCRIPTS };
+enum { A_NONE, A_COPY, A_PASTE, A_BUFFER, A_HIST, A_LAUNCH, A_RUN, A_ADMIN, A_PY, A_PYRUN, A_TOPMOST, A_TOTRAY, A_LAYOUT, A_PAUSE, A_WEBCAM, A_STOPWATCH, A_TIMER, A_DRAW, A_PICKER, A_RECORD, A_SCRIPTS, A_VOL, A_VOLSET };
 enum { PM_BUF, PM_HIST, PM_LAUNCH, PM_SCRIPTS };
 enum {
     WM_APP_HOT = WM_APP + 1, WM_APP_KEY, WM_APP_CLOSE, WM_APP_PCLICK, WM_APP_PTAB, WM_TRAY, WM_APP_RENDERED,
@@ -110,6 +113,8 @@ static BOOL g_rDummy;
 struct OvCfg { wchar_t stem[64]; int mode, x, y, sc; };      // mode: 0 выкл, 1 на видео, 2 отдельный файл; x,y - доля кадра в ‰; sc - масштаб в %
 static OvCfg g_ovc[24]; static int g_novc; static BOOL g_rPwd = TRUE, g_rShow;
 static void RecShowSync(void);
+static volatile LONG g_vOn; static int g_vLim = 50, g_vCeil, g_vBoost; static wchar_t g_vDev[80];     // стабильная громкость: вкл, порог пика %, потолок громкости %, подтяжка тихого %, устройство
+static void VolToggle(void); static void VolOpen(void); static void VolSync(void);
 static volatile BYTE g_ioKey[65536], g_ioMouse[8]; static volatile DWORD g_ioHit[65536], g_ioMHit[8]; static volatile DWORD g_ioWheelT; static volatile int g_ioWheelD;   // состояние ввода для оверлея (из хуков)
 static OvCfg *OvCfgGet(const wchar_t *stem, BOOL create) {
     for (int i = 0; i < g_novc; i++) if (!lstrcmpiW(g_ovc[i].stem, stem)) return &g_ovc[i];
@@ -151,6 +156,20 @@ X(L_TRAY_PICK, "tray.picker", L"Пипетка (цвет в буфер)…") \
 X(L_TRAY_REC, "tray.record", L"Запись экрана…") \
 X(L_TRAY_RECSTOP, "tray.record_stop", L"Остановить запись") \
 X(L_TRAY_RECSET, "tray.record_settings", L"Настройки записи") \
+X(L_TRAY_VOL, "tray.volume", L"Стабильная громкость") \
+X(L_VOL_ON, "vol.on", L"Включена") \
+X(L_VOL_SET, "vol.set", L"Окно настройки порога…") \
+X(L_VOL_DEV, "vol.device", L"Устройство вывода") \
+X(L_VOL_DEVDEF, "vol.device_def", L"По умолчанию") \
+X(L_VOL_BOOST, "vol.boost", L"Подтягивать тихое") \
+X(L_VOL_BOOSTOFF, "vol.boost_off2", L"выкл") \
+X(L_VOL_BOOSTN, "vol.boost_n2", L"+%d%%") \
+X(L_VOL_TITLE, "vol.title", L"Стабильная громкость") \
+X(L_VOL_LIM, "vol.limit", L"Порог пика: %d%%") \
+X(L_VOL_CEIL, "vol.ceil", L"Максимальная громкость: %d%%") \
+X(L_VOL_CHK, "vol.check", L"Включено (Win+A)") \
+X(L_VOL_TOASTON, "vol.toast_on", L"Стабильная громкость: включена") \
+X(L_VOL_TOASTOFF, "vol.toast_off", L"Стабильная громкость: выключена") \
 X(L_REC_NOTB, "rec.no_taskbar", L"Не снимать панель задач") \
 X(L_REC_CUR, "rec.cursor", L"Снимать курсор мыши") \
 X(L_REC_FPS, "rec.fps", L"%d кадров/с") \
@@ -581,6 +600,8 @@ Language=ru
 ;     colorpicker / picker      пипетка: клик - цвет пикселя (#RRGGBB) в буфер, стрелки - сдвиг на 1 пиксель, Esc - отмена
 ;     draw                      рисовалка на экране (секция [Draw])
 ;     record                    запись экрана в mp4 (секции [Record] и [Overlay])
+;     volume                    стабильная громкость вкл/выкл (секция [Volume])
+;     volumeset                 окно настройки порога громкости
 ; Win+цифры буферов перекрывают запуск закреплённых программ на панели задач.
 ; В меню буфера: Del - удалить, F2 - править, Ins - новая запись, Ctrl+Вверх/Вниз - переставить,
 ; Влево/Вправо или Win+цифра - другой буфер, Ctrl+цифра - скопировать запись в буфер, Tab - история/запуск.
@@ -606,6 +627,8 @@ Win+Num0=buffer
 Win+V=history
 Win+Tilde=launcher
 Win+P=scripts
+Win+A=volume
+Win+Shift+A=volumeset
 Ctrl+Tilde=layout
 Win+C=run calc.exe
 Win+O=topmost
@@ -716,6 +739,19 @@ PowerShell=powershell.exe
 ;Device=Integrated Camera
 ;Resolution=1920x1080
 ;Window=100,100,800,450
+
+[Volume]
+; Стабильная громкость (действия volume, volumeset): громкость системы сама снижается, когда пик звука выше порога, и медленно возвращается к максимуму
+; Enabled: 1 включена | 0 выключена
+;Enabled=0
+; Limit: порог пика звука 1-100 % (задаётся в окне, там же - уровень)
+;Limit=50
+; Ceiling: максимальная громкость системы 1-100 % (по умолчанию - громкость на момент первого включения)
+;Ceiling=20
+; Boost: на сколько % подтягивать совсем тихий звук выше максимума, 0 - не подтягивать
+;Boost=0
+; Device: имя устройства вывода, пусто - устройство по умолчанию
+;Device=
 )INI";
 
 /* ---------- hotkey/config parsing ---------- */
@@ -815,6 +851,7 @@ static BOOL ParseAction(const wchar_t *v, Bind *b) {
         {L"copy", A_COPY, 1}, {L"paste", A_PASTE, 3}, {L"buffer", A_BUFFER, 4}, {L"slots", A_BUFFER, 4}, {L"layout", A_LAYOUT, 0}, {L"history", A_HIST, 0}, {L"launcher", A_LAUNCH, 0}, {L"scripts", A_SCRIPTS, 0},
         {L"run", A_RUN, 2}, {L"admin", A_ADMIN, 2}, {L"py", A_PY, 2}, {L"pyrun", A_PYRUN, 0}, {L"topmost", A_TOPMOST, 0},
         {L"totray", A_TOTRAY, 0}, {L"pause", A_PAUSE, 0}, {L"webcam", A_WEBCAM, 0}, {L"stopwatch", A_STOPWATCH, 0}, {L"timer", A_TIMER, 0}, {L"draw", A_DRAW, 0}, {L"record", A_RECORD, 0}, {L"colorpicker", A_PICKER, 0}, {L"picker", A_PICKER, 0},
+        {L"volume", A_VOL, 0}, {L"volumeset", A_VOLSET, 0},
     };
     for (int i = 0; i < (int)(sizeof T / sizeof T[0]); i++) {
         if (lstrcmpiW(name, T[i].n)) continue;
@@ -883,6 +920,12 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
         else { OvCfg *c = OvCfgGet(k, TRUE); if (c) { const wchar_t *q = v; c->mode = ToInt(q) & 3; if (c->mode == 3) c->mode = 1; int *f[3] = {&c->x, &c->y, &c->sc};
             for (int i = 0; i < 3; i++) { while (*q && *q != L',') q++; if (!*q) break; q++; *f[i] = ToInt(q); }
             if (c->sc < 10) c->sc = 10; if (c->sc > 600) c->sc = 600; } }
+    } else if (!lstrcmpiW(s, L"Volume")) {
+        if (!lstrcmpiW(k, L"Enabled")) g_vOn = ToInt(v) != 0;
+        else if (!lstrcmpiW(k, L"Limit")) { g_vLim = ToInt(v); if (g_vLim < 1) g_vLim = 1; if (g_vLim > 100) g_vLim = 100; }
+        else if (!lstrcmpiW(k, L"Ceiling")) { g_vCeil = ToInt(v); if (g_vCeil < 0) g_vCeil = 0; if (g_vCeil > 100) g_vCeil = 100; }
+        else if (!lstrcmpiW(k, L"Boost")) { g_vBoost = ToInt(v); if (g_vBoost < 0) g_vBoost = 0; if (g_vBoost > 100) g_vBoost = 100; }
+        else if (!lstrcmpiW(k, L"Device")) lstrcpynW(g_vDev, v, 80);
     } else if (!lstrcmpiW(s, L"Timer")) {
         if (!lstrcmpiW(k, L"FontColor")) g_tmFg = HexRgb(v);
         else if (!lstrcmpiW(k, L"BgColor")) g_tmBg = HexRgb(v);
@@ -1935,6 +1978,8 @@ static void ExecBind(const Bind *b) {
     case A_DRAW: DrawOpen(); break;
     case A_PICKER: PickerOpen(); break;
     case A_RECORD: RecOpen(); break;
+    case A_VOL: VolToggle(); break;
+    case A_VOLSET: VolOpen(); break;
     case A_PAUSE: InterlockedExchange(&g_paused, !g_paused); Toast(g_paused ? Tr(L_T_PAUSED) : Tr(L_T_WORKING)); break;
     }
 }
@@ -2285,7 +2330,7 @@ static void Reload(void) {
     LoadConfig();
     if (g_histOn != was) { if (g_histOn) AddClipboardFormatListener(g_hwnd); else RemoveClipboardFormatListener(g_hwnd); }
     PostThreadMessageW(g_hookTid, TM_REHOOK, 0, 0);
-    RecShowSync();
+    RecShowSync(); VolSync();
     Toast(Tr(L_T_RELOADED));
 }
 /* ---------- веб-камера (DirectShow): предпросмотр в окне ---------- */
@@ -3596,8 +3641,10 @@ static void OnUp(void) {
     if (act) {
         float dx = act->x2 - act->x1, dy = act->y2 - act->y1;
         BOOL tiny = (dx < 3 && dx > -3 && dy < 3 && dy > -3) && act->t != T_PEN && act->t != T_MARK;
+        BOOL crop = !tiny && act->t == T_CROP;
         if (tiny) FreeShp(act); else AddShp(act);
         act = NULL; Rebuild(FALSE);
+        if (crop) { DoCopy(); return; }                          // область выбрана - сразу в буфер, без Ctrl+C
     }
     Present();
 }
@@ -4567,6 +4614,230 @@ static void Cmd(int c) {
 static void RecOpen(void) { RecNs::Open(); }
 static void RecShowSync(void) { RecNs::ShowSync(); }
 
+/* ---------- стабильная громкость: пик звука выше порога - громкость системы снижается, потом медленно возвращается ---------- */
+namespace VolNs {
+static HANDLE th; static volatile LONG stopF; static volatile float lvl;      // lvl - пик сигнала до регулятора громкости, 0..1
+static HWND hw; static HFONT fnt; static int dpi = 96, drag;
+static wchar_t devs[16][80]; static int ndev;
+
+static IMMDevice *Pick(IMMDeviceEnumerator *en) {                              // выбранное по имени устройство вывода, иначе по умолчанию
+    IMMDevice *dev = NULL;
+    if (g_vDev[0]) {
+        IMMDeviceCollection *col = NULL; UINT n = 0;
+        if (SUCCEEDED(en->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &col))) {
+            col->GetCount(&n);
+            for (UINT i = 0; i < n && !dev; i++) {
+                IMMDevice *d = NULL; IPropertyStore *ps = NULL; PROPVARIANT pv; PropVariantInit(&pv);
+                if (SUCCEEDED(col->Item(i, &d)) && SUCCEEDED(d->OpenPropertyStore(STGM_READ, &ps)) && SUCCEEDED(ps->GetValue(RecNs::kFriendly, &pv)) && pv.vt == VT_LPWSTR && !lstrcmpW(pv.pwszVal, g_vDev)) { dev = d; d = NULL; }
+                PropVariantClear(&pv); if (ps) ps->Release(); if (d) d->Release();
+            }
+            col->Release();
+        }
+    }
+    if (!dev) en->GetDefaultAudioEndpoint(eRender, eConsole, &dev);
+    return dev;
+}
+static float CurVol(void) {
+    float v = 0.5f; IMMDeviceEnumerator *en = NULL;
+    if (SUCCEEDED(CoCreateInstance(CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, IID_IMMDeviceEnumerator, (void **)&en))) {
+        IMMDevice *d = Pick(en); IAudioEndpointVolume *ev = NULL;
+        if (d && SUCCEEDED(d->Activate(IID_IAudioEndpointVolume, CLSCTX_ALL, NULL, (void **)&ev))) { ev->GetMasterVolumeLevelScalar(&v); ev->Release(); }
+        if (d) d->Release();
+        en->Release();
+    }
+    return v;
+}
+static void SaveInt(const wchar_t *k, int v) { wchar_t t[16]; wsprintfW(t, L"%d", v); IniSet(L"Volume", k, t); }
+static DWORD WINAPI Worker(LPVOID) {
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    IMMDeviceEnumerator *en = NULL; IAudioMeterInformation *mt = NULL; IAudioEndpointVolume *ev = NULL;
+    wchar_t id[256] = L"", dn[80] = L""; DWORD last = 0; float hold = 0, V = -1; BOOL owned = FALSE;
+    CoCreateInstance(CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, IID_IMMDeviceEnumerator, (void **)&en);
+    timeBeginPeriod(1);
+    while (en && !stopF) {
+        DWORD now = GetTickCount();
+        if (!mt || now - last > 1000 || lstrcmpW(dn, g_vDev)) {                // раз в секунду: устройство по умолчанию могло смениться
+            last = now; lstrcpynW(dn, g_vDev, 80);
+            IMMDevice *d = Pick(en); LPWSTR nid = NULL;
+            if (d && SUCCEEDED(d->GetId(&nid)) && nid) {
+                if (!mt || lstrcmpW(id, nid)) {
+                    if (mt) { mt->Release(); mt = NULL; } if (ev) { ev->Release(); ev = NULL; }
+                    d->Activate(IID_IAudioMeterInformation, CLSCTX_ALL, NULL, (void **)&mt);
+                    d->Activate(IID_IAudioEndpointVolume, CLSCTX_ALL, NULL, (void **)&ev);
+                    lstrcpynW(id, nid, 256); V = -1; hold = 0; owned = FALSE;
+                }
+                CoTaskMemFree(nid);
+            }
+            if (d) d->Release();
+        }
+        if (mt && ev) {
+            float S = 0, cur = 0; mt->GetPeakValue(&S); ev->GetMasterVolumeLevelScalar(&cur); lvl = S;     // счётчик меряет сигнал до мастер-громкости
+            float C = g_vCeil / 100.f;
+            if (g_vOn && C > 0.f) {
+                float T = g_vLim / 100.f; if (T < 0.01f) T = 0.01f;
+                hold = S > hold ? S : hold * 0.993f;                           // удержанный пик (спад ~2 с) - чтобы громкость не качалась
+                float Cb = C;                                                  // совсем тихий звук - чуть выше максимума
+                if (g_vBoost && hold * C < T * 0.25f) { Cb = C * (1.f + g_vBoost / 100.f); if (Cb > 1.f) Cb = 1.f; }
+                float vf = S > T ? C * T / S : Cb, vh = hold > T ? C * T / hold : Cb;      // пик выше порога - громкость, при которой он звучит как пик на пороге
+                if (vf > Cb) vf = Cb; if (vh > Cb) vh = Cb;
+                if (V < 0) V = cur < Cb ? cur : Cb;
+                if (vf < V) V = vf;                                            // атака - сразу
+                else if (vh > V) V += (vh - V) * 0.02f;                        // возврат - плавно
+                if (V > Cb) V = Cb;
+                owned = TRUE;
+                if (V - cur > 0.004f || cur - V > 0.004f) ev->SetMasterVolumeLevelScalar(V, NULL);
+            } else if (owned) {                                                // режим выключили - вернуть максимум
+                owned = FALSE; V = -1; hold = 0;
+                if (C > 0.f) ev->SetMasterVolumeLevelScalar(C, NULL);
+            }
+        }
+        Sleep(15);
+    }
+    if (owned && ev && g_vCeil > 0) ev->SetMasterVolumeLevelScalar(g_vCeil / 100.f, NULL);
+    timeEndPeriod(1);
+    if (mt) mt->Release(); if (ev) ev->Release(); if (en) en->Release();
+    CoUninitialize(); return 0;
+}
+static void Stop(void) { if (th) { stopF = 1; WaitForSingleObject(th, 3000); CloseHandle(th); th = NULL; } }
+static void Sync(void) {                                                        // поток работает, пока режим включён или открыто окно
+    BOOL need = g_vOn || hw;
+    if (g_vOn && !g_vCeil) { g_vCeil = (int)(CurVol() * 100 + 0.5f); if (g_vCeil < 1) g_vCeil = 1; SaveInt(L"Ceiling", g_vCeil); }
+    if (need && !th) { stopF = 0; th = CreateThread(NULL, 0, Worker, NULL, 0, NULL); }
+    else if (!need) Stop();
+}
+static void Toggle(void) {
+    g_vOn = !g_vOn; IniSet(L"Volume", L"Enabled", g_vOn ? L"1" : L"0");
+    Sync(); Toast(g_vOn ? Tr(L_VOL_TOASTON) : Tr(L_VOL_TOASTOFF));
+    if (hw) InvalidateRect(hw, NULL, FALSE);
+}
+/* --- окно: полоса текущего пика, на ней перетаскиваемая черта порога; ниже ползунок максимальной громкости и переключатель --- */
+static int D(int v) { return MulDiv(v, dpi, 96); }
+static RECT RBar(void) { RECT r = {D(14), D(34), D(346), D(62)}; return r; }
+static RECT RCeil(void) { RECT r = {D(14), D(98), D(346), D(112)}; return r; }
+static RECT RBoost(void) { RECT r = {D(14), D(148), D(346), D(162)}; return r; }
+static RECT RDev(void) { RECT r = {D(14), D(176), D(346), D(200)}; return r; }
+static RECT RChk(void) { RECT r = {D(14), D(212), D(346), D(234)}; return r; }
+static int XVal(int x, RECT r) { int v = (x - r.left) * 100 / (r.right - r.left); return v < 1 ? 1 : v > 100 ? 100 : v; }
+static void Fill(HDC dc, RECT r, COLORREF c) { HBRUSH b = CreateSolidBrush(c); FillRect(dc, &r, b); DeleteObject(b); }
+static void Paint(HDC dc, int W, int H) {
+    RECT all = {0, 0, W, H}; Fill(dc, all, RGB(32, 33, 36));
+    SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(235, 235, 235)); HGDIOBJ of = SelectObject(dc, fnt);
+    wchar_t t[96];
+    wsprintfW(t, Tr(L_VOL_LIM), g_vLim); TextOutW(dc, D(14), D(10), t, lstrlenW(t));
+    RECT b = RBar(); Fill(dc, b, RGB(58, 60, 64));
+    float S = lvl; if (S > 1.f) S = 1.f; if (S < 0.f) S = 0.f;
+    RECT f = b; f.right = b.left + (int)(S * (b.right - b.left)); Fill(dc, f, S * 100 > g_vLim ? RGB(255, 149, 0) : RGB(52, 199, 89));
+    int tx = b.left + (b.right - b.left) * g_vLim / 100;
+    RECT m = {tx - D(2), b.top - D(5), tx + D(2), b.bottom + D(5)}; Fill(dc, m, RGB(255, 59, 48));
+    wsprintfW(t, Tr(L_VOL_CEIL), g_vCeil); TextOutW(dc, D(14), D(74), t, lstrlenW(t));
+    RECT c = RCeil(); RECT ct = {c.left, c.top + D(4), c.right, c.bottom - D(4)}; Fill(dc, ct, RGB(58, 60, 64));
+    int cx = c.left + (c.right - c.left) * g_vCeil / 100;
+    RECT cf = ct; cf.right = cx; Fill(dc, cf, RGB(10, 132, 255));
+    RECT ch = {cx - D(4), c.top, cx + D(4), c.bottom}; Fill(dc, ch, RGB(235, 235, 235));
+    if (g_vBoost) wsprintfW(t, Tr(L_VOL_BOOSTN), g_vBoost); else lstrcpynW(t, Tr(L_VOL_BOOSTOFF), 48);
+    wchar_t t2[160]; wsprintfW(t2, L"%s: %s", Tr(L_VOL_BOOST), t); TextOutW(dc, D(14), D(124), t2, lstrlenW(t2));
+    RECT bo = RBoost(); RECT bt = {bo.left, bo.top + D(4), bo.right, bo.bottom - D(4)}; Fill(dc, bt, RGB(58, 60, 64));
+    int bx = bo.left + (bo.right - bo.left) * g_vBoost / 50;
+    RECT bf = bt; bf.right = bx; Fill(dc, bf, RGB(10, 132, 255));
+    RECT bh = {bx - D(4), bo.top, bx + D(4), bo.bottom}; Fill(dc, bh, RGB(235, 235, 235));
+    RECT dv = RDev(); Fill(dc, dv, RGB(58, 60, 64));
+    wchar_t t3[200]; wsprintfW(t3, L"%s: %s  ▾", Tr(L_VOL_DEV), g_vDev[0] ? g_vDev : Tr(L_VOL_DEVDEF));
+    RECT dt = {dv.left + D(8), dv.top, dv.right - D(8), dv.bottom}; DrawTextW(dc, t3, -1, &dt, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+    RECT k = RChk(); RECT kb = {k.left, k.top + D(3), k.left + D(16), k.top + D(19)}; Fill(dc, kb, RGB(90, 92, 96));
+    if (g_vOn) { RECT ki = {kb.left + D(3), kb.top + D(3), kb.right - D(3), kb.bottom - D(3)}; Fill(dc, ki, RGB(52, 199, 89)); }
+    wsprintfW(t, L"%s", Tr(L_VOL_CHK)); TextOutW(dc, k.left + D(26), k.top, t, lstrlenW(t));
+    SelectObject(dc, of);
+}
+static void DevPick(HWND h, RECT r);
+static void Drag(int x) {
+    if (drag == 1) g_vLim = XVal(x, RBar()); else if (drag == 2) g_vCeil = XVal(x, RCeil());
+    else if (drag == 3) { RECT b = RBoost(); int v = (x - b.left) * 50 / (b.right - b.left); v = (v + 2) / 5 * 5; g_vBoost = v < 0 ? 0 : v > 50 ? 50 : v; }
+    InvalidateRect(hw, NULL, FALSE);
+}
+static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    switch (m) {
+    case WM_ERASEBKGND: return 1;
+    case WM_TIMER: InvalidateRect(h, NULL, FALSE); return 0;
+    case WM_PAINT: {
+        PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); RECT r; GetClientRect(h, &r);
+        HDC md = CreateCompatibleDC(dc); HBITMAP bm = CreateCompatibleBitmap(dc, r.right, r.bottom); HGDIOBJ ob = SelectObject(md, bm);
+        Paint(md, r.right, r.bottom); BitBlt(dc, 0, 0, r.right, r.bottom, md, 0, 0, SRCCOPY);
+        SelectObject(md, ob); DeleteObject(bm); DeleteDC(md); EndPaint(h, &ps); return 0;
+    }
+    case WM_LBUTTONDOWN: {
+        int x = (short)LOWORD(l), y = (short)HIWORD(l); POINT p = {x, y}; RECT b = RBar(), c = RCeil(), bo = RBoost(), k = RChk(), dv = RDev();
+        InflateRect(&b, 0, D(8)); InflateRect(&c, D(4), D(6)); InflateRect(&bo, D(4), D(6));
+        if (PtInRect(&b, p)) drag = 1; else if (PtInRect(&c, p)) drag = 2; else if (PtInRect(&bo, p)) drag = 3;
+        else if (PtInRect(&dv, p)) { DevPick(h, dv); return 0; }
+        else if (PtInRect(&k, p)) { Toggle(); return 0; }
+        if (drag) { SetCapture(h); Drag(x); }
+        return 0;
+    }
+    case WM_MOUSEMOVE: if (drag && GetCapture() == h) Drag((short)LOWORD(l)); return 0;
+    case WM_LBUTTONUP:
+        if (drag) { ReleaseCapture(); if (drag == 1) SaveInt(L"Limit", g_vLim); else if (drag == 2) SaveInt(L"Ceiling", g_vCeil); else SaveInt(L"Boost", g_vBoost); drag = 0; }
+        return 0;
+    case WM_KEYDOWN: if (w == VK_ESCAPE) DestroyWindow(h); return 0;
+    case WM_DESTROY: KillTimer(h, 1); hw = NULL; if (fnt) { DeleteObject(fnt); fnt = NULL; } Sync(); return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+static void Open(void) {
+    if (hw) { SetForegroundWindow(hw); return; }
+    if (!g_vCeil) { g_vCeil = (int)(CurVol() * 100 + 0.5f); if (g_vCeil < 1) g_vCeil = 1; SaveInt(L"Ceiling", g_vCeil); }
+    dpi = GetDpiForSystem();
+    RegClass(L"DKVol", Proc, 0);
+    DWORD st = WS_CAPTION | WS_SYSMENU, ex = WS_EX_TOPMOST | WS_EX_TOOLWINDOW; RECT r = {0, 0, D(360), D(246)}; AdjustWindowRectEx(&r, st, FALSE, ex);
+    POINT pt; GetCursorPos(&pt); MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoW(MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST), &mi);
+    int W = r.right - r.left, H = r.bottom - r.top, x = (mi.rcWork.left + mi.rcWork.right - W) / 2, y = (mi.rcWork.top + mi.rcWork.bottom - H) / 2;
+    fnt = CreateFontW(-D(15), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+    hw = CreateWindowExW(ex, L"DKVol", Tr(L_VOL_TITLE), st, x, y, W, H, NULL, NULL, g_inst, NULL);
+    if (!hw) return;
+    SetTimer(hw, 1, 33, NULL); Sync(); ShowWindow(hw, SW_SHOW); ForceFg(hw);
+}
+static void DevPick(HWND h, RECT r) {                                           // выбор устройства вывода: меню под строкой
+    HMENU d = CreatePopupMenu();
+    AppendMenuW(d, MF_STRING | (!g_vDev[0] ? MF_CHECKED : 0), 1, Tr(L_VOL_DEVDEF));
+    ndev = 0;
+    IMMDeviceEnumerator *en = NULL; IMMDeviceCollection *col = NULL; UINT n = 0;
+    if (SUCCEEDED(CoCreateInstance(CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, IID_IMMDeviceEnumerator, (void **)&en))) {
+        if (SUCCEEDED(en->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &col))) {
+            col->GetCount(&n);
+            for (UINT i = 0; i < n && ndev < 16; i++) {
+                IMMDevice *dv = NULL; IPropertyStore *ps = NULL; PROPVARIANT pv; PropVariantInit(&pv);
+                if (SUCCEEDED(col->Item(i, &dv)) && SUCCEEDED(dv->OpenPropertyStore(STGM_READ, &ps)) && SUCCEEDED(ps->GetValue(RecNs::kFriendly, &pv)) && pv.vt == VT_LPWSTR) {
+                    lstrcpynW(devs[ndev], pv.pwszVal, 80);
+                    wchar_t e[170]; int o = 0; for (int j = 0; devs[ndev][j] && o < 160; j++) { if (devs[ndev][j] == L'&') e[o++] = L'&'; e[o++] = devs[ndev][j]; } e[o] = 0;
+                    AppendMenuW(d, MF_STRING | (!lstrcmpW(g_vDev, devs[ndev]) ? MF_CHECKED : 0), 2 + ndev, e); ndev++;
+                }
+                PropVariantClear(&pv); if (ps) ps->Release(); if (dv) dv->Release();
+            }
+            col->Release();
+        }
+        en->Release();
+    }
+    POINT pt = {r.left, r.bottom}; ClientToScreen(h, &pt);
+    int c = TrackPopupMenu(d, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, 0, h, NULL);
+    DestroyMenu(d);
+    if (c == 1) { g_vDev[0] = 0; IniSet(L"Volume", L"Device", L""); }
+    else if (c >= 2 && c - 2 < ndev) { lstrcpynW(g_vDev, devs[c - 2], 80); IniSet(L"Volume", L"Device", g_vDev); }
+    InvalidateRect(h, NULL, FALSE);
+}
+static HMENU Menu(void) {
+    HMENU m = CreatePopupMenu();
+    AddHk(m, MF_STRING | (g_vOn ? MF_CHECKED : 0), 600, Tr(L_VOL_ON), A_VOL);
+    AddHk(m, MF_STRING, 601, Tr(L_VOL_SET), A_VOLSET);
+    return m;
+}
+static void Cmd(int c) {
+    if (c == 600) Toggle();
+    else if (c == 601) Open();
+}
+}   // namespace VolNs
+static void VolToggle(void) { VolNs::Toggle(); }
+static void VolOpen(void) { VolNs::Open(); }
+static void VolSync(void) { VolNs::Sync(); }
+
 static int g_nav[8], g_navN;                                  // путь к пункту: номера (без разделителей) по уровням
 static BOOL FindPath(HMENU m, UINT id, int depth) {            // ищет пункт id в дереве меню
     int n = GetMenuItemCount(m), k = 0;
@@ -4591,7 +4862,7 @@ static void NavRun(void) {                                      // клавиш�
     }
 }
 static BOOL KeepMenu(int c) {                                   // настройки: меню остаётся открытым после выбора
-    return (c >= 20 && c < 58 && c != 25) || c == 60 || c == 62 || (c >= 300 && c < 500 && (c - 300) % 8 < 4) || (c >= TM_ID + 12 && c < TM_ID + 40);
+    return (c >= 20 && c < 58 && c != 25) || c == 60 || c == 62 || (c >= 600 && c < 700 && c != 601) || (c >= 300 && c < 500 && (c - 300) % 8 < 4) || (c >= TM_ID + 12 && c < TM_ID + 40);
 }
 static void TrayMenuAt(POINT pt, int again);
 static void TrayMenu(void) { POINT pt; GetCursorPos(&pt); TrayMenuAt(pt, 0); }
@@ -4606,6 +4877,7 @@ static void TrayMenuAt(POINT pt, int again) {
     AddHk(m, MF_STRING, 6, Tr(L_TRAY_PICK), A_PICKER);
     AddHk(m, MF_STRING, 7, RecNs::recording ? Tr(L_TRAY_RECSTOP) : Tr(L_TRAY_REC), A_RECORD);
     AppendMenuW(m, MF_POPUP, (UINT_PTR)RecNs::Menu(), Tr(L_TRAY_RECSET));
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)VolNs::Menu(), Tr(L_TRAY_VOL));
     AppendMenuW(m, MF_POPUP, (UINT_PTR)TmMenu(), Tr(L_TRAY_TIMER));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AddHk(m, MF_STRING | (g_histOn ? MF_CHECKED : 0), 10, Tr(L_TRAY_HISTON), A_HIST);
@@ -4638,7 +4910,7 @@ static void TrayMenuAt(POINT pt, int again) {
     PostMessageW(g_hwnd, WM_NULL, 0, 0);
     DestroyMenu(m);
     if (KeepMenu(c)) {
-        if (c >= TM_ID) TmCommand(c); else RecNs::Cmd(c);
+        if (c >= TM_ID) TmCommand(c); else if (c >= 600) VolNs::Cmd(c); else RecNs::Cmd(c);
         TrayMenuAt(pt, c);
         return;
     }
@@ -4661,6 +4933,7 @@ static void TrayMenuAt(POINT pt, int again) {
     case 16: DestroyWindow(g_hwnd); break;
     default:
         if ((c >= 20 && c < 70) || (c >= 300 && c < 500)) RecNs::Cmd(c);
+        else if (c >= 600 && c < 700) VolNs::Cmd(c);
         else if (c >= TM_ID && c < TM_ID + 80) TmCommand(c);
         else if (c >= 200 && c < 200 + 32) ShowHidden(c - 200);
     }
@@ -4695,7 +4968,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_APP_RENDERED: if (g_psPending) SetTimer(g_hwnd, TID_RESTORE, g_pasteDelay, NULL); return 0;
     case WM_QUERYENDSESSION: return TRUE;
     case WM_ENDSESSION: if (w) { for (int i = 0; i < g_nhid; i++) if (IsWindow(g_hid[i])) ShowWindow(g_hid[i], SW_SHOW); } return 0;
-    case WM_DESTROY: if (RecNs::hw) DestroyWindow(RecNs::hw); PostQuitMessage(0); return 0;     // запись корректно дописывается
+    case WM_DESTROY: if (RecNs::hw) DestroyWindow(RecNs::hw); VolNs::Stop(); PostQuitMessage(0); return 0;     // запись корректно дописывается
     }
     if (m == g_msgTaskbar && m) { TrayAdd(); return 0; }
     return DefWindowProcW(h, m, w, l);
@@ -4753,7 +5026,7 @@ static int Run(void) {
     WaitForSingleObject(ev, 3000); CloseHandle(ev);
     SetThreadPriority(ht, THREAD_PRIORITY_ABOVE_NORMAL);
     if (g_histOn) AddClipboardFormatListener(g_hwnd);
-    RecShowSync();
+    RecShowSync(); VolSync();
     MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0) > 0) { TranslateMessage(&msg); DispatchMessageW(&msg); }
     for (int i = 0; i < g_nhid; i++) if (IsWindow(g_hid[i])) ShowWindow(g_hid[i], SW_SHOW);
