@@ -225,7 +225,7 @@ X(L_TAB_HIST, "popup.tab_history", L"История") \
 X(L_TAB_LAUNCH, "popup.tab_launch", L"Запуск") \
 X(L_TAB_SCR, "popup.tab_scripts", L"Скрипты") \
 X(L_INFO_SCR, "popup.info_scripts", L"T - tmp.py, 1-9 - остальные, Enter - запустить   Tab - режим   Esc - закрыть") \
-X(L_EMPTY_SCR, "popup.scripts_empty", L"В папке py нет скриптов (*.py)") \
+X(L_EMPTY_SCR, "popup.scripts_empty3", L"В папке scripts нет скриптов (*.py, *.bat, *.ps1)") \
 X(L_TRAY_SCR, "tray.scripts", L"Скрипты…") \
 X(L_SEARCH, "popup.search", L"Введите для поиска…") \
 X(L_INFO_LAUNCH, "popup.info_launch", L"Enter - запустить   Tab - режим   Esc - закрыть") \
@@ -613,13 +613,13 @@ Language=ru
 ;     paste N M                 сразу вставить запись M (1-10) буфера N
 ;     history                   меню истории (работает при HistoryEnabled=1, иначе клавиша уходит системе)
 ;     launcher                  меню быстрого запуска (секция [Launcher])
-;     scripts                   меню скриптов из папки py (*.py): имя - первая строка-комментарий "# Имя", иначе имя файла; T - tmp.py, цифры - остальные, Enter - запустить
+;     scripts                   меню скриптов из папки scripts (*.py, *.bat, *.ps1): имя - первая строка-комментарий ("# Имя", в bat "REM Имя" или ":: Имя"), иначе имя файла; T - tmp.py, цифры - остальные, Enter - запустить; ps1 запускается через powershell.exe
 ;     layout                    исправить раскладку: последний набранный текст, а если его нет - выделенный (строка, если выделения нет);
 ;                               повторное нажатие сразу после этого возвращает текст обратно
 ;     run КОМАНДА [@ ПАПКА]     запустить программу/файл/ссылку (ПАПКА - рабочая папка)
 ;     admin КОМАНДА [@ ПАПКА]   то же от администратора
-;     py СКРИПТ [арг] [@ ПАПКА] скрипт из папки py. Выделенный текст: переменные окружения DKEYS_SEL и DKEYS_SEL_FILE
-;     pyrun                     выделенный текст выполнить как скрипт Python (py\tmp.py)
+;     py СКРИПТ [арг] [@ ПАПКА] скрипт из папки scripts (*.py, *.bat, *.ps1). Выделенный текст: переменные окружения DKEYS_SEL и DKEYS_SEL_FILE
+;     pyrun                     выделенный текст выполнить как скрипт Python (scripts\tmp.py)
 ;     topmost                   окно "поверх всех" вкл/выкл
 ;     totray                    спрятать окно (вернуть - из меню значка в трее)
 ;     pause                     пауза/продолжить хоткеи
@@ -1476,16 +1476,25 @@ static void Refilter(void) {
     if (g_top < 0) g_top = 0;
 }
 // имя скрипта: первая строка-комментарий (не shebang и не "coding"), иначе имя файла
-static void ScrName(const wchar_t *t, wchar_t *out, int cap) {
+static BOOL EndsI(const wchar_t *s, const wchar_t *x) { int a = lstrlenW(s), b = lstrlenW(x); return a >= b && !lstrcmpiW(s + a - b, x); }
+static void ScrName(const wchar_t *t, wchar_t *out, int cap, BOOL bat) {      // bat: комментарий "REM имя" или ":: имя", строки "@echo ..." пропускаются
     out[0] = 0;
+    if (*t == 0xFEFF) t++;
     for (int ln = 0; ln < 4 && *t; ln++) {
         const wchar_t *e = t; while (*e && *e != L'\n') e++;
         const wchar_t *s = t; while (s < e && (*s == L' ' || *s == L'\t' || *s == L'\r')) s++;
         t = *e ? e + 1 : e;
         if (s >= e) continue;
-        if (*s != L'#') return;
-        s++;
-        if (s < e && *s == L'!') continue;
+        if (bat) {
+            if (e - s >= 5 && (s[0] == L'@') && (s[1] | 32) == L'e' && (s[2] | 32) == L'c') continue;
+            if (e - s >= 2 && s[0] == L':' && s[1] == L':') s += 2;
+            else if (e - s >= 4 && (s[0] | 32) == L'r' && (s[1] | 32) == L'e' && (s[2] | 32) == L'm' && s[3] == L' ') s += 4;
+            else return;
+        } else {
+            if (*s != L'#') return;
+            s++;
+            if (s < e && *s == L'!') continue;
+        }
         while (s < e && (*s == L' ' || *s == L'\t')) s++;
         const wchar_t *x = e; while (x > s && (x[-1] == L'\r' || x[-1] == L' ' || x[-1] == L'\t')) x--;
         int n = (int)(x - s); if (n <= 0) continue;
@@ -1495,17 +1504,24 @@ static void ScrName(const wchar_t *t, wchar_t *out, int cap) {
         return;
     }
 }
-static wchar_t **ScrList(int *cnt) {
-    wchar_t pat[MAX_PATH]; lstrcpynW(pat, g_pyDir, MAX_PATH); Cat(pat, MAX_PATH, L"*.py");
+static wchar_t **ScrList(int *cnt) {                                                  // *.py, *.bat, *.ps1 по алфавиту, tmp.py первым
+    static const wchar_t *kPat[3] = {L"*.py", L"*.bat", L"*.ps1"};
     wchar_t **a = NULL; int n = 0;
-    WIN32_FIND_DATAW fd; HANDLE h = FindFirstFileW(pat, &fd);
-    if (h != INVALID_HANDLE_VALUE) {
+    for (int k = 0; k < 3; k++) {
+        wchar_t pat[MAX_PATH]; lstrcpynW(pat, g_pyDir, MAX_PATH); Cat(pat, MAX_PATH, kPat[k]);
+        WIN32_FIND_DATAW fd; HANDLE h = FindFirstFileW(pat, &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
         do {
             if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || n >= 200) continue;
+            int l = lstrlenW(fd.cFileName); if (k > 0 && l > 4 && fd.cFileName[l - 4] != L'.') continue;      // короткое имя 8.3 может зацепить лишнее (*.ps1 -> .ps1x)
             a = (wchar_t **)Realloc(a, (n + 1) * sizeof(wchar_t *)); a[n++] = Dup(fd.cFileName);
-            if (!lstrcmpiW(fd.cFileName, L"tmp.py") && n > 1) { wchar_t *x = a[n - 1]; memmove(a + 1, a, (n - 1) * sizeof(wchar_t *)); a[0] = x; }      // tmp.py - первым (клавиша T)
         } while (FindNextFileW(h, &fd));
         FindClose(h);
+    }
+    for (int i = 1; i < n; i++) {                                                     // вставками: tmp.py - в начало, остальные по имени
+        wchar_t *x = a[i]; BOOL xt = !lstrcmpiW(x, L"tmp.py"); int j = i - 1;
+        while (j >= 0 && (xt ? lstrcmpiW(a[j], L"tmp.py") != 0 : (lstrcmpiW(a[j], L"tmp.py") != 0 && lstrcmpiW(a[j], x) > 0))) { a[j + 1] = a[j]; j--; }
+        a[j + 1] = x;
     }
     *cnt = n; return a;
 }
@@ -1515,7 +1531,7 @@ static void ScrRow(Row *r, const wchar_t *file, const wchar_t *label) {
     if (sz > 6000) sz = 6000;
     wchar_t *txt = raw ? FromUtf8((char *)raw, sz) : Dup(L"");
     Free(raw);
-    wchar_t nm[100]; ScrName(txt, nm, 100);
+    wchar_t nm[100]; ScrName(txt, nm, 100, EndsI(file, L".bat") || EndsI(file, L".cmd"));
     r->label = Dup(label); r->title = Dup(nm[0] ? nm : file); r->text = txt;
 }
 static void BuildRows(void) {
@@ -1848,10 +1864,14 @@ static void RunPy(const wchar_t *arg, const wchar_t *dir, BOOL hold = FALSE) {  
     if (sel) WriteText(tmp, sel);
     wchar_t *env = BuildEnv(sel, sel ? tmp : NULL);
     Buf c = {0};
-    if (hold && g_pyPause) BufAdd(&c, L"cmd.exe /d /c \"");
-    BufAdd(&c, L"\""); BufAdd(&c, g_python); BufAdd(&c, L"\" \""); BufAdd(&c, script); BufAdd(&c, L"\"");
+    int kind = EndsI(script, L".ps1") ? 2 : (EndsI(script, L".bat") || EndsI(script, L".cmd")) ? 1 : 0;      // 0 Python, 1 bat/cmd (через cmd), 2 PowerShell
+    BOOL pz = hold && g_pyPause;
+    if (pz || kind == 1) BufAdd(&c, L"cmd.exe /d /c \"");
+    if (kind == 1) { BufAdd(&c, L"\""); BufAdd(&c, script); BufAdd(&c, L"\""); }
+    else if (kind == 2) { BufAdd(&c, L"\"powershell.exe\" -NoProfile -ExecutionPolicy Bypass -File \""); BufAdd(&c, script); BufAdd(&c, L"\""); }
+    else { BufAdd(&c, L"\""); BufAdd(&c, g_python); BufAdd(&c, L"\" \""); BufAdd(&c, script); BufAdd(&c, L"\""); }
     if (*par) { BufAdd(&c, L" "); BufAdd(&c, par); }
-    if (hold && g_pyPause) BufAdd(&c, L" & pause\"");
+    if (pz) BufAdd(&c, L" & pause\""); else if (kind == 1) BufAdd(&c, L"\"");
     RunProc(c.p, dir, env);
     Free(c.p); Free(env); Free(sel); Free(s);
 }
@@ -5668,7 +5688,7 @@ static void InitPaths(void) {
     *p = 0;
     lstrcpynW(g_ini, g_dir, MAX_PATH); Cat(g_ini, MAX_PATH, L"DKeys.ini");
     lstrcpynW(g_memDir, g_dir, MAX_PATH); Cat(g_memDir, MAX_PATH, L"memory\\");
-    lstrcpynW(g_pyDir, g_dir, MAX_PATH); Cat(g_pyDir, MAX_PATH, L"py\\");
+    lstrcpynW(g_pyDir, g_dir, MAX_PATH); Cat(g_pyDir, MAX_PATH, L"scripts\\");
 }
 
 static int Run(void) {
@@ -5688,6 +5708,10 @@ static int Run(void) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     InitPaths();
+    {                                                                              // старая папка py -> scripts (один раз)
+        wchar_t old[MAX_PATH]; lstrcpynW(old, g_dir, MAX_PATH); Cat(old, MAX_PATH, L"py");
+        if (GetFileAttributesW(g_pyDir) == INVALID_FILE_ATTRIBUTES && GetFileAttributesW(old) != INVALID_FILE_ATTRIBUTES) MoveFileW(old, g_pyDir);
+    }
     CreateDirectoryW(g_memDir, NULL); CreateDirectoryW(g_pyDir, NULL);
     LoadConfig(); BuffersLoad(); HistLoad();
     RegClass(L"DKMain", MainProc, 0); RegClass(L"DKToast", ToastProc, CS_DROPSHADOW);
