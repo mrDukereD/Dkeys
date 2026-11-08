@@ -28,6 +28,7 @@ DEFINE_GUID(IID_IMMDeviceEnumerator, 0xA95664D2, 0x9614, 0x4F35, 0xA7, 0x46, 0xD
 DEFINE_GUID(IID_IAudioMeterInformation, 0xC02216F6, 0x8C67, 0x4B5B, 0x9D, 0x00, 0xD0, 0x08, 0xE7, 0x3E, 0x00, 0x64);
 DEFINE_GUID(IID_IAudioEndpointVolume, 0x5CDF2C82, 0x841E, 0x4546, 0x97, 0x22, 0x0C, 0xF7, 0x40, 0x78, 0x22, 0x9A);
 DEFINE_GUID(IID_IAudioClient,0x1CB9AD4C, 0xDBFA, 0x4C32, 0xB1, 0x78, 0xC2, 0xF5, 0x68, 0xA7, 0x03, 0xB2);
+DEFINE_GUID(IID_IAudioRenderClient, 0xF294ACFC, 0x3146, 0x4483, 0xA7, 0xBF, 0xAD, 0xDC, 0xA7, 0xC2, 0x60, 0xE2);
 DEFINE_GUID(IID_IAudioCaptureClient, 0xC8ADBD64, 0xE71E, 0x48A0, 0xA4, 0xDE, 0x18, 0x5C, 0x39, 0x5C, 0xD3, 0x17);
 #include <stdarg.h>
 
@@ -116,6 +117,7 @@ static OvCfg g_ovc[24]; static int g_novc; static BOOL g_rPwd = TRUE, g_rShow;
 static void RecShowSync(void);
 static volatile LONG g_vOn; static int g_vLim = 50, g_vCeil, g_vBoost; static wchar_t g_vDev[80];     // стабильная громкость: вкл, порог пика %, потолок громкости %, подтяжка тихого %, устройство
 static void VolToggle(void); static void VolOpen(void); static void VolSync(void);
+static volatile LONG g_dOn; static wchar_t g_dSrc[80], g_dDst[80]; static int g_dLat = 20; static void DupSync(void);      // дублирование звука: вкл, источник (пусто - по умолчанию), приёмник
 static volatile BYTE g_ioKey[65536], g_ioMouse[8]; static volatile DWORD g_ioHit[65536], g_ioMHit[8]; static volatile DWORD g_ioWheelT; static volatile int g_ioWheelD;   // состояние ввода для оверлея (из хуков)
 static OvCfg *OvCfgGet(const wchar_t *stem, BOOL create) {
     for (int i = 0; i < g_novc; i++) if (!lstrcmpiW(g_ovc[i].stem, stem)) return &g_ovc[i];
@@ -162,6 +164,12 @@ X(L_TRAY_RECSTOP, "tray.record_stop", L"Остановить запись") \
 X(L_TRAY_RECSET, "tray.record_settings", L"Настройки записи") \
 X(L_TRAY_VOL, "tray.volume", L"Стабильная громкость") \
 X(L_VOL_ON, "vol.on", L"Включена") \
+X(L_TRAY_DUP, "tray.dup", L"Дублирование звука") \
+X(L_DUP_ON, "dup.menu_on", L"Дублирование") \
+X(L_DUP_SRC, "dup.src", L"Источник") \
+X(L_DUP_DST, "dup.dst", L"Приёмник") \
+X(L_DUP_DEF, "dup.default", L"Устройство по умолчанию") \
+X(L_DUP_NODST, "dup.nodst", L"Выберите приёмник в меню «Дублирование звука»") \
 X(L_VOL_SET, "vol.set", L"Окно настройки порога…") \
 X(L_VOL_DEV, "vol.device", L"Устройство вывода") \
 X(L_VOL_DEVDEF, "vol.device_def", L"По умолчанию") \
@@ -784,6 +792,17 @@ PowerShell=powershell.exe
 ; Stamp: 1 дата и время на кадре | 0 нет
 ;Stamp=0
 
+[Duplicate]
+; Дублирование звука: то, что играет на источнике, воспроизводится ещё и на приёмнике (задержка ~50 мс). Выбор - в меню значка
+; Enabled: 1 включено | 0 выключено
+;Enabled=0
+; Source: имя устройства вывода-источника, пусто - устройство по умолчанию (следует за ним при смене)
+;Source=
+; Sink: имя устройства вывода-приёмника (из списка в меню); не должно совпадать с источником
+;Sink=
+; Latency: запас буфера в мс = задержка дубля (0-300, по умолчанию 20); меньше - меньше задержка, но возможны щелчки
+;Latency=20
+
 [Volume]
 ; Стабильная громкость (действия volume, volumeset): громкость системы сама снижается, когда пик звука выше порога, и медленно возвращается к максимуму
 ; Enabled: 1 включена | 0 выключена
@@ -992,6 +1011,11 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
         else if (!lstrcmpiW(k, L"Ceiling")) { g_vCeil = ToInt(v); if (g_vCeil < 0) g_vCeil = 0; if (g_vCeil > 100) g_vCeil = 100; }
         else if (!lstrcmpiW(k, L"Boost")) { g_vBoost = ToInt(v); if (g_vBoost < 0) g_vBoost = 0; if (g_vBoost > 100) g_vBoost = 100; }
         else if (!lstrcmpiW(k, L"Device")) lstrcpynW(g_vDev, v, 80);
+    } else if (!lstrcmpiW(s, L"Duplicate")) {
+        if (!lstrcmpiW(k, L"Enabled")) g_dOn = ToInt(v) != 0;
+        else if (!lstrcmpiW(k, L"Source")) lstrcpynW(g_dSrc, v, 80);
+        else if (!lstrcmpiW(k, L"Sink")) lstrcpynW(g_dDst, v, 80);
+        else if (!lstrcmpiW(k, L"Latency")) { g_dLat = ToInt(v); if (g_dLat < 0) g_dLat = 0; if (g_dLat > 300) g_dLat = 300; }
     } else if (!lstrcmpiW(s, L"Timer")) {
         if (!lstrcmpiW(k, L"FontColor")) g_tmFg = HexRgb(v);
         else if (!lstrcmpiW(k, L"BgColor")) g_tmBg = HexRgb(v);
@@ -2396,7 +2420,7 @@ static void Reload(void) {
     LoadConfig();
     if (g_histOn != was) { if (g_histOn) AddClipboardFormatListener(g_hwnd); else RemoveClipboardFormatListener(g_hwnd); }
     PostThreadMessageW(g_hookTid, TM_REHOOK, 0, 0);
-    RecShowSync(); VolSync(); CamRecSync();
+    RecShowSync(); VolSync(); DupSync(); CamRecSync();
     Toast(Tr(L_T_RELOADED));
 }
 /* ---------- веб-камера (DirectShow): предпросмотр в окне ---------- */
@@ -5373,6 +5397,124 @@ static void VolToggle(void) { VolNs::Toggle(); }
 static void VolOpen(void) { VolNs::Open(); }
 static void VolSync(void) { VolNs::Sync(); }
 
+/* ---------- дублирование звука: WASAPI loopback источника -> устройство-приёмник ---------- */
+namespace DupNs {
+static HANDLE th; static volatile LONG stopF;
+static wchar_t dn[16][80]; static int ndn;
+static IMMDevice *ByName(IMMDeviceEnumerator *en, const wchar_t *name) {          // по имени; пустое имя - устройство по умолчанию
+    IMMDevice *dev = NULL;
+    if (!name[0]) { en->GetDefaultAudioEndpoint(eRender, eConsole, &dev); return dev; }
+    IMMDeviceCollection *col = NULL; UINT n = 0;
+    if (SUCCEEDED(en->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &col))) {
+        col->GetCount(&n);
+        for (UINT i = 0; i < n && !dev; i++) {
+            IMMDevice *dv = NULL; IPropertyStore *ps = NULL; PROPVARIANT pv; PropVariantInit(&pv);
+            if (SUCCEEDED(col->Item(i, &dv)) && SUCCEEDED(dv->OpenPropertyStore(STGM_READ, &ps)) && SUCCEEDED(ps->GetValue(RecNs::kFriendly, &pv)) && pv.vt == VT_LPWSTR && !lstrcmpW(pv.pwszVal, name)) { dev = dv; dv = NULL; }
+            PropVariantClear(&pv); if (ps) ps->Release(); if (dv) dv->Release();
+        }
+        col->Release();
+    }
+    return dev;
+}
+static void DevId(IMMDevice *dv, wchar_t *out) { LPWSTR s = NULL; out[0] = 0; if (dv && dv->GetId(&s) == S_OK && s) { lstrcpynW(out, s, 256); CoTaskMemFree(s); } }
+static DWORD WINAPI Worker(LPVOID) {
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    IMMDeviceEnumerator *en = NULL; CoCreateInstance(CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, IID_IMMDeviceEnumerator, (void **)&en);
+    timeBeginPeriod(1);
+    while (en && !stopF) {
+        wchar_t sn[80], dk[80], sid[256], did[256]; lstrcpynW(sn, g_dSrc, 80); lstrcpynW(dk, g_dDst, 80);
+        IMMDevice *src = ByName(en, sn), *dst = dk[0] ? ByName(en, dk) : NULL;
+        IAudioClient *ac = NULL, *rc = NULL; IAudioCaptureClient *cc = NULL; IAudioRenderClient *rr = NULL; WAVEFORMATEX *wf = NULL; UINT32 bsz = 0; BOOL run = FALSE;
+        DevId(src, sid); DevId(dst, did);
+        if (src && dst && lstrcmpW(sid, did)                                           // источник и приёмник - одно устройство: был бы замкнутый круг
+            && SUCCEEDED(src->Activate(IID_IAudioClient, CLSCTX_ALL, NULL, (void **)&ac))
+            && SUCCEEDED(ac->GetMixFormat(&wf))
+            && SUCCEEDED(ac->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, 2000000, 0, wf, NULL))
+            && SUCCEEDED(ac->GetService(IID_IAudioCaptureClient, (void **)&cc))
+            && SUCCEEDED(dst->Activate(IID_IAudioClient, CLSCTX_ALL, NULL, (void **)&rc))
+            && SUCCEEDED(rc->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, 2000000, 0, wf, NULL))
+            && SUCCEEDED(rc->GetService(IID_IAudioRenderClient, (void **)&rr))
+            && SUCCEEDED(rc->GetBufferSize(&bsz))) run = TRUE;
+        if (run) {
+            UINT32 fs = wf->nBlockAlign, pre = wf->nSamplesPerSec * g_dLat / 1000, maxPad = wf->nSamplesPerSec * (g_dLat * 3 + 30) / 1000; BYTE *o = NULL;   // запас тишины Latency мс (он же задержка); больше Latency*3+30 мс в буфере приёмника - кадры выбрасываем (дрейф часов)
+            if (pre && pre < bsz && SUCCEEDED(rr->GetBuffer(pre, &o))) rr->ReleaseBuffer(pre, AUDCLNT_BUFFERFLAGS_SILENT);
+            ac->Start(); rc->Start();
+            DWORD last = GetTickCount(); BOOL bad = FALSE;
+            while (!stopF && !bad && g_dOn) {
+                DWORD now = GetTickCount();
+                if (now - last > 100) {
+                    last = now;
+                    if (lstrcmpW(sn, g_dSrc) || lstrcmpW(dk, g_dDst)) break;           // выбрали другие устройства
+                    if (!sn[0]) { IMMDevice *df = NULL; wchar_t cur[256]; en->GetDefaultAudioEndpoint(eRender, eConsole, &df); DevId(df, cur); if (df) df->Release(); if (lstrcmpW(cur, sid)) break; }   // сменилось устройство по умолчанию
+                }
+                UINT32 np = 0; if (FAILED(cc->GetNextPacketSize(&np))) break;
+                while (np && !bad) {
+                    BYTE *dp = NULL; UINT32 fr = 0, pad = 0; DWORD fl = 0;
+                    if (FAILED(cc->GetBuffer(&dp, &fr, &fl, NULL, NULL))) { bad = TRUE; break; }
+                    if (FAILED(rc->GetCurrentPadding(&pad))) bad = TRUE;
+                    else if (pad <= maxPad && fr <= bsz - pad && SUCCEEDED(rr->GetBuffer(fr, &o))) {
+                        if (fl & AUDCLNT_BUFFERFLAGS_SILENT) memset(o, 0, (size_t)fr * fs); else memcpy(o, dp, (size_t)fr * fs);
+                        rr->ReleaseBuffer(fr, 0);
+                    }
+                    cc->ReleaseBuffer(fr);
+                    if (FAILED(cc->GetNextPacketSize(&np))) bad = TRUE;
+                }
+                Sleep(2);
+            }
+            ac->Stop(); rc->Stop();
+        }
+        if (rr) rr->Release(); if (rc) rc->Release(); if (cc) cc->Release(); if (ac) ac->Release();
+        if (wf) CoTaskMemFree(wf);
+        if (src) src->Release(); if (dst) dst->Release();
+        if (!run) for (int k = 0; k < 10 && !stopF; k++) Sleep(100);                   // не вышло (нет приёмника / устройство занято) - повтор через секунду
+        else Sleep(50);
+    }
+    if (en) en->Release();
+    timeEndPeriod(1); CoUninitialize(); return 0;
+}
+static void Stop(void) { if (th) { stopF = 1; WaitForSingleObject(th, 5000); CloseHandle(th); th = NULL; } }
+static void Sync(void) {
+    if (g_dOn && !th) { stopF = 0; th = CreateThread(NULL, 0, Worker, NULL, 0, NULL); }
+    else if (!g_dOn) Stop();
+}
+static HMENU Menu(void) {
+    HMENU m = CreatePopupMenu(), s = CreatePopupMenu(), d = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING | (g_dOn ? MF_CHECKED : 0), 700, Tr(L_DUP_ON));
+    AppendMenuW(s, MF_STRING | (!g_dSrc[0] ? MF_CHECKED : 0), 701, Tr(L_DUP_DEF));
+    ndn = 0;
+    IMMDeviceEnumerator *en = NULL; IMMDeviceCollection *col = NULL; UINT n = 0;
+    if (SUCCEEDED(CoCreateInstance(CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, IID_IMMDeviceEnumerator, (void **)&en))) {
+        if (SUCCEEDED(en->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &col))) {
+            col->GetCount(&n);
+            for (UINT i = 0; i < n && ndn < 16; i++) {
+                IMMDevice *dv = NULL; IPropertyStore *ps = NULL; PROPVARIANT pv; PropVariantInit(&pv);
+                if (SUCCEEDED(col->Item(i, &dv)) && SUCCEEDED(dv->OpenPropertyStore(STGM_READ, &ps)) && SUCCEEDED(ps->GetValue(RecNs::kFriendly, &pv)) && pv.vt == VT_LPWSTR) {
+                    lstrcpynW(dn[ndn], pv.pwszVal, 80);
+                    wchar_t e[170]; int o = 0; for (int j = 0; dn[ndn][j] && o < 160; j++) { if (dn[ndn][j] == L'&') e[o++] = L'&'; e[o++] = dn[ndn][j]; } e[o] = 0;
+                    AppendMenuW(s, MF_STRING | (!lstrcmpW(g_dSrc, dn[ndn]) ? MF_CHECKED : 0), 702 + ndn, e);
+                    AppendMenuW(d, MF_STRING | (!lstrcmpW(g_dDst, dn[ndn]) ? MF_CHECKED : 0), 720 + ndn, e); ndn++;
+                }
+                PropVariantClear(&pv); if (ps) ps->Release(); if (dv) dv->Release();
+            }
+            col->Release();
+        }
+        en->Release();
+    }
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)s, Tr(L_DUP_SRC));
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)d, Tr(L_DUP_DST));
+    return m;
+}
+static void Cmd(int c) {
+    if (c == 700) {
+        g_dOn = !g_dOn; IniSet(L"Duplicate", L"Enabled", g_dOn ? L"1" : L"0"); Sync();
+        if (g_dOn && !g_dDst[0]) Toast(Tr(L_DUP_NODST));
+    } else if (c == 701) { g_dSrc[0] = 0; IniSet(L"Duplicate", L"Source", L""); }
+    else if (c >= 702 && c - 702 < ndn) { lstrcpynW(g_dSrc, dn[c - 702], 80); IniSet(L"Duplicate", L"Source", g_dSrc); }
+    else if (c >= 720 && c - 720 < ndn) { lstrcpynW(g_dDst, dn[c - 720], 80); IniSet(L"Duplicate", L"Sink", g_dDst); }
+}
+}   // namespace DupNs
+static void DupSync(void) { DupNs::Sync(); }
+
 static int g_nav[8], g_navN;                                  // путь к пункту: номера (без разделителей) по уровням
 static BOOL FindPath(HMENU m, UINT id, int depth) {            // ищет пункт id в дереве меню
     int n = GetMenuItemCount(m), k = 0;
@@ -5397,7 +5539,7 @@ static void NavRun(void) {                                      // клавиш�
     }
 }
 static BOOL KeepMenu(int c) {                                   // настройки: меню остаётся открытым после выбора
-    return (c >= 20 && c < 58 && c != 25) || c == 60 || c == 62 || (c >= 600 && c < 700 && c != 601) || (c >= 300 && c < 500 && (c - 300) % 8 < 4) || (c >= TM_ID + 12 && c < TM_ID + 40);
+    return (c >= 20 && c < 58 && c != 25) || (c >= 700 && c < 760) || c == 60 || c == 62 || (c >= 600 && c < 700 && c != 601) || (c >= 300 && c < 500 && (c - 300) % 8 < 4) || (c >= TM_ID + 12 && c < TM_ID + 40);
 }
 static void TrayMenuAt(POINT pt, int again);
 static void TrayMenu(void) { POINT pt; GetCursorPos(&pt); TrayMenuAt(pt, 0); }
@@ -5413,6 +5555,7 @@ static void TrayMenuAt(POINT pt, int again) {
     AddHk(m, MF_STRING, 7, RecNs::recording ? Tr(L_TRAY_RECSTOP) : Tr(L_TRAY_REC), A_RECORD);
     AppendMenuW(m, MF_POPUP, (UINT_PTR)RecNs::Menu(), Tr(L_TRAY_RECSET));
     AppendMenuW(m, MF_POPUP, (UINT_PTR)VolNs::Menu(), Tr(L_TRAY_VOL));
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)DupNs::Menu(), Tr(L_TRAY_DUP));
     AppendMenuW(m, MF_POPUP, (UINT_PTR)TmMenu(), Tr(L_TRAY_TIMER));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AddHk(m, MF_STRING | (g_histOn ? MF_CHECKED : 0), 10, Tr(L_TRAY_HISTON), A_HIST);
@@ -5445,7 +5588,7 @@ static void TrayMenuAt(POINT pt, int again) {
     PostMessageW(g_hwnd, WM_NULL, 0, 0);
     DestroyMenu(m);
     if (KeepMenu(c)) {
-        if (c >= TM_ID) TmCommand(c); else if (c >= 600) VolNs::Cmd(c); else RecNs::Cmd(c);
+        if (c >= TM_ID) TmCommand(c); else if (c >= 700 && c < 760) DupNs::Cmd(c); else if (c >= 600) VolNs::Cmd(c); else RecNs::Cmd(c);
         TrayMenuAt(pt, c);
         return;
     }
@@ -5469,6 +5612,7 @@ static void TrayMenuAt(POINT pt, int again) {
     default:
         if ((c >= 20 && c < 70) || (c >= 300 && c < 500)) RecNs::Cmd(c);
         else if (c >= 600 && c < 700) VolNs::Cmd(c);
+        else if (c >= 700 && c < 760) DupNs::Cmd(c);
         else if (c >= TM_ID && c < TM_ID + 80) TmCommand(c);
         else if (c >= 200 && c < 200 + 32) ShowHidden(c - 200);
     }
@@ -5503,7 +5647,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_APP_RENDERED: if (g_psPending) SetTimer(g_hwnd, TID_RESTORE, g_pasteDelay, NULL); return 0;
     case WM_QUERYENDSESSION: return TRUE;
     case WM_ENDSESSION: if (w) { for (int i = 0; i < g_nhid; i++) if (IsWindow(g_hid[i])) ShowWindow(g_hid[i], SW_SHOW); } return 0;
-    case WM_DESTROY: if (RecNs::hw) DestroyWindow(RecNs::hw); VolNs::Stop(); CamRecNs::Stop(); PostQuitMessage(0); return 0;     // запись корректно дописывается
+    case WM_DESTROY: if (RecNs::hw) DestroyWindow(RecNs::hw); VolNs::Stop(); DupNs::Stop(); CamRecNs::Stop(); PostQuitMessage(0); return 0;     // запись корректно дописывается
     }
     if (m == g_msgTaskbar && m) { TrayAdd(); return 0; }
     return DefWindowProcW(h, m, w, l);
@@ -5561,7 +5705,7 @@ static int Run(void) {
     WaitForSingleObject(ev, 3000); CloseHandle(ev);
     SetThreadPriority(ht, THREAD_PRIORITY_ABOVE_NORMAL);
     if (g_histOn) AddClipboardFormatListener(g_hwnd);
-    RecShowSync(); VolSync(); CamRecSync();
+    RecShowSync(); VolSync(); DupSync(); CamRecSync();
     MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0) > 0) { if (g_hwndRec && IsDialogMessageW(g_hwndRec, &msg)) continue; TranslateMessage(&msg); DispatchMessageW(&msg); }
     for (int i = 0; i < g_nhid; i++) if (IsWindow(g_hid[i])) ShowWindow(g_hid[i], SW_SHOW);
