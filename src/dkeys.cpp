@@ -71,7 +71,7 @@ enum { DM_CTRL = 1, DM_ALT = 2, DM_SHIFT = 4, DM_WIN = 8 };
 enum { A_NONE, A_COPY, A_PASTE, A_BUFFER, A_HIST, A_LAUNCH, A_RUN, A_ADMIN, A_PY, A_PYRUN, A_TOPMOST, A_TOTRAY, A_LAYOUT, A_PAUSE, A_WEBCAM, A_STOPWATCH, A_TIMER, A_DRAW, A_PICKER, A_RECORD, A_SCRIPTS, A_VOL, A_VOLSET };
 enum { PM_BUF, PM_HIST, PM_LAUNCH, PM_SCRIPTS };
 enum {
-    WM_APP_HOT = WM_APP + 1, WM_APP_KEY, WM_APP_CLOSE, WM_APP_PCLICK, WM_APP_PTAB, WM_TRAY, WM_APP_RENDERED,
+    WM_APP_HOT = WM_APP + 1, WM_APP_KEY, WM_APP_CLOSE, WM_APP_PCLICK, WM_APP_PTAB, WM_APP_PIMG, WM_TRAY, WM_APP_RENDERED,
     TM_MOUSE = WM_APP + 20, TM_REHOOK
 };
 #define TID_RESTORE 1
@@ -80,7 +80,7 @@ enum {
 #define TID_POPFG 4
 #define TID_TRAY 5
 #define TID_NAV 6
-#define VISROWS 10
+#define VISROWS g_vr
 
 struct Bind { UINT mods, key; int act, n, n2; wchar_t *arg, *dir; };
 struct KV { wchar_t *k, *v; };
@@ -101,7 +101,7 @@ static HANDLE g_heap;
 static HINSTANCE g_inst;
 static HWND g_hwnd, g_hwndPop, g_hwndToast, g_popFg; static int g_popGrace;
 static HWND g_hwndClip;   // владелец буфера обмена: окно потока хука, который всегда качает сообщения
-static wchar_t g_dir[MAX_PATH], g_ini[MAX_PATH], g_memDir[MAX_PATH], g_pyDir[MAX_PATH], g_exe[MAX_PATH];
+static wchar_t g_dir[MAX_PATH], g_ini[MAX_PATH], g_memDir[MAX_PATH], g_pyDir[MAX_PATH], g_runDir[MAX_PATH], g_exe[MAX_PATH];
 static volatile LONG g_modBits, g_popup, g_paused, g_modal;
 static volatile LONG g_caps;
 static DWORD g_hookTid;
@@ -229,10 +229,10 @@ X(L_EMPTY_SCR, "popup.scripts_empty3", L"В папке scripts нет скрип
 X(L_TRAY_SCR, "tray.scripts", L"Скрипты…") \
 X(L_SEARCH, "popup.search", L"Введите для поиска…") \
 X(L_INFO_LAUNCH, "popup.info_launch", L"Enter - запустить   Tab - режим   Esc - закрыть") \
-X(L_INFO_BUF, "popup.info_buffer", L"%d симв.   цифра/Enter - вставить   Del - удалить   F2 - правка   Ins - новая   ←→ - буфер") \
+X(L_INFO_BUF, "popup.info_buffer2", L"%d симв.   цифра/Enter - вставить   Ctrl+цифра - картинка   Del - удалить   F2 - правка   Ins - новая") \
 X(L_INFO_HIST, "popup.info_history", L"%d симв.   Enter - вставить   Del - удалить   F2 - правка   Ctrl+1..9 - в буфер") \
 X(L_EMPTY_NF, "popup.not_found", L"Ничего не найдено") \
-X(L_EMPTY_BUF, "popup.buffer_empty", L"Буфер %d пуст. Ctrl+Num%d копирует выделенное сюда, Ins - ввести вручную") \
+X(L_EMPTY_BUF, "popup.buffer_empty2", L"Буфер %d пуст. Ctrl+Num%d копирует сюда выделенный текст или картинку из буфера обмена, Ins - ввести вручную") \
 X(L_EMPTY_HIST, "popup.history_empty", L"История пуста") \
 X(L_CANCEL, "dialog.cancel", L"Отмена") \
 X(L_ED_NEW, "dialog.buffer_new", L"Буфер %d: новая запись") \
@@ -241,6 +241,9 @@ X(L_ED_HIST, "dialog.history_entry", L"Запись истории") \
 X(L_T_RUNFAIL, "toast.run_failed", L"Не удалось запустить: %.120s") \
 X(L_T_PYFAIL, "toast.python_failed", L"Не удалось запустить Python (%.80s)") \
 X(L_T_NOSEL, "toast.no_selection", L"Нет выделенного текста") \
+X(L_T_NOSEL2, "toast.no_selection_img", L"Нет выделенного текста и картинки в буфере обмена") \
+X(L_T_TOIMG, "toast.to_buffer_img", L"→ буфер %d   (картинка)") \
+X(L_T_NOIMG, "toast.no_image", L"В буфере %d нет картинки %d") \
 X(L_T_TOPON, "toast.topmost_on", L"Поверх всех: ВКЛ  —  %s") \
 X(L_T_TOPOFF, "toast.topmost_off", L"Поверх всех: ВЫКЛ  —  %s") \
 X(L_T_TOTRAY, "toast.to_tray", L"Спрятано в трей: %s") \
@@ -608,11 +611,13 @@ Language=ru
 ;            Ins Del Home End PgUp PgDn Left Right Up Down Tilde Minus Equals Comma Period Slash
 ;            Backslash Semicolon Quote LBracket RBracket PrintScreen Pause Apps
 ;   Действия:
-;     copy N                    выделенное - в буфер N (1-9), записью наверх; основной буфер Windows не трогается
+;     copy N                    выделенное - в буфер N (1-9), записью наверх; основной буфер Windows не трогается.
+;                               Если вместо текста скопирована картинка (или она уже лежит в буфере Windows) - сохраняется картинка: до 10 PNG в каждом буфере
+;                               (memory\N_1.png...), миниатюры внизу окна буфера, вставка - клик по миниатюре или Ctrl+цифра (0 - десятая)
 ;     buffer [N]                меню буфера N (без N - последний): цифра 1-9,0 или Enter вставляет запись
 ;     paste N M                 сразу вставить запись M (1-10) буфера N
 ;     history                   меню истории (работает при HistoryEnabled=1, иначе клавиша уходит системе)
-;     launcher                  меню быстрого запуска (секция [Launcher])
+;     launcher                  меню быстрого запуска (секция [Launcher] и файлы папки runs: exe, lnk, bat, ps1 или любой файл - откроется стандартной программой)
 ;     scripts                   меню скриптов из папки scripts (*.py, *.bat, *.ps1): имя - первая строка-комментарий ("# Имя", в bat "REM Имя" или ":: Имя"), иначе имя файла; T - tmp.py, цифры - остальные, Enter - запустить; ps1 запускается через powershell.exe
 ;     layout                    исправить раскладку: последний набранный текст, а если его нет - выделенный (строка, если выделения нет);
 ;                               повторное нажатие сразу после этого возвращает текст обратно
@@ -1097,7 +1102,9 @@ static void LoadConfig(void) {
 
 /* ---------- clipboard ---------- */
 static UINT g_fCanHist, g_fCanCloud, g_fExclude, g_fIgnore, g_fMsdevLine, g_fVsLine, g_fChromium;
+static UINT g_fPng;
 static void InitFormats(void) {
+    g_fPng = RegisterClipboardFormatW(L"PNG");
     g_fMsdevLine = RegisterClipboardFormatW(L"MSDEVLineSelect");
     g_fVsLine = RegisterClipboardFormatW(L"VisualStudioEditorOperationsLineCutCopyClipboardTag");
     g_fChromium = RegisterClipboardFormatW(L"Chromium Web Custom MIME Data Format");
@@ -1217,6 +1224,152 @@ static void SendKeysN(WORD vk, int count, WORD mod) {
 }
 static void SendChord(WORD vk) { SendKeysN(vk, 1, VK_CONTROL); }
 
+/* ---------- картинки в ячейках буфера: memory\N_I.png (I=1..10, новые под номером 1) + миниатюры memory\N_It.png ---------- */
+namespace ImgNs {
+using namespace Gdiplus;
+using namespace Gdiplus::DllExports;
+static const GUID kPngEnc = {0x557cf406, 0x1a04, 0x11d3, {0x9a, 0x73, 0x00, 0x00, 0xf8, 0x1e, 0xf3, 0x2e}};
+static HBITMAP th[10]; static int thW[10], thH[10];                                  // миниатюры текущего буфера для окна
+static BOOL Start(ULONG_PTR *t) { GdiplusStartupInput in; return GdiplusStartup(t, &in, NULL) == Ok; }
+static void Path(int n, int i, BOOL thumb, wchar_t *o) { wchar_t nm[24]; wsprintfW(nm, thumb ? L"%d_%dt.png" : L"%d_%d.png", n, i); MemPath(o, nm); }
+static BOOL Has(int n, int i) { wchar_t p[MAX_PATH]; Path(n, i, FALSE, p); return GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES; }
+static BYTE *Encode(GpImage *img, DWORD *len) {                                      // GDI+ изображение -> байты PNG
+    IStream *st = NULL; BYTE *r = NULL;
+    if (FAILED(CreateStreamOnHGlobal(NULL, TRUE, &st))) return NULL;
+    if (GdipSaveImageToStream(img, st, &kPngEnc, NULL) == Ok) {
+        HGLOBAL hg = NULL; STATSTG ss; memset(&ss, 0, sizeof ss);
+        if (SUCCEEDED(GetHGlobalFromStream(st, &hg)) && SUCCEEDED(st->Stat(&ss, STATFLAG_NONAME))) {
+            SIZE_T n = (SIZE_T)ss.cbSize.QuadPart; void *p = GlobalLock(hg);
+            if (p && n) { r = (BYTE *)Alloc(n); memcpy(r, p, n); *len = (DWORD)n; }
+            GlobalUnlock(hg);
+        }
+    }
+    st->Release(); return r;
+}
+static GpBitmap *FromBytes(const BYTE *d, DWORD n, IStream **keep) {                 // поток должен жить, пока жива картинка
+    *keep = NULL; HGLOBAL hg = MakeGlobal(d, n); if (!hg) return NULL;
+    IStream *st = NULL; if (FAILED(CreateStreamOnHGlobal(hg, TRUE, &st))) { GlobalFree(hg); return NULL; }
+    GpBitmap *b = NULL; if (GdipCreateBitmapFromStream(st, &b) != Ok) b = NULL;
+    *keep = st; return b;
+}
+static BYTE *DibToPng(const BYTE *dib, SIZE_T sz, DWORD *len) {
+    const BITMAPINFOHEADER *bi = (const BITMAPINFOHEADER *)dib;
+    if (sz < sizeof *bi || bi->biSize < sizeof *bi) return NULL;
+    DWORD clr = bi->biClrUsed ? bi->biClrUsed : (bi->biBitCount <= 8 ? 1u << bi->biBitCount : 0);
+    SIZE_T off = bi->biSize + (bi->biCompression == BI_BITFIELDS && bi->biSize == sizeof *bi ? 12 : 0) + (SIZE_T)clr * 4;
+    if (off >= sz) return NULL;
+    GpBitmap *b = NULL; BYTE *r = NULL;
+    if (GdipCreateBitmapFromGdiDib((const BITMAPINFO *)dib, (void *)(dib + off), &b) == Ok && b) { r = Encode((GpImage *)b, len); GdipDisposeImage((GpImage *)b); }
+    return r;
+}
+static BOOL ClipHas(void) { return IsClipboardFormatAvailable(g_fPng) || IsClipboardFormatAvailable(CF_DIB); }
+static BYTE *ClipPng(DWORD *len) {                                                    // картинка из буфера обмена как PNG (NULL - картинки нет)
+    *len = 0; if (!ClipHas() || !ClipOpen()) return NULL;
+    BYTE *r = NULL;
+    HANDLE h = IsClipboardFormatAvailable(g_fPng) ? GetClipboardData(g_fPng) : NULL;
+    if (h) {
+        SIZE_T sz = GlobalSize(h); const BYTE *p = (const BYTE *)GlobalLock(h);
+        if (p && sz > 16 && sz < ((SIZE_T)64 << 20)) {
+            SIZE_T n = sz; while (n > 12 && memcmp(p + n - 8, "IEND", 4)) n--;            // отрезаем добивку после IEND+CRC
+            if (n <= 12) n = sz; else n = n;
+            r = (BYTE *)Alloc(n); memcpy(r, p, n); *len = (DWORD)n;
+        }
+        if (p) GlobalUnlock(h);
+    } else if ((h = GetClipboardData(CF_DIB)) != NULL) {
+        SIZE_T sz = GlobalSize(h); const BYTE *p = (const BYTE *)GlobalLock(h);
+        ULONG_PTR tok; if (p && sz < ((SIZE_T)256 << 20) && Start(&tok)) { r = DibToPng(p, sz, len); GdiplusShutdown(tok); }
+        if (p) GlobalUnlock(h);
+    }
+    CloseClipboard();
+    return r;
+}
+static void MkThumb(int n, int i) {                                                   // GDI+ уже запущен
+    wchar_t p[MAX_PATH], tp[MAX_PATH]; Path(n, i, FALSE, p); Path(n, i, TRUE, tp);
+    DWORD sz; BYTE *raw = ReadAll(p, &sz); if (!raw) return;
+    IStream *st = NULL; GpBitmap *b = FromBytes(raw, sz, &st);
+    if (b) {
+        UINT w = 0, h = 0; GdipGetImageWidth((GpImage *)b, &w); GdipGetImageHeight((GpImage *)b, &h);
+        UINT tw = w, thh = h;
+        if (w > 160 || h > 120) { if ((ULONGLONG)w * 120 > (ULONGLONG)h * 160) { tw = 160; thh = (UINT)((ULONGLONG)h * 160 / w); } else { thh = 120; tw = (UINT)((ULONGLONG)w * 120 / h); } }
+        if (tw < 1) tw = 1; if (thh < 1) thh = 1;
+        GpImage *tm = NULL;
+        if (w && h && GdipGetImageThumbnail((GpImage *)b, tw, thh, &tm, NULL, NULL) == Ok && tm) { GdipSaveImageToFile(tm, tp, &kPngEnc, NULL); GdipDisposeImage(tm); }
+        GdipDisposeImage((GpImage *)b);
+    }
+    if (st) st->Release();
+    Free(raw);
+}
+static BOOL Insert(int n, const BYTE *png, DWORD len) {                               // новая картинка в ячейку 1 буфера n, остальные сдвигаются, 10-я теряется
+    ULONG_PTR tok; if (!Start(&tok)) return FALSE;
+    wchar_t a[MAX_PATH], b[MAX_PATH];
+    Path(n, 10, FALSE, a); DeleteFileW(a); Path(n, 10, TRUE, a); DeleteFileW(a);
+    for (int i = 9; i >= 1; i--) for (int t = 0; t < 2; t++) { Path(n, i, t, a); Path(n, i + 1, t, b); MoveFileExW(a, b, MOVEFILE_REPLACE_EXISTING); }
+    Path(n, 1, FALSE, a); BOOL ok = WriteAtomic(a, png, len);
+    if (ok) MkThumb(n, 1);
+    GdiplusShutdown(tok);
+    return ok;
+}
+static void ThumbsFree(void) { for (int i = 0; i < 10; i++) { if (th[i]) DeleteObject(th[i]); th[i] = NULL; thW[i] = thH[i] = 0; } }
+static void ThumbsLoad(int n, COLORREF bg) {
+    ThumbsFree();
+    ULONG_PTR tok = 0; BOOL gp = FALSE;
+    ARGB argb = 0xFF000000u | ((DWORD)GetRValue(bg) << 16) | ((DWORD)GetGValue(bg) << 8) | GetBValue(bg);
+    for (int i = 1; i <= 10; i++) {
+        if (!Has(n, i)) continue;
+        if (!gp) { gp = Start(&tok); if (!gp) return; }
+        wchar_t tp[MAX_PATH]; Path(n, i, TRUE, tp);
+        if (GetFileAttributesW(tp) == INVALID_FILE_ATTRIBUTES) MkThumb(n, i);
+        GpBitmap *b = NULL;
+        if (GdipCreateBitmapFromFile(tp, &b) == Ok && b) {
+            UINT w = 0, h = 0; GdipGetImageWidth((GpImage *)b, &w); GdipGetImageHeight((GpImage *)b, &h);
+            HBITMAP hb = NULL;
+            if (GdipCreateHBITMAPFromBitmap(b, &hb, argb) == Ok && hb) { th[i - 1] = hb; thW[i - 1] = (int)w; thH[i - 1] = (int)h; }
+            GdipDisposeImage((GpImage *)b);
+        }
+    }
+    if (gp) GdiplusShutdown(tok);
+}
+static HGLOBAL HbmToDib(HBITMAP hb) {                                                 // 24-бит CF_DIB (прозрачность склеена с белым)
+    BITMAP bm; if (!GetObjectW(hb, sizeof bm, &bm) || bm.bmWidth <= 0 || bm.bmHeight <= 0) return NULL;
+    int w = bm.bmWidth, h = bm.bmHeight, stride = (w * 3 + 3) & ~3;
+    HGLOBAL g = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, sizeof(BITMAPINFOHEADER) + (SIZE_T)stride * h); if (!g) return NULL;
+    BITMAPINFOHEADER *bi = (BITMAPINFOHEADER *)GlobalLock(g);
+    bi->biSize = sizeof *bi; bi->biWidth = w; bi->biHeight = h; bi->biPlanes = 1; bi->biBitCount = 24; bi->biCompression = BI_RGB; bi->biSizeImage = stride * h;
+    HDC dc = GetDC(NULL); int ok = GetDIBits(dc, hb, 0, h, (BYTE *)(bi + 1), (BITMAPINFO *)bi, DIB_RGB_COLORS); ReleaseDC(NULL, dc);
+    GlobalUnlock(g);
+    if (!ok) { GlobalFree(g); return NULL; }
+    return g;
+}
+static BOOL Paste(int n, int i) {                                                     // вставить картинку ячейки i буфера n: PNG + DIB на время вставки
+    wchar_t p[MAX_PATH]; Path(n, i, FALSE, p);
+    DWORD sz = 0; BYTE *png = ReadAll(p, &sz); if (!png || !sz) { Free(png); return FALSE; }
+    HGLOBAL hdib = NULL; ULONG_PTR tok;
+    if (Start(&tok)) {
+        IStream *st = NULL; GpBitmap *b = FromBytes(png, sz, &st);
+        if (b) { HBITMAP hb = NULL; if (GdipCreateHBITMAPFromBitmap(b, &hb, 0xFFFFFFFFu) == Ok && hb) { hdib = HbmToDib(hb); DeleteObject(hb); } GdipDisposeImage((GpImage *)b); }
+        if (st) st->Release();
+        GdiplusShutdown(tok);
+    }
+    if (!g_psPending) { memset(&g_ps, 0, sizeof g_ps); SnapTake(&g_ps); g_psPending = TRUE; }
+    BOOL ok = ClipOpen();
+    if (ok) {
+        EmptyClipboard();
+        HGLOBAL hp = MakeGlobal(png, sz); if (hp && !SetClipboardData(g_fPng, hp)) GlobalFree(hp);
+        if (hdib && SetClipboardData(CF_DIB, hdib)) hdib = NULL;
+        SetHideFormats(); CloseClipboard();
+    }
+    if (hdib) GlobalFree(hdib);
+    Free(png);
+    if (!ok) { g_psPending = FALSE; SnapFree(&g_ps); return FALSE; }
+    g_ownSeq = g_ignoreSeq = GetClipboardSequenceNumber();
+    Sleep(25);
+    for (int k = 0; k < 30 && GetOpenClipboardWindow(); k++) Sleep(10);
+    SendChord('V');
+    SetTimer(g_hwnd, TID_RESTORE, 2500, NULL);                                        // прежний буфер вернётся, когда приложение успеет забрать картинку
+    return TRUE;
+}
+}   // namespace ImgNs
+
 static BOOL HasBytes(const BYTE *p, SIZE_T n, const void *needle, int m) {
     for (SIZE_T i = 0; i + m <= n; i++) {
         int j = 0; while (j < m && p[i + j] == ((const BYTE *)needle)[j]) j++;
@@ -1244,7 +1397,7 @@ static BOOL ClipIsLineCopy(void) {
 }
 
 // Скопировать выделенное в приложении, не меняя основной буфер. *line - редактор скопировал всю строку (выделения не было).
-static wchar_t *GrabSelection(BOOL *line = NULL) {
+static wchar_t *GrabSelection(BOOL *line = NULL, BYTE **img = NULL, DWORD *imgLen = NULL) {      // img: если скопирована картинка без текста - PNG (владение у вызывающего)
     Snap s; memset(&s, 0, sizeof s);
     SnapTake(&s);
     DWORD seq0 = GetClipboardSequenceNumber();
@@ -1255,6 +1408,7 @@ static wchar_t *GrabSelection(BOOL *line = NULL) {
             t = ClipGetText();
             if (t && *t) { if (line) *line = ClipIsLineCopy(); break; }
             Free(t); t = NULL;
+            if (img && ImgNs::ClipHas()) { *img = ImgNs::ClipPng(imgLen); if (*img) break; }
         }
         if (GetTickCount() - t0 > (DWORD)g_copyTimeout) break;
         Sleep(10);
@@ -1444,6 +1598,7 @@ static int g_dpi = 96, g_pw, g_ph, g_rh, g_hh, g_prh, g_pad;
 static HFONT g_fnt, g_fntB;
 static BOOL g_dark;
 static RECT g_tabRc[NTABS];
+static int g_vr = 10, g_ih, g_imgHot = -1; static RECT g_imgRc[10];      // полоса миниатюр картинок внизу окна буфера
 
 static int Sc(int v) { return MulDiv(v, g_dpi, 96); }
 
@@ -1525,6 +1680,21 @@ static wchar_t **ScrList(int *cnt) {                                            
     }
     *cnt = n; return a;
 }
+static wchar_t **RunList(int *cnt) {                                                  // файлы папки runs (любые, кроме скрытых и служебных), по алфавиту
+    wchar_t pat[MAX_PATH]; lstrcpynW(pat, g_runDir, MAX_PATH); Cat(pat, MAX_PATH, L"*");
+    wchar_t **a = NULL; int n = 0;
+    WIN32_FIND_DATAW fd; HANDLE h = FindFirstFileW(pat, &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if ((fd.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) || n >= 200) continue;
+            if (!lstrcmpiW(fd.cFileName, L"desktop.ini") || !lstrcmpiW(fd.cFileName, L"thumbs.db")) continue;
+            a = (wchar_t **)Realloc(a, (n + 1) * sizeof(wchar_t *)); a[n++] = Dup(fd.cFileName);
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    for (int i = 1; i < n; i++) { wchar_t *x = a[i]; int j = i - 1; while (j >= 0 && lstrcmpiW(a[j], x) > 0) { a[j + 1] = a[j]; j--; } a[j + 1] = x; }
+    *cnt = n; return a;
+}
 static void ScrRow(Row *r, const wchar_t *file, const wchar_t *label) {
     wchar_t path[MAX_PATH]; lstrcpynW(path, g_pyDir, MAX_PATH); Cat(path, MAX_PATH, file);
     DWORD sz = 0; BYTE *raw = ReadAll(path, &sz);
@@ -1538,7 +1708,9 @@ static void BuildRows(void) {
     FreeRows();
     wchar_t **sf = NULL; int ns = 0;
     if (g_pmode == PM_SCRIPTS) { sf = ScrList(&ns); g_scrNames = sf; g_nscr = ns; }
-    int n = g_pmode == PM_BUF ? g_bufN[g_curBuf] : g_pmode == PM_HIST ? g_nhist : g_pmode == PM_SCRIPTS ? ns : g_nlaunch;
+    wchar_t **rf = NULL; int nr = 0;
+    if (g_pmode == PM_LAUNCH) rf = RunList(&nr);                                       // запуск: строки из ini, затем файлы папки runs
+    int n = g_pmode == PM_BUF ? g_bufN[g_curBuf] : g_pmode == PM_HIST ? g_nhist : g_pmode == PM_SCRIPTS ? ns : g_nlaunch + nr;
     g_rows = (Row *)Alloc(sizeof(Row) * (n ? n : 1)); g_vis = (int *)Alloc(sizeof(int) * (n ? n : 1));
     for (int i = 0; i < n; i++) {
         Row *r = &g_rows[i];
@@ -1552,10 +1724,16 @@ static void BuildRows(void) {
             BOOL tmp = !lstrcmpiW(sf[i], L"tmp.py"); int k = i - (ns && !lstrcmpiW(sf[0], L"tmp.py") ? 1 : 0);
             wchar_t lb[2] = {(wchar_t)(tmp ? L'T' : k < 9 ? L'1' + k : k == 9 ? L'0' : 0), 0};     // T - tmp.py, остальные по цифрам 1-9,0
             ScrRow(r, sf[i], lb);
-        } else {
+        } else if (i < g_nlaunch) {
             r->label = Dup(L""); r->title = Dup(g_launch[i].k); r->text = Dup(g_launch[i].v);
+        } else {
+            const wchar_t *fn = rf[i - g_nlaunch]; r->label = Dup(L"");
+            r->title = Dup(fn); { int l = lstrlenW(r->title); if (EndsI(r->title, L".lnk") || EndsI(r->title, L".exe")) r->title[l - 4] = 0; }
+            wchar_t path[MAX_PATH]; lstrcpynW(path, g_runDir, MAX_PATH); Cat(path, MAX_PATH, fn); r->text = Dup(path);
         }
     }
+    for (int i = 0; i < nr; i++) Free(rf[i]);
+    Free(rf);
     g_nrows = n;
     Refilter();
 }
@@ -1620,7 +1798,8 @@ static void PopupPaint(HWND h) {
     // preview
     int py = y0 + VISROWS * g_rh;
     RECT sep = {1, py, W - 1, py + 1}; FillRect(dc, &sep, bd);
-    RECT pr = {g_pad, py + Sc(6), W - g_pad, H - Sc(22)};
+    int H2 = H - (g_pmode == PM_BUF ? g_ih : 0);
+    RECT pr = {g_pad, py + Sc(6), W - g_pad, H2 - Sc(22)};
     if (g_nvis > 0) {
         Row *r = &g_rows[g_vis[g_sel]];
         int tl = lstrlenW(r->text);
@@ -1628,7 +1807,7 @@ static void PopupPaint(HWND h) {
         SetTextColor(dc, P.fg);
         DrawTextW(dc, tmp, -1, &pr, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX | DT_EXPANDTABS | DT_EDITCONTROL);
         Free(tmp);
-        RECT ir = {g_pad, H - Sc(22), W - g_pad, H - Sc(3)};
+        RECT ir = {g_pad, H2 - Sc(22), W - g_pad, H2 - Sc(3)};
         wchar_t info[128];
         if (g_pmode == PM_LAUNCH) lstrcpynW(info, Tr(L_INFO_LAUNCH), 128);
         else if (g_pmode == PM_SCRIPTS) lstrcpynW(info, Tr(L_INFO_SCR), 128);
@@ -1642,6 +1821,32 @@ static void PopupPaint(HWND h) {
         if (g_pmode == PM_BUF) wsprintfW(e, g_nfilt ? Tr(L_EMPTY_NF) : Tr(L_EMPTY_BUF), g_curBuf, g_curBuf);
         else lstrcpynW(e, g_nfilt ? Tr(L_EMPTY_NF) : g_pmode == PM_HIST ? Tr(L_EMPTY_HIST) : g_pmode == PM_SCRIPTS ? Tr(L_EMPTY_SCR) : Tr(L_EMPTY_NF), 96);
         DrawTextW(dc, e, -1, &pr, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
+    }
+    if (g_pmode == PM_BUF) {                                                              // миниатюры картинок: 10 в ряд
+        int sy = H - g_ih; RECT sp = {1, sy, W - 1, sy + 1}; FillRect(dc, &sp, bd);
+        int gap = Sc(4), cw = (W - 2 * g_pad - 9 * gap) / 10, ch = g_ih - Sc(12);
+        HDC mdc = CreateCompatibleDC(dc); HBRUSH ab = CreateSolidBrush(P.acc);
+        SetStretchBltMode(dc, HALFTONE); SetBrushOrgEx(dc, 0, 0, NULL);
+        for (int i = 0; i < 10; i++) {
+            RECT c = {g_pad + i * (cw + gap), sy + Sc(6), g_pad + i * (cw + gap) + cw, sy + Sc(6) + ch}; g_imgRc[i] = c;
+            HBITMAP hb = ImgNs::th[i];
+            if (hb) {
+                int tw = ImgNs::thW[i], thh = ImgNs::thH[i], dw = cw - 2, dh = ch - 2;
+                if (tw > 0 && thh > 0) {
+                    if ((long long)tw * dh > (long long)thh * dw) dh = (int)((long long)thh * dw / tw); else dw = (int)((long long)tw * dh / thh);
+                    if (dw < 1) dw = 1; if (dh < 1) dh = 1;
+                    HGDIOBJ o2 = SelectObject(mdc, hb);
+                    StretchBlt(dc, c.left + (cw - dw) / 2, c.top + (ch - dh) / 2, dw, dh, mdc, 0, 0, tw, thh, SRCCOPY);
+                    SelectObject(mdc, o2);
+                }
+            }
+            FrameRect(dc, &c, i == g_imgHot ? ab : bd);
+            wchar_t lb[2] = {(wchar_t)(i < 9 ? L'1' + i : L'0'), 0};
+            RECT lr = {c.left + 1, c.top + 1, c.left + Sc(14), c.top + Sc(16)};
+            FillRect(dc, &lr, bg); SetTextColor(dc, hb ? P.acc : P.dim);
+            DrawTextW(dc, lb, 1, &lr, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        }
+        DeleteObject(ab); DeleteDC(mdc);
     }
     FrameRect(dc, &cr, bd);
     BitBlt(wdc, 0, 0, W, H, dc, 0, 0, SRCCOPY);
@@ -1660,6 +1865,11 @@ static LRESULT CALLBACK PopProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_ERASEBKGND: return 1;
     case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
     case WM_MOUSEMOVE: {
+        if (g_pmode == PM_BUF) {
+            POINT mp = {(short)LOWORD(l), (short)HIWORD(l)}; int hot = -1;
+            for (int i = 0; i < 10; i++) if (ImgNs::th[i] && PtInRect(&g_imgRc[i], mp)) hot = i;
+            if (hot != g_imgHot) { g_imgHot = hot; InvalidateRect(h, NULL, FALSE); }
+        }
         int vi = RowAt((short)LOWORD(l), (short)HIWORD(l));
         static LPARAM last; if (l == last) return 0; last = l;
         if (vi >= 0 && vi != g_sel) { g_sel = vi; InvalidateRect(h, NULL, FALSE); }
@@ -1668,6 +1878,7 @@ static LRESULT CALLBACK PopProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_LBUTTONDOWN: {
         int x = (short)LOWORD(l), y = (short)HIWORD(l);
         for (int i = 0; i < NTABS; i++) { POINT p = {x, y}; if (PtInRect(&g_tabRc[i], p)) { PostMessageW(g_hwnd, WM_APP_PTAB, i, 0); return 0; } }
+        if (g_pmode == PM_BUF) for (int i = 0; i < 10; i++) { POINT p = {x, y}; if (ImgNs::th[i] && PtInRect(&g_imgRc[i], p)) { PostMessageW(g_hwnd, WM_APP_PIMG, i + 1, 0); return 0; } }
         int vi = RowAt(x, y);
         if (vi >= 0) PostMessageW(g_hwnd, WM_APP_PCLICK, vi, 0);
         return 0;
@@ -1689,6 +1900,7 @@ static void PopupClose(void) {
     DestroyWindow(g_hwndPop); g_hwndPop = NULL;
     if (g_fnt) { DeleteObject(g_fnt); g_fnt = NULL; }
     if (g_fntB) { DeleteObject(g_fntB); g_fntB = NULL; }
+    ImgNs::ThumbsFree(); g_imgHot = -1;
 }
 // buf: номер буфера для режима PM_BUF (0 - последний использованный)
 static void PopupOpen(int mode, int buf = 0) {
@@ -1698,12 +1910,14 @@ static void PopupOpen(int mode, int buf = 0) {
     g_pmode = mode; g_nfilt = 0; g_filt[0] = 0; g_sel = g_top = 0;
     BuildRows();
     g_dark = IsDark();
+    if (mode == PM_BUF) ImgNs::ThumbsLoad(g_curBuf, (g_dark ? kDark : kLight).bg);
     POINT pt; GetCursorPos(&pt);
     g_hwndPop = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"DKPop", L"", WS_POPUP, pt.x, pt.y, 10, 10, NULL, NULL, g_inst, NULL);
     if (!g_hwndPop) return;
     g_dpi = GetDpiForWindow(g_hwndPop);
-    g_pw = Sc(620); g_rh = Sc(27); g_hh = Sc(36); g_prh = Sc(124); g_pad = Sc(12);
-    g_ph = g_hh + VISROWS * g_rh + g_prh;
+    g_pw = Sc(620); g_rh = Sc(27); g_hh = Sc(36); g_prh = Sc(124); g_pad = Sc(12); g_ih = Sc(74);
+    g_vr = mode == PM_BUF ? 10 : 10 + g_ih / g_rh;                                       // высота окна одна для всех вкладок: в буфере низ занят миниатюрами, в остальных - лишние строки списка
+    g_ph = g_hh + 10 * g_rh + g_prh + g_ih;
     g_fnt = CreateFontW(-MulDiv(10, g_dpi, 72), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
     g_fntB = CreateFontW(-MulDiv(10, g_dpi, 72), 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
     MONITORINFO mi; mi.cbSize = sizeof mi;
@@ -2049,8 +2263,17 @@ static void FixLayout(void) {
 }
 
 static void CopyToBuf(int n) {
-    wchar_t *t = GrabSelection();
-    if (!t || !*t) { Free(t); Toast(Tr(L_T_NOSEL)); return; }
+    BYTE *img = NULL; DWORD il = 0;
+    wchar_t *t = GrabSelection(NULL, &img, &il);
+    if ((!t || !*t) && !img) { Free(t); t = NULL; img = ImgNs::ClipPng(&il); }       // ничего не скопировалось - берём картинку, уже лежащую в буфере обмена
+    if (!t || !*t) {
+        Free(t);
+        if (!img) { Toast(Tr(L_T_NOSEL2)); return; }
+        BOOL ok = ImgNs::Insert(n, img, il); Free(img);
+        if (ok) { g_curBuf = n; wchar_t m[64]; wsprintfW(m, Tr(L_T_TOIMG), n); Toast(m); }
+        return;
+    }
+    Free(img);
     int len = lstrlenW(t);
     BufInsert(n, t);
     g_curBuf = n;
@@ -2100,13 +2323,19 @@ static void ExecSpec(const wchar_t *spec) {
 }
 
 /* ---------- popup key handling ---------- */
+static void RunFile(const wchar_t *path) {                                            // файл из папки runs: стандартной программой Windows; ps1 - через PowerShell
+    if (EndsI(path, L".ps1")) { wchar_t *q = (wchar_t *)Alloc((lstrlenW(path) + 3) * sizeof(wchar_t)); wsprintfW(q, L"\"%s\"", path); RunPy(q, NULL, TRUE); Free(q); return; }
+    wchar_t dir[MAX_PATH]; lstrcpynW(dir, path, MAX_PATH); int l = lstrlenW(dir); while (l > 0 && dir[l - 1] != L'\\') l--; dir[l] = 0;
+    if ((INT_PTR)ShellExecuteW(NULL, L"open", path, NULL, dir, SW_SHOWNORMAL) <= 32) { wchar_t m[200]; wsprintfW(m, Tr(L_T_RUNFAIL), path); Toast(m); }
+}
 static void PopupChoose(int vi) {
     if (vi < 0 || vi >= g_nvis) return;
     Row *r = &g_rows[g_vis[vi]];
-    int mode = g_pmode;
+    int mode = g_pmode; BOOL isRun = mode == PM_LAUNCH && r->ref >= g_nlaunch;
     wchar_t *text = Dup(mode == PM_SCRIPTS ? g_scrNames[r->ref] : r->text);
     PopupClose();
-    if (mode == PM_LAUNCH) ExecSpec(text);
+    if (isRun) RunFile(text);
+    else if (mode == PM_LAUNCH) ExecSpec(text);
     else if (mode == PM_SCRIPTS) { wchar_t *q = (wchar_t *)Alloc((lstrlenW(text) + 3) * sizeof(wchar_t)); wsprintfW(q, L"\"%s\"", text); RunPy(q, NULL, TRUE); Free(q); }
     else PasteText(text);
     Free(text);
@@ -2143,11 +2372,29 @@ static void PopupEdit(BOOL isNew) {
     }
     PopupOpen(mode, buf);
 }
+static void PopupLayout(void) {                                                       // высота окна: в буфере добавляется полоса миниатюр
+    if (!g_hwndPop) return;
+    g_vr = g_pmode == PM_BUF ? 10 : 10 + g_ih / g_rh;
+    g_ph = g_hh + 10 * g_rh + g_prh + g_ih;
+    RECT r; GetWindowRect(g_hwndPop, &r); int y = r.top;
+    MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoW(MonitorFromWindow(g_hwndPop, MONITOR_DEFAULTTONEAREST), &mi);
+    if (y + g_ph > mi.rcWork.bottom) y = mi.rcWork.bottom - g_ph;
+    if (y < mi.rcWork.top) y = mi.rcWork.top;
+    SetWindowPos(g_hwndPop, HWND_TOPMOST, r.left, y, g_pw, g_ph, SWP_NOACTIVATE);
+}
 static void PopupSetMode(int m, int buf) {
     if (m == PM_HIST && !g_histOn) return;
     g_pmode = m; if (buf) g_curBuf = buf;
-    g_nfilt = 0; g_filt[0] = 0; g_sel = g_top = 0;
+    g_nfilt = 0; g_filt[0] = 0; g_sel = g_top = 0; g_imgHot = -1;
+    if (m == PM_BUF) ImgNs::ThumbsLoad(g_curBuf, (g_dark ? kDark : kLight).bg); else ImgNs::ThumbsFree();
+    PopupLayout();
     BuildRows(); PopupRedraw();
+}
+static void PopupImg(int slot) {                                                      // вставить картинку из ячейки slot (1-10) текущего буфера
+    int n = g_curBuf;
+    if (!ImgNs::Has(n, slot)) { wchar_t m[64]; wsprintfW(m, Tr(L_T_NOIMG), n, slot); Toast(m); return; }
+    PopupClose();
+    ImgNs::Paste(n, slot);
 }
 static void PopupTab(int i) {
     if (i < 9) PopupSetMode(PM_BUF, i + 1); else PopupSetMode(i - 8, 0);
@@ -2168,7 +2415,11 @@ static void PopupKey(UINT key, UINT mods, WCHAR ch) {
         if ((mods & DM_CTRL) && buf && !g_nfilt && g_sel < g_nvis - 1) { BufMove(g_curBuf, g_sel, 1); PopupReselect(g_sel + 1); return; }
         if (g_sel < g_nvis - 1) g_sel++; PopupEnsureVisible(); PopupRedraw(); return;
     case VK_LEFT: case VK_RIGHT:
-        if (buf && !g_nfilt) { int b = g_curBuf + (key == VK_RIGHT ? 1 : -1); if (b < 1) b = 9; if (b > 9) b = 1; PopupSetMode(PM_BUF, b); }
+        if (!g_nfilt) {                                                            // по кругу: буферы 1-9, история (если включена), запуск, скрипты
+            int i = buf ? g_curBuf - 1 : 8 + g_pmode, dr = key == VK_RIGHT ? 1 : 11;
+            do i = (i + dr) % 12; while (i == 9 && !g_histOn);
+            PopupTab(i);
+        }
         return;
     case VK_PRIOR: g_sel -= VISROWS - 1; if (g_sel < 0) g_sel = 0; PopupEnsureVisible(); PopupRedraw(); return;
     case VK_NEXT: g_sel += VISROWS - 1; if (g_sel > g_nvis - 1) g_sel = g_nvis - 1; if (g_sel < 0) g_sel = 0; PopupEnsureVisible(); PopupRedraw(); return;
@@ -2183,6 +2434,7 @@ static void PopupKey(UINT key, UINT mods, WCHAR ch) {
         return;
     }
     if ((mods & DM_WIN) && dig >= 1) { PopupSetMode(PM_BUF, dig); return; }
+    if ((mods & DM_CTRL) && buf && dig >= 0) { PopupImg(dig ? dig : 10); return; }        // в окне буфера Ctrl+цифра - вставка картинки
     if ((mods & DM_CTRL) && dig >= 1 && g_pmode != PM_LAUNCH && g_pmode != PM_SCRIPTS && g_nvis > 0) {
         BufInsert(dig, Dup(g_rows[g_vis[g_sel]].text));
         wchar_t m[64]; wsprintfW(m, Tr(L_T_TOBUF2), dig); Toast(m);
@@ -5651,6 +5903,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_APP_CLOSE: PopupClose(); return 0;
     case WM_APP_PCLICK: PopupChoose((int)w); return 0;
     case WM_APP_PTAB: PopupTab((int)w); return 0;
+    case WM_APP_PIMG: PopupImg((int)w); return 0;
     case WM_TRAY:
         if (l == WM_LBUTTONUP) { if (g_hwndPop) PopupClose(); else PopupOpen(PM_BUF); }
         else if (l == WM_RBUTTONUP) TrayMenu();
@@ -5689,6 +5942,7 @@ static void InitPaths(void) {
     lstrcpynW(g_ini, g_dir, MAX_PATH); Cat(g_ini, MAX_PATH, L"DKeys.ini");
     lstrcpynW(g_memDir, g_dir, MAX_PATH); Cat(g_memDir, MAX_PATH, L"memory\\");
     lstrcpynW(g_pyDir, g_dir, MAX_PATH); Cat(g_pyDir, MAX_PATH, L"scripts\\");
+    lstrcpynW(g_runDir, g_dir, MAX_PATH); Cat(g_runDir, MAX_PATH, L"runs\\");
 }
 
 static int Run(void) {
@@ -5712,7 +5966,7 @@ static int Run(void) {
         wchar_t old[MAX_PATH]; lstrcpynW(old, g_dir, MAX_PATH); Cat(old, MAX_PATH, L"py");
         if (GetFileAttributesW(g_pyDir) == INVALID_FILE_ATTRIBUTES && GetFileAttributesW(old) != INVALID_FILE_ATTRIBUTES) MoveFileW(old, g_pyDir);
     }
-    CreateDirectoryW(g_memDir, NULL); CreateDirectoryW(g_pyDir, NULL);
+    CreateDirectoryW(g_memDir, NULL); CreateDirectoryW(g_pyDir, NULL); CreateDirectoryW(g_runDir, NULL);
     LoadConfig(); BuffersLoad(); HistLoad();
     RegClass(L"DKMain", MainProc, 0); RegClass(L"DKToast", ToastProc, CS_DROPSHADOW);
     RegClass(L"DKPop", PopProc, CS_DROPSHADOW); RegClass(L"DKEdit", EdProc, 0);
