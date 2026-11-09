@@ -83,6 +83,7 @@ enum {
 #define TID_TRAY 5
 #define TID_NAV 6
 #define TID_SCHED 7
+#define TID_SELCOPY 8
 #define VISROWS g_vr
 
 struct Bind { UINT mods, key; int act, n, n2; wchar_t *arg, *dir; int lau; };      // lau: хоткей задан строкой меню запуска [Launcher]
@@ -106,6 +107,7 @@ static HWND g_hwnd, g_hwndPop, g_hwndToast, g_popFg; static int g_popGrace;
 static HWND g_hwndClip;   // владелец буфера обмена: окно потока хука, который всегда качает сообщения
 static wchar_t g_dir[MAX_PATH], g_ini[MAX_PATH], g_memDir[MAX_PATH], g_pyDir[MAX_PATH], g_runDir[MAX_PATH], g_recDir[MAX_PATH], g_exe[MAX_PATH];
 static volatile LONG g_modBits, g_popup, g_paused, g_modal;
+static BOOL g_selCopy; static wchar_t g_selIgn[2048]; static POINT g_selDn, g_selUpP; static DWORD g_selUpT;   // автокопирование выделенного мышью
 static volatile LONG g_caps;
 static DWORD g_hookTid;
 static UINT g_msgTaskbar;
@@ -224,6 +226,7 @@ X(L_REC_OV_WARN, "rec.ov_warn", L"Внимание: нажатые клавиш�
 X(L_PK_COPIED, "picker.copied", L"Цвет %s скопирован в буфер") \
 X(L_TRAY_TIMER, "tray.timer", L"Секундомер и таймер") \
 X(L_TRAY_HISTON, "tray.history_on", L"Своя история буфера") \
+X(L_TRAY_SELCOPY, "tray.selcopy", L"Автокопирование выделенного мышью") \
 X(L_TRAY_AUTO, "tray.autostart", L"Автозапуск") \
 X(L_TRAY_PAUSE, "tray.pause", L"Пауза") \
 X(L_TRAY_SCHED, "tray.schedule", L"Расписание") \
@@ -240,7 +243,7 @@ X(L_TRAY_RELOAD, "tray.reload", L"Перечитать настройки") \
 X(L_TRAY_EXIT, "tray.exit", L"Выход") \
 X(L_TRAY_ABOUT, "tray.about", L"О программе") \
 X(L_ABOUT_TXT, "about.title", L"DKeys %s — твои самые горячие клавиши!") \
-X(L_ABOUT_BODY, "about.body3", L"Помнит всё, что ты копировал, и не осуждает. Набрал «ghbdtn» вместо «привет» — починит. А главное — на хоткей можно повесить что угодно: запуск программы или скрипта, рисование прямо на экране, захват цвета пикселя, запись видео и звука, запись и повтор своих действий мышью и клавиатурой, веб-камеру, секундомер и таймер, укрощение громких звуков и дублирование звука на второе устройство. А ещё всё это умеет срабатывать само — по расписанию, в нужный день и час.") \
+X(L_ABOUT_BODY, "about.body4", L"Помнит всё, что ты копировал (а выделенное мышкой может копировать само), и не осуждает. Набрал «ghbdtn» вместо «привет» — починит. А главное — на хоткей можно повесить что угодно: запуск программы или скрипта, рисование прямо на экране, захват цвета пикселя, запись видео и звука, запись и повтор своих действий мышью и клавиатурой, веб-камеру, секундомер и таймер, укрощение громких звуков и дублирование звука на второе устройство. А ещё всё это умеет срабатывать само — по расписанию, в нужный день и час.") \
 X(L_ABOUT_AUTH, "about.authors", L"Придумал DukereD, написал Claude. Ни одна клавиша не пострадала.") \
 X(L_ABOUT_ASK, "about.ask", L"Открыть страницу проекта на GitHub?") \
 X(L_TRAY_TIPADM, "tray.tip_admin", L"DKeys (администратор)") \
@@ -762,6 +765,14 @@ static const char *kIni2 = u8R"INI(
 ;   Курс=every 30m from 09:00 to 18:00 on weekdays | notify usd_nbrb.dpy yes run https://myfin.by     (окно с текстом; Да - выполнить yes)
 Enabled=1
 
+[AutoCopy]
+; Автокопирование: текст, выделенный мышью (протяжка или двойной/тройной клик над текстом), сразу копируется в обычный буфер.
+; Enabled - 1 вкл (переключается и из меню в трее). Ignore - программы (имена exe), в которых не копировать: игры, консоли и т.п.
+; Строк Ignore можно писать сколько угодно, в каждой - одно имя или несколько через запятую.
+Enabled=0
+;   Ignore=game.exe, putty
+;   Ignore=Code.exe
+
 [Macro]
 ; Запись действий (действие macro). HoverMs - сколько мс курсор должен стоять на месте, чтобы это положение попало в запись (100-5000)
 HoverMs=300
@@ -1171,6 +1182,9 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
         else if (!lstrcmpiW(k, L"Pos")) { const wchar_t *q = v; g_tmPos[0] = ToInt(q); while (*q && *q != L',') q++; g_tmPos[1] = *q ? ToInt(q + 1) : 80; }
     } else if (!lstrcmpiW(s, L"Schedule")) {
         if (!lstrcmpiW(k, L"Enabled")) g_schOn = ToInt(v) != 0; else SchAdd(k, v);
+    } else if (!lstrcmpiW(s, L"AutoCopy")) {
+        if (!lstrcmpiW(k, L"Enabled")) g_selCopy = ToInt(v) != 0;
+        else if (!lstrcmpiW(k, L"Ignore")) { int n = lstrlenW(g_selIgn); if (n && n < 2047) g_selIgn[n++] = L','; lstrcpynW(g_selIgn + n, v, 2048 - n); }
     } else if (!lstrcmpiW(s, L"Macro")) {
         if (!lstrcmpiW(k, L"HoverMs")) { g_mHover = ToInt(v); if (g_mHover < 100) g_mHover = 100; if (g_mHover > 5000) g_mHover = 5000; }
         else if (!lstrcmpiW(k, L"Pos")) { const wchar_t *q = v; g_mPos[0] = ToInt(q); while (*q && *q != L',') q++; g_mPos[1] = *q ? ToInt(q + 1) : -99999; }
@@ -1254,7 +1268,7 @@ static void LoadConfig(void) {
     for (int i = 0; i < g_nscrIni; i++) { Free(g_scrIni[i].title); Free(g_scrIni[i].arg); Free(g_scrIni[i].dir); Free(g_scrIni[i].hk); }
     Free(g_scrIni); g_scrIni = NULL; g_nscrIni = 0;
     g_bnew = NULL; g_nbnew = g_bnewCap = 0;
-    SchClear();
+    SchClear(); g_selCopy = FALSE; g_selIgn[0] = 0;
     IniParse(t, CfgCb);
     Free(t);
     SchFinish();
@@ -3416,6 +3430,16 @@ static LRESULT CALLBACK LLMouse(int code, WPARAM wp, LPARAM lp) {
         }
         g_slowRx = g_slowRy = 0;
     }
+    if (code == HC_ACTION && g_selCopy && (wp == WM_LBUTTONDOWN || wp == WM_LBUTTONUP) && !(((MSLLHOOKSTRUCT *)lp)->flags & LLMHF_INJECTED)) {
+        POINT q = ((MSLLHOOKSTRUCT *)lp)->pt;
+        if (wp == WM_LBUTTONDOWN) g_selDn = q;
+        else {
+            int dx = q.x - g_selDn.x, dy = q.y - g_selDn.y, ex = q.x - g_selUpP.x, ey = q.y - g_selUpP.y; DWORD now = GetTickCount();
+            BOOL drag = dx * dx + dy * dy >= 36, dbl = !drag && now - g_selUpT <= GetDoubleClickTime() && ex * ex + ey * ey <= 36;
+            g_selUpT = now; g_selUpP = q;
+            if (drag || dbl) SetTimer(g_hwnd, TID_SELCOPY, 150, NULL);
+        }
+    }
     if (code == HC_ACTION && (wp == WM_LBUTTONDOWN || wp == WM_RBUTTONDOWN || wp == WM_MBUTTONDOWN || wp == WM_XBUTTONDOWN)) {
         TypedClear();
         if (g_popup) {
@@ -3425,6 +3449,32 @@ static LRESULT CALLBACK LLMouse(int code, WPARAM wp, LPARAM lp) {
         }
     }
     return CallNextHookEx(NULL, code, wp, lp);
+}
+static void OnSelCopy(void) {                                                           // выделение закончено мышью: если курсор - текстовый, Ctrl+C
+    KillTimer(g_hwnd, TID_SELCOPY);
+    if (!g_selCopy || g_paused || g_popup || g_modal) return;
+    CURSORINFO ci; ci.cbSize = sizeof ci;
+    if (!GetCursorInfo(&ci) || ci.hCursor != LoadCursorW(NULL, (LPCWSTR)IDC_IBEAM)) return;
+    HWND f = GetForegroundWindow(); wchar_t cn[40]; cn[0] = 0;
+    if (!f) return;
+    GetClassNameW(f, cn, 40);
+    if (!lstrcmpW(cn, L"ConsoleWindowClass")) return;                                   // в консоли Ctrl+C - прерывание
+    DWORD pid = 0; GetWindowThreadProcessId(f, &pid); if (pid == GetCurrentProcessId()) return;
+    if (g_selIgn[0]) {                                                                  // список Ignore: имя exe окна на переднем плане
+        HANDLE ph = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid); wchar_t pa[MAX_PATH]; DWORD pn = MAX_PATH; pa[0] = 0;
+        if (ph) { if (!QueryFullProcessImageNameW(ph, 0, pa, &pn)) pa[0] = 0; CloseHandle(ph); }
+        const wchar_t *ex = pa; for (const wchar_t *q = pa; *q; q++) if (*q == L'\\' || *q == L'/') ex = q + 1;
+        int el = lstrlenW(ex); if (el > 4 && !lstrcmpiW(ex + el - 4, L".exe")) el -= 4;
+        const wchar_t *q = g_selIgn;
+        while (*q) {
+            while (*q == L' ' || *q == L',' || *q == L';') q++;
+            const wchar_t *s = q; while (*q && *q != L',' && *q != L';') q++;
+            const wchar_t *e = q; while (e > s && e[-1] == L' ') e--;
+            int l = (int)(e - s); if (l > 4 && CompareStringOrdinal(e - 4, 4, L".exe", 4, TRUE) == CSTR_EQUAL) l -= 4;
+            if (l > 0 && l == el && CompareStringOrdinal(s, l, ex, l, TRUE) == CSTR_EQUAL) return;
+        }
+    }
+    SendChord('C');
 }
 static void InstallHooks(void) {
     if (g_hkKbd) UnhookWindowsHookEx(g_hkKbd);
@@ -7135,14 +7185,15 @@ static void TrayMenuAt(POINT pt, int again) {
     AddHk(m, MF_STRING | (RecNs::recording && RecNs::aud ? MF_CHECKED : 0), 70, Tr(L_TRAY_AUD), A_AUDIO);
     AppendMenuW(m, MF_POPUP, (UINT_PTR)RecNs::Menu(), Tr(L_TRAY_RECSET));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(m, MF_POPUP, (UINT_PTR)VolNs::Menu(), Tr(L_TRAY_VOL));
-    AppendMenuW(m, MF_POPUP, (UINT_PTR)DupNs::Menu(), Tr(L_TRAY_DUP));
-    AppendMenuW(m, MF_POPUP, (UINT_PTR)TmMenu(), Tr(L_TRAY_TIMER));
+    AppendMenuW(m, MF_POPUP | (g_vOn ? MF_CHECKED : 0), (UINT_PTR)VolNs::Menu(), Tr(L_TRAY_VOL));
+    AppendMenuW(m, MF_POPUP | (g_dOn ? MF_CHECKED : 0), (UINT_PTR)DupNs::Menu(), Tr(L_TRAY_DUP));
+    AppendMenuW(m, MF_POPUP | (g_tmMode ? MF_CHECKED : 0), (UINT_PTR)TmMenu(), Tr(L_TRAY_TIMER));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AddHk(m, MF_STRING | (g_histOn ? MF_CHECKED : 0), 10, Tr(L_TRAY_HISTON), A_HIST);
+    AppendMenuW(m, MF_STRING | (g_selCopy ? MF_CHECKED : 0), 9, Tr(L_TRAY_SELCOPY));
     AppendMenuW(m, MF_STRING | (AutoGet() ? MF_CHECKED : 0), 11, Tr(L_TRAY_AUTO));
     AddHk(m, MF_STRING | (g_paused ? MF_CHECKED : 0), 15, Tr(L_TRAY_PAUSE), A_PAUSE);
-    AppendMenuW(m, MF_POPUP, (UINT_PTR)SchMenu(), Tr(L_TRAY_SCHED));
+    AppendMenuW(m, MF_POPUP | (g_schOn && g_nsch ? MF_CHECKED : 0), (UINT_PTR)SchMenu(), Tr(L_TRAY_SCHED));
     if (!g_elev) AppendMenuW(m, MF_STRING, 17, Tr(L_TRAY_ELEV));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     for (int i = g_nhid - 1; i >= 0; i--) if (!IsWindow(g_hid[i])) { memmove(g_hid + i, g_hid + i + 1, (g_nhid - i - 1) * sizeof(HWND)); g_nhid--; }
@@ -7189,6 +7240,7 @@ static void TrayMenuAt(POINT pt, int again) {
     case 7: Sleep(150); RecOpen(); break;
     case 70: Sleep(150); RecAudioOpen(); break;
     case 10: SetHistory(!g_histOn); break;
+    case 9: g_selCopy = !g_selCopy; IniSet(L"AutoCopy", L"Enabled", g_selCopy ? L"1" : L"0"); break;
     case 11: AutoSet(!AutoGet()); break;
     case 15: InterlockedExchange(&g_paused, !g_paused); break;
     case 17: RestartElevated(); break;
@@ -7196,7 +7248,7 @@ static void TrayMenuAt(POINT pt, int again) {
     case 13: ShellExecuteW(NULL, L"open", g_memDir, NULL, NULL, SW_SHOWNORMAL); break;
     case 14: Reload(); break;
     case 18: {
-        wchar_t t[1200]; wsprintfW(t, Tr(L_ABOUT_TXT), L"1.2"); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_BODY)); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_AUTH)); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_ASK));
+        wchar_t t[1200]; wsprintfW(t, Tr(L_ABOUT_TXT), L"1.3"); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_BODY)); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_AUTH)); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_ASK));
         MSGBOXPARAMSW mp; memset(&mp, 0, sizeof mp);                                  // со значком программы (ресурс 1)
         mp.cbSize = sizeof mp; mp.hwndOwner = g_hwnd; mp.hInstance = GetModuleHandleW(NULL); mp.lpszText = t; mp.lpszCaption = Tr(L_TRAY_ABOUT);
         mp.dwStyle = MB_YESNO | MB_USERICON | MB_SETFOREGROUND | MB_TOPMOST; mp.lpszIcon = MAKEINTRESOURCEW(1);
@@ -7243,6 +7295,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         else if (w == TID_TRAY) TrayAdd();
         else if (w == TID_NAV) { KillTimer(h, TID_NAV); NavRun(); }
         else if (w == TID_SCHED) SchTick();
+        else if (w == TID_SELCOPY) OnSelCopy();
         return 0;
     case WM_CLIPBOARDUPDATE: OnClip(); return 0;
     case WM_APP_RENDERED: if (g_psPending) SetTimer(g_hwnd, TID_RESTORE, g_pasteDelay, NULL); return 0;
