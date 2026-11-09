@@ -30,6 +30,6 @@ build.cmd        :: obj\DKeys.exe, затем копия в D:\Progs\DKeys (пе
 build_dbg.cmd    :: obj\DKeysDbg.exe, лог в %TEMP%\dkeys.log
 ```
 
-Рядом с exe создаются `DKeys.ini`, `langs\`, `memory\`, `scripts\`, `runs\`, `overlays\` (пресеты кладутся вручную).
+Рядом с exe создаются `DKeys.ini`, `langs\`, `memory\`, `scripts\`, `runs\`, `records\`, `overlays\` (пресеты кладутся вручную).
 
 Чтобы видеть клавиши в окнах, запущенных от администратора (например, Total Commander), DKeys тоже должен работать от администратора (пункт в меню трея).
