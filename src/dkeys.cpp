@@ -70,8 +70,20 @@ void *memmove(void *d, const void *s, size_t n) {
 
 #define DKMARK ((ULONG_PTR)0x444B4559)
 enum { DM_CTRL = 1, DM_ALT = 2, DM_SHIFT = 4, DM_WIN = 8 };
-enum { A_NONE, A_COPY, A_PASTE, A_BUFFER, A_HIST, A_LAUNCH, A_RUN, A_ADMIN, A_PY, A_PYRUN, A_TOPMOST, A_TOTRAY, A_LAYOUT, A_PAUSE, A_WEBCAM, A_STOPWATCH, A_TIMER, A_DRAW, A_PICKER, A_RECORD, A_SCRIPTS, A_VOL, A_VOLSET, A_DUP, A_MACRO, A_RECORDS, A_AUDIO, A_VOICE, A_SCRIPTN, A_VOICECMD, A_EXIT };
-enum { PM_BUF, PM_HIST, PM_LAUNCH, PM_SCRIPTS, PM_RECORDS };
+/* Действия хоткеев, расписания, пульта и голоса - единственный список: id, имя в ini, аргумент.
+   Новое действие: строка здесь + case в ExecBind (+ описание в шаблоне ini и README). Синонимы имён - kActAlias в ParseAction. */
+enum { AK_NONE, AK_BUF, AK_CMD, AK_PASTE, AK_BUFOPT, AK_DUR, AK_SCRN };   // аргумент: нет | буфер 1-9 | команда [@ папка] | буфер и запись | [буфер] | [время] | номер скрипта 1-10
+#define ACTION_LIST(X) \
+X(A_COPY, "copy", AK_BUF) X(A_PASTE, "paste", AK_PASTE) X(A_BUFFER, "buffer", AK_BUFOPT) X(A_HIST, "history", AK_NONE) X(A_LAUNCH, "launcher", AK_NONE) \
+X(A_RUN, "run", AK_CMD) X(A_ADMIN, "admin", AK_CMD) X(A_PY, "py", AK_CMD) X(A_PYRUN, "pyrun", AK_NONE) X(A_TOPMOST, "topmost", AK_NONE) \
+X(A_TOTRAY, "totray", AK_NONE) X(A_LAYOUT, "layout", AK_NONE) X(A_PAUSE, "pause", AK_NONE) X(A_WEBCAM, "webcam", AK_NONE) X(A_STOPWATCH, "stopwatch", AK_NONE) \
+X(A_TIMER, "timer", AK_DUR) X(A_DRAW, "draw", AK_NONE) X(A_PICKER, "picker", AK_NONE) X(A_RECORD, "record", AK_NONE) X(A_SCRIPTS, "scripts", AK_NONE) \
+X(A_VOL, "volume", AK_NONE) X(A_VOLSET, "volumeset", AK_NONE) X(A_DUP, "duplicate", AK_NONE) X(A_MACRO, "macro", AK_NONE) X(A_RECORDS, "records", AK_NONE) \
+X(A_AUDIO, "audio", AK_NONE) X(A_VOICE, "voice", AK_NONE) X(A_SCRIPTN, "script", AK_SCRN) X(A_VOICECMD, "voicecmd", AK_NONE) X(A_EXIT, "exit", AK_NONE)
+#define ACT_ID(id, nm, k) id,
+enum { A_NONE, ACTION_LIST(ACT_ID) A_COUNT };
+#undef ACT_ID
+enum { PM_BUF, PM_HIST, PM_LAUNCH, PM_SCRIPTS, PM_RECORDS, PM_COUNT };   // режимы окна; новый режим - перед PM_COUNT и имя вкладки в kModeTab
 enum {
     WM_APP_HOT = WM_APP + 1, WM_APP_KEY, WM_APP_CLOSE, WM_APP_PCLICK, WM_APP_PTAB, WM_APP_PIMG, WM_APP_MACRO, WM_APP_DPY, WM_APP_SPEC, WM_TRAY, WM_APP_RENDERED, WM_APP_VCMD,
     TM_MOUSE = WM_APP + 20, TM_REHOOK
@@ -84,6 +96,7 @@ enum {
 #define TID_NAV 6
 #define TID_SCHED 7
 #define TID_SELCOPY 8
+#define TID_DEFER 9
 #define VISROWS g_vr
 
 struct Bind { UINT mods, key; int act, n, n2; wchar_t *arg, *dir; int lau; };      // lau: хоткей задан строкой меню запуска [Launcher]
@@ -106,7 +119,7 @@ static HINSTANCE g_inst;
 static HWND g_hwnd, g_hwndPop, g_hwndToast, g_popFg; static int g_popGrace;
 static HWND g_hwndClip;   // владелец буфера обмена: окно потока хука, который всегда качает сообщения
 static wchar_t g_dir[MAX_PATH], g_ini[MAX_PATH], g_memDir[MAX_PATH], g_pyDir[MAX_PATH], g_runDir[MAX_PATH], g_recDir[MAX_PATH], g_exe[MAX_PATH];
-static volatile LONG g_modBits, g_popup, g_paused, g_modal;
+static volatile LONG g_modBits, g_popup, g_paused, g_modal; static BOOL g_menuOpen;   // g_modal: открыт диалог правки; g_menuOpen: открыто меню трея
 static volatile LONG g_voiceSt; static wchar_t g_vcModel[40] = L"small", g_vcLang[8]; static int g_vcThr, g_vcPause = 600, g_vcMaxChunk = 15, g_vcSil = 300; static BOOL g_vcStream, g_vcLive = TRUE, g_vcDebug; static wchar_t g_vcPrompt[200], g_vcCmdModel[40], g_cmdPrompt[360]; static volatile LONG g_vcCmd; static BOOL g_cmdGo, g_remote, g_cmdDirty = TRUE;   // голосовые команды: модель, подсказка, режим команды, словарь устарел   // голосовой набор: состояние (0 пусто, 1 запись, 2 распознавание, 3 скачивание), модель, язык, потоки
 static BOOL g_selCopy; static wchar_t g_selIgn[2048]; static POINT g_selDn, g_selUpP; static DWORD g_selUpT;   // автокопирование выделенного мышью
 static volatile LONG g_caps;
@@ -159,7 +172,7 @@ static Bind *g_bnew; static int g_nbnew, g_bnewCap;
 static SRWLOCK g_bindLock = SRWLOCK_INIT;
 
 static HWND g_hid[32]; static int g_nhid;
-static Snap g_ps; static BOOL g_psPending;
+static Snap g_ps; static BOOL g_psPending; static volatile LONG g_rendered;   // g_rendered: приложение уже забрало текст вставки
 static wchar_t *g_pasteTxt; static SRWLOCK g_pasteLock = SRWLOCK_INIT;   // текст вставки, отдаётся приложению по требованию (WM_RENDERFORMAT)
 
 /* ---------- тексты интерфейса (langs\<Language>.ini, секция [Text]; здесь - встроенные русские по умолчанию) ---------- */
@@ -215,6 +228,7 @@ X(L_VOICE_REC, "voice.rec", L"Говорите... Ещё раз - закончи
 X(L_VOICE_WORK, "voice.work", L"Распознаю...") \
 X(L_VOICE_DLENG, "voice.dl_engine", L"Скачиваю распознаватель Whisper...") \
 X(L_VOICE_DLPROG, "voice.dl_progress", L"Скачиваю модель: %s") \
+X(L_VOICE_DLMB, "voice.dl_mb", L"%d МБ") \
 X(L_VOICE_READY, "voice.ready", L"Whisper установлен. Голосовой набор готов") \
 X(L_VOICE_DLERR, "voice.dl_error", L"Не удалось скачать Whisper (нужны интернет, curl и tar)") \
 X(L_VOICE_EMPTY, "voice.empty", L"Речь не распознана") \
@@ -349,6 +363,7 @@ X(L_TM_DONE, "timer.done", L"Таймер: время вышло") \
 X(L_TM_NEEDTIME, "timer.need_time", L"Задайте время: меню - Время таймера") \
 X(L_TM_INPUT, "timer.input_title", L"Таймер: минуты, м:с или ч:м:с") \
 X(L_TM_CANCELED, "timer.shutdown_canceled", L"Выключение отменено") \
+X(L_TM_SHUTMSG, "timer.shutdown_note", L"DKeys: таймер") \
 X(L_TM_SWPAUSE, "timer.sw_pause", L"Секундомер: пауза") \
 X(L_TM_SWSTART, "timer.sw_start", L"Секундомер: старт") \
 X(L_TM_SWRESET, "timer.sw_reset", L"Секундомер: сбросить") \
@@ -1089,24 +1104,24 @@ static BOOL ParseAction(const wchar_t *v, Bind *b) {
     memcpy(name, w, wl * sizeof(wchar_t)); name[wl] = 0;
     while (*v == L' ') v++;
     struct Act { const wchar_t *n; int a, kind; };
-    static const Act T[] = {
-        {L"copy", A_COPY, 1}, {L"paste", A_PASTE, 3}, {L"buffer", A_BUFFER, 4}, {L"slots", A_BUFFER, 4}, {L"layout", A_LAYOUT, 0}, {L"history", A_HIST, 0}, {L"launcher", A_LAUNCH, 0}, {L"scripts", A_SCRIPTS, 0},
-        {L"run", A_RUN, 2}, {L"admin", A_ADMIN, 2}, {L"py", A_PY, 2}, {L"pyrun", A_PYRUN, 0}, {L"topmost", A_TOPMOST, 0},
-        {L"totray", A_TOTRAY, 0}, {L"pause", A_PAUSE, 0}, {L"webcam", A_WEBCAM, 0}, {L"stopwatch", A_STOPWATCH, 0}, {L"timer", A_TIMER, 5}, {L"script", A_SCRIPTN, 6}, {L"draw", A_DRAW, 0}, {L"record", A_RECORD, 0}, {L"colorpicker", A_PICKER, 0}, {L"picker", A_PICKER, 0},
-        {L"volume", A_VOL, 0}, {L"volumeset", A_VOLSET, 0}, {L"duplicate", A_DUP, 0}, {L"macro", A_MACRO, 0}, {L"records", A_RECORDS, 0}, {L"audio", A_AUDIO, 0}, {L"dictaphone", A_AUDIO, 0}, {L"voicecmd", A_VOICECMD, 0}, {L"exit", A_EXIT, 0}, {L"voice", A_VOICE, 0}, {L"dictation", A_VOICE, 0},
-    };
+#define ACT_ROW(id, nm, k) {L##nm, id, k},
+    static const Act T[] = { ACTION_LIST(ACT_ROW) };
+#undef ACT_ROW
+    static const struct { const wchar_t *n, *to; } kActAlias[] = { {L"slots", L"buffer"}, {L"colorpicker", L"picker"}, {L"dictaphone", L"audio"}, {L"dictation", L"voice"} };
+    const wchar_t *nm = name;
+    for (int i = 0; i < (int)(sizeof kActAlias / sizeof kActAlias[0]); i++) if (!lstrcmpiW(name, kActAlias[i].n)) nm = kActAlias[i].to;
     for (int i = 0; i < (int)(sizeof T / sizeof T[0]); i++) {
-        if (lstrcmpiW(name, T[i].n)) continue;
+        if (lstrcmpiW(nm, T[i].n)) continue;
         b->act = T[i].a;
-        if (T[i].kind == 1) { b->n = ToInt(v); if (b->n < 1 || b->n > 9) return FALSE; }
-        else if (T[i].kind == 2) SplitDir(v, b);
-        else if (T[i].kind == 3) {
+        if (T[i].kind == AK_BUF) { b->n = ToInt(v); if (b->n < 1 || b->n > 9) return FALSE; }
+        else if (T[i].kind == AK_CMD) SplitDir(v, b);
+        else if (T[i].kind == AK_PASTE) {
             b->n = ToInt(v); while (*v >= L'0' && *v <= L'9') v++;
             b->n2 = ToInt(v);
             if (b->n < 1 || b->n > 9 || b->n2 < 1 || b->n2 > 10) return FALSE;
-        } else if (T[i].kind == 4) { b->n = *v ? ToInt(v) : 0; if (b->n < 0 || b->n > 9) return FALSE; }
-        else if (T[i].kind == 5) b->n = *v ? ParseDur(v) : 0;                         // timer [время]: со временем - сразу запустить
-        else if (T[i].kind == 6) { b->n = ToInt(v); if (b->n < 1 || b->n > 10) return FALSE; }
+        } else if (T[i].kind == AK_BUFOPT) { b->n = *v ? ToInt(v) : 0; if (b->n < 0 || b->n > 9) return FALSE; }
+        else if (T[i].kind == AK_DUR) b->n = *v ? ParseDur(v) : 0;                    // timer [время]: со временем - сразу запустить
+        else if (T[i].kind == AK_SCRN) { b->n = ToInt(v); if (b->n < 1 || b->n > 10) return FALSE; }
         return TRUE;
     }
     if (!lstrcmpiW(name, L"notify")) { b->act = A_PY; SplitDir(start, b); return TRUE; }
@@ -1163,6 +1178,36 @@ static wchar_t g_schBad[64];
 static void SchAdd(const wchar_t *k, const wchar_t *v);
 
 static void SchClear(void), SchFinish(void), SchBadToast(void), SchEvent(int ev), SchTick(void);
+// Громкость и дублирование читают свои настройки из рабочих потоков: ini разбирается в копию, а в глобальные попадают только итоговые значения.
+struct AudCfg { LONG vOn; int vLim, vCeil, vBoost; wchar_t vDev[80]; LONG dOn; wchar_t dSrc[80], dDst[80]; int dLat; };
+static AudCfg g_aud;
+static void AudCommit(void) {
+    if (g_vLim != g_aud.vLim) g_vLim = g_aud.vLim; if (g_vCeil != g_aud.vCeil) g_vCeil = g_aud.vCeil; if (g_vBoost != g_aud.vBoost) g_vBoost = g_aud.vBoost;
+    if (lstrcmpW(g_vDev, g_aud.vDev)) lstrcpynW(g_vDev, g_aud.vDev, 80);
+    if (g_dLat != g_aud.dLat) g_dLat = g_aud.dLat;
+    if (lstrcmpW(g_dSrc, g_aud.dSrc)) lstrcpynW(g_dSrc, g_aud.dSrc, 80);
+    if (lstrcmpW(g_dDst, g_aud.dDst)) lstrcpynW(g_dDst, g_aud.dDst, 80);
+    InterlockedExchange(&g_vOn, g_aud.vOn); InterlockedExchange(&g_dOn, g_aud.dOn);
+}
+// Значения по умолчанию для всего, что задаётся в ini (те же, что в объявлениях): ключ, удалённый из ini, после перечитки не должен оставлять старое значение.
+static void CfgDefaults(void) {
+    lstrcpyW(g_lang, L"ru"); g_mouseSlow = 4; g_histOn = 0; g_histMax = 50; g_pasteDelay = 300; g_copyTimeout = 600; lstrcpyW(g_python, L"python.exe");
+    g_pyPause = 1; g_toasts = 1; g_editor[0] = 0; g_bufMax = 10; g_layoutWord = 0; g_layoutSwitch = 1;
+    g_dLive = FALSE; g_dCol = 0; g_dWid = 1; g_dSaveDir[0] = 0;
+    g_rNoTb = TRUE; g_rCur = TRUE; g_rScr = 0; g_rMic[0] = 0; g_rDir[0] = 0; g_rAk = 128; g_rFps = 30; g_rPos[0] = g_rPos[1] = -99999;
+    g_rPwd = TRUE; g_rShow = FALSE; g_novc = 0;
+    memset(&g_aud, 0, sizeof g_aud); g_aud.vLim = 50; g_aud.dLat = 20;
+    g_tmFg = RGB(255, 255, 255); g_tmBg = RGB(0, 0, 0); g_tmAlpha = 60; g_tmSize = 48; g_tmEnd = 0; g_tmNFav = 0; g_tmPos[0] = g_tmPos[1] = 80;
+    g_mHover = 300; g_mPos[0] = g_mPos[1] = -99999;
+    g_cfgCamDev[0] = 0; g_cfgCamW = g_cfgCamH = 0; memset(g_cfgWin, 0, sizeof g_cfgWin);
+    g_remote = FALSE; g_selCopy = FALSE; g_selIgn[0] = 0;
+    lstrcpyW(g_vcModel, L"small"); g_vcLang[0] = 0; g_vcThr = 0; g_vcPause = 600; g_vcMaxChunk = 15; g_vcSil = 300; g_vcStream = FALSE; g_vcLive = TRUE; g_vcDebug = FALSE; g_vcPrompt[0] = 0; g_vcCmdModel[0] = 0; g_cmdDirty = TRUE;
+    // [Cam:*] не сбрасываются: их читает поток регистратора; убранная секция остаётся до перезапуска
+}
+static void BindPush(const Bind *b) {                                       // хоткей в новый список (станет текущим в конце LoadConfig)
+    if (g_nbnew >= g_bnewCap) { g_bnewCap = g_bnewCap ? g_bnewCap * 2 : 64; g_bnew = (Bind *)Realloc(g_bnew, g_bnewCap * sizeof(Bind)); }
+    g_bnew[g_nbnew++] = *b;
+}
 static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
     if (s[0] == L'C' && s[1] == L'a' && s[2] == L'm' && s[3] == L':') {
         CamRec *c = CrGet(s + 4, TRUE); if (!c) return;
@@ -1196,8 +1241,7 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
     } else if (!lstrcmpiW(s, L"Hotkeys")) {
         Bind b; memset(&b, 0, sizeof b);
         if (!ParseHotkey(k, &b.mods, &b.key) || !ParseAction(v, &b)) { Free(b.arg); Free(b.dir); return; }
-        if (g_nbnew >= g_bnewCap) { g_bnewCap = g_bnewCap ? g_bnewCap * 2 : 64; g_bnew = (Bind *)Realloc(g_bnew, g_bnewCap * sizeof(Bind)); }
-        g_bnew[g_nbnew++] = b;
+        BindPush(&b);
     } else if (!lstrcmpiW(s, L"Draw")) {
         if (!lstrcmpiW(k, L"Mode")) g_dLive = !lstrcmpiW(v, L"live");
         else if (!lstrcmpiW(k, L"Color")) { g_dCol = ToInt(v); if (g_dCol < 0 || g_dCol > 7) g_dCol = 0; }
@@ -1220,16 +1264,16 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
             for (int i = 0; i < 3; i++) { while (*q && *q != L',') q++; if (!*q) break; q++; *f[i] = ToInt(q); }
             if (c->sc < 10) c->sc = 10; if (c->sc > 600) c->sc = 600; } }
     } else if (!lstrcmpiW(s, L"Volume")) {
-        if (!lstrcmpiW(k, L"Enabled")) g_vOn = ToInt(v) != 0;
-        else if (!lstrcmpiW(k, L"Limit")) { g_vLim = ToInt(v); if (g_vLim < 1) g_vLim = 1; if (g_vLim > 100) g_vLim = 100; }
-        else if (!lstrcmpiW(k, L"Ceiling")) { g_vCeil = ToInt(v); if (g_vCeil < 0) g_vCeil = 0; if (g_vCeil > 100) g_vCeil = 100; }
-        else if (!lstrcmpiW(k, L"Boost")) { g_vBoost = ToInt(v); if (g_vBoost < 0) g_vBoost = 0; if (g_vBoost > 100) g_vBoost = 100; }
-        else if (!lstrcmpiW(k, L"Device")) lstrcpynW(g_vDev, v, 80);
+        if (!lstrcmpiW(k, L"Enabled")) g_aud.vOn = ToInt(v) != 0;
+        else if (!lstrcmpiW(k, L"Limit")) { g_aud.vLim = ToInt(v); if (g_aud.vLim < 1) g_aud.vLim = 1; if (g_aud.vLim > 100) g_aud.vLim = 100; }
+        else if (!lstrcmpiW(k, L"Ceiling")) { g_aud.vCeil = ToInt(v); if (g_aud.vCeil < 0) g_aud.vCeil = 0; if (g_aud.vCeil > 100) g_aud.vCeil = 100; }
+        else if (!lstrcmpiW(k, L"Boost")) { g_aud.vBoost = ToInt(v); if (g_aud.vBoost < 0) g_aud.vBoost = 0; if (g_aud.vBoost > 100) g_aud.vBoost = 100; }
+        else if (!lstrcmpiW(k, L"Device")) lstrcpynW(g_aud.vDev, v, 80);
     } else if (!lstrcmpiW(s, L"Duplicate")) {
-        if (!lstrcmpiW(k, L"Enabled")) g_dOn = ToInt(v) != 0;
-        else if (!lstrcmpiW(k, L"Source")) lstrcpynW(g_dSrc, v, 80);
-        else if (!lstrcmpiW(k, L"Sink")) lstrcpynW(g_dDst, v, 80);
-        else if (!lstrcmpiW(k, L"Latency")) { g_dLat = ToInt(v); if (g_dLat < 0) g_dLat = 0; if (g_dLat > 300) g_dLat = 300; }
+        if (!lstrcmpiW(k, L"Enabled")) g_aud.dOn = ToInt(v) != 0;
+        else if (!lstrcmpiW(k, L"Source")) lstrcpynW(g_aud.dSrc, v, 80);
+        else if (!lstrcmpiW(k, L"Sink")) lstrcpynW(g_aud.dDst, v, 80);
+        else if (!lstrcmpiW(k, L"Latency")) { g_aud.dLat = ToInt(v); if (g_aud.dLat < 0) g_aud.dLat = 0; if (g_aud.dLat > 300) g_aud.dLat = 300; }
     } else if (!lstrcmpiW(s, L"Timer")) {
         if (!lstrcmpiW(k, L"FontColor")) g_tmFg = HexRgb(v);
         else if (!lstrcmpiW(k, L"BgColor")) g_tmBg = HexRgb(v);
@@ -1284,8 +1328,7 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
         e->title = title && *title ? Dup(title) : NULL; e->arg = Dup(b.arg); e->dir = b.dir ? Dup(b.dir) : NULL; e->hk = Dup(hk);
         if (!b.key) { Free(b.arg); Free(b.dir); return; }
         b.lau = 1;
-        if (g_nbnew >= g_bnewCap) { g_bnewCap = g_bnewCap ? g_bnewCap * 2 : 64; g_bnew = (Bind *)Realloc(g_bnew, g_bnewCap * sizeof(Bind)); }
-        g_bnew[g_nbnew++] = b;
+        BindPush(&b);
     } else if (!lstrcmpiW(s, L"Launcher")) {
         g_launch = (KV *)Realloc(g_launch, (g_nlaunch + 1) * sizeof(KV));
         g_launch[g_nlaunch].k = Dup(k); g_launch[g_nlaunch].v = Dup(v); g_nlaunch++;
@@ -1294,8 +1337,7 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
         if (!b.key) return;
         if (!ParseAction(cmd, &b)) { Free(b.arg); Free(b.dir); return; }
         b.lau = 1;
-        if (g_nbnew >= g_bnewCap) { g_bnewCap = g_bnewCap ? g_bnewCap * 2 : 64; g_bnew = (Bind *)Realloc(g_bnew, g_bnewCap * sizeof(Bind)); }
-        g_bnew[g_nbnew++] = b;
+        BindPush(&b);
     }
 }
 
@@ -1343,9 +1385,10 @@ static void LoadConfig(void) {
     for (int i = 0; i < g_nscrIni; i++) { Free(g_scrIni[i].title); Free(g_scrIni[i].arg); Free(g_scrIni[i].dir); Free(g_scrIni[i].hk); }
     Free(g_scrIni); g_scrIni = NULL; g_nscrIni = 0;
     g_bnew = NULL; g_nbnew = g_bnewCap = 0;
-    SchClear(); g_remote = FALSE; g_selCopy = FALSE; g_selIgn[0] = 0; lstrcpyW(g_vcModel, L"small"); g_vcLang[0] = 0; g_vcThr = 0; g_vcPause = 600; g_vcMaxChunk = 15; g_vcSil = 300; g_vcStream = FALSE; g_vcLive = TRUE; g_vcDebug = FALSE; g_vcPrompt[0] = 0; g_vcCmdModel[0] = 0; g_cmdDirty = TRUE;
+    SchClear(); CfgDefaults();
     IniParse(t, CfgCb);
     Free(t);
+    AudCommit();
     SchFinish();
     Bind *old = g_bind; int oldn = g_nbind;
     AcquireSRWLockExclusive(&g_bindLock);
@@ -1400,6 +1443,7 @@ static LRESULT CALLBACK ClipProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         ReleaseSRWLockShared(&g_pasteLock);
         Log(L"RENDER text=%d seq=%u tick=%u", g_pasteTxt ? lstrlenW(g_pasteTxt) : -1, GetClipboardSequenceNumber(), GetTickCount());
         g_ownSeq = g_ignoreSeq = GetClipboardSequenceNumber();
+        InterlockedExchange(&g_rendered, 1);
         PostMessageW(g_hwnd, WM_APP_RENDERED, 0, 0);
         return 0;
     }
@@ -1529,7 +1573,7 @@ static BYTE *ClipPng(DWORD *len) {                                              
         SIZE_T sz = GlobalSize(h); const BYTE *p = (const BYTE *)GlobalLock(h);
         if (p && sz > 16 && sz < ((SIZE_T)64 << 20)) {
             SIZE_T n = sz; while (n > 12 && memcmp(p + n - 8, "IEND", 4)) n--;            // отрезаем добивку после IEND+CRC
-            if (n <= 12) n = sz; else n = n;
+            if (n <= 12) n = sz;
             r = (BYTE *)Alloc(n); memcpy(r, p, n); *len = (DWORD)n;
         }
         if (p) GlobalUnlock(h);
@@ -1619,7 +1663,7 @@ static BOOL Paste(int n, int i) {                                               
     if (hdib) GlobalFree(hdib);
     Free(png);
     if (!ok) { g_psPending = FALSE; SnapFree(&g_ps); return FALSE; }
-    g_ownSeq = g_ignoreSeq = GetClipboardSequenceNumber();
+    g_ownSeq = g_ignoreSeq = GetClipboardSequenceNumber(); InterlockedExchange(&g_rendered, 0);   // у картинки рендера нет: PasteFlush просто выждет 0,5 с
     Sleep(25);
     for (int k = 0; k < 30 && GetOpenClipboardWindow(); k++) Sleep(10);
     SendChord('V');
@@ -1655,8 +1699,23 @@ static BOOL ClipIsLineCopy(void) {
 }
 
 // Скопировать выделенное в приложении, не меняя основной буфер. *line - редактор скопировал всю строку (выделения не было).
+static void OnRestoreTimer(void);
+static void PasteFlush(void) {                                                         // довести незавершённую вставку: дождаться, пока приложение заберёт текст (до 0,5 с), и вернуть прежний буфер
+    if (!g_psPending) return;
+    for (int i = 0; i < 50 && !g_rendered; i++) Sleep(10);
+    for (int i = 0; i < 30 && GetOpenClipboardWindow(); i++) Sleep(10);
+    OnRestoreTimer();
+}
+static BOOL ClipSet(UINT fmt, HGLOBAL h) {                                             // положить в буфер обмена от имени пользователя (копия попадает в историю); h переходит буферу, при неудаче освобождается
+    PasteFlush();
+    BOOL ok = ClipOpen();
+    if (ok) { EmptyClipboard(); ok = SetClipboardData(fmt, h) != NULL; CloseClipboard(); }
+    if (!ok && h) GlobalFree(h);
+    return ok;
+}
 static wchar_t *GrabSelection(BOOL *line = NULL, BYTE **img = NULL, DWORD *imgLen = NULL) {      // img: если скопирована картинка без текста - PNG (владение у вызывающего)
     if (g_noGrab) return NULL;                                                          // запуск по расписанию: Ctrl+C в чужое окно не шлём
+    PasteFlush();                                                                       // прошлая вставка ещё держит буфер: снимок ниже запомнил бы её текст, а настоящий пропал бы
     Snap s; memset(&s, 0, sizeof s);
     SnapTake(&s);
     DWORD seq0 = GetClipboardSequenceNumber();
@@ -1686,6 +1745,7 @@ static void PasteText(const wchar_t *t) {
     AcquireSRWLockExclusive(&g_pasteLock); Free(g_pasteTxt); g_pasteTxt = c; ReleaseSRWLockExclusive(&g_pasteLock);
     // Текст кладём "по требованию": прежний буфер вернём только после того, как приложение его реально прочитало.
     BOOL ok = ClipOpen();
+    InterlockedExchange(&g_rendered, 0);
     if (ok) { EmptyClipboard(); SetClipboardData(CF_UNICODETEXT, NULL); SetHideFormats(); CloseClipboard(); }
     Log(L"paste ok=%d snap n=%d first=%x last=%x tick=%u", ok, g_ps.n, t[0], t[lstrlenW(t) - 1], GetTickCount());
     if (!ok) { g_psPending = FALSE; SnapFree(&g_ps); return; }
@@ -1753,6 +1813,12 @@ static void BuffersLoad(void) {
     }
 }
 // Новая запись наверх (владение переходит буферу); повтор поднимается наверх, лишнее снизу вытесняется.
+// Номер записи после того, как список мог измениться: та же запись (указатель и текст), иначе первая с тем же текстом, иначе -1.
+static int ItemFind(wchar_t **a, int n, const wchar_t *p, const wchar_t *t) {
+    for (int i = 0; i < n; i++) if (a[i] == p && !lstrcmpW(a[i], t)) return i;
+    for (int i = 0; i < n; i++) if (!lstrcmpW(a[i], t)) return i;
+    return -1;
+}
 static void BufInsert(int n, wchar_t *t) {
     wchar_t **b = g_buf[n];
     for (int i = 0; i < g_bufN[n]; i++) {
@@ -1845,9 +1911,13 @@ static void SetHistory(BOOL on) {
 struct Pal { COLORREF bg, hdr, fg, dim, sel, acc, bd; };
 static const Pal kDark = {RGB(32, 32, 32), RGB(40, 40, 40), RGB(230, 230, 230), RGB(140, 140, 140), RGB(38, 79, 120), RGB(90, 170, 250), RGB(85, 85, 85)};
 static const Pal kLight = {RGB(250, 250, 250), RGB(240, 240, 240), RGB(28, 28, 28), RGB(125, 125, 125), RGB(204, 228, 247), RGB(0, 95, 184), RGB(170, 170, 170)};
-// вкладки: 0..8 - буферы 1..9, 9 - история, 10 - запуск, 11 - скрипты (режим = номер - 8)
-#define NTABS 13
-#define kTabName(i) Tr((i) == 0 ? L_TAB_HIST : (i) == 1 ? L_TAB_LAUNCH : (i) == 2 ? L_TAB_SCR : L_TAB_REC)
+// вкладки: 0..8 - буферы 1..9, дальше по одной на каждый режим после PM_BUF (история, запуск, скрипты, записи)
+#define NBUFTABS 9
+#define NTABS (NBUFTABS + PM_COUNT - 1)
+static const int kModeTab[PM_COUNT] = {0, L_TAB_HIST, L_TAB_LAUNCH, L_TAB_SCR, L_TAB_REC};   // имя вкладки режима
+static int TabOf(int mode, int buf) { return mode == PM_BUF ? buf - 1 : NBUFTABS - 1 + mode; }
+static int ModeOfTab(int i) { return i < NBUFTABS ? PM_BUF : i - (NBUFTABS - 1); }
+static BOOL TabHidden(int i) { return ModeOfTab(i) == PM_HIST && !g_histOn; }
 
 static Row *g_rows; static int g_nrows;
 static wchar_t **g_scrNames; static int g_nscr;      // файлы вкладки "Скрипты" (ref строки - индекс сюда)
@@ -2132,13 +2202,13 @@ static void PopupPaint(HWND h) {
     int right = W - g_pad;
     for (int i = NTABS - 1; i >= 0; i--) {
         SetRectEmpty(&g_tabRc[i]);
-        if (i == 9 && !g_histOn) continue;
-        BOOL cur = i < 9 ? (g_pmode == PM_BUF && g_curBuf == i + 1) : (g_pmode == i - 8);
+        if (TabHidden(i)) continue;
+        BOOL cur = i == TabOf(g_pmode, g_curBuf);
         wchar_t dg[2] = {(wchar_t)(L'1' + i), 0};
-        const wchar_t *tx = i < 9 ? dg : kTabName(i - 9);
+        const wchar_t *tx = i < NBUFTABS ? dg : Tr(kModeTab[ModeOfTab(i)]);
         SelectObject(dc, cur ? g_fntB : g_fnt);
         SIZE sz; GetTextExtentPoint32W(dc, tx, lstrlenW(tx), &sz);
-        int tw = i < 9 ? Sc(24) : sz.cx + Sc(16);
+        int tw = i < NBUFTABS ? Sc(24) : sz.cx + Sc(16);
         RECT tr = {right - tw, Sc(6), right, g_hh - Sc(6)};
         g_tabRc[i] = tr;
         if (cur) FillRect(dc, &tr, sb);
@@ -3081,6 +3151,7 @@ static void SchBadToast(void) {
     wchar_t m[160]; wsprintfW(m, Tr(L_SCH_BAD), g_schBad); g_schBad[0] = 0; Toast(m);
 }
 static void SchRun(Sch *e, ULONGLONG now) {
+    if (g_modal || g_menuOpen) { e->pend = now + 5; return; }                          // открыт диалог или меню трея: клавиши ушли бы в них - следующий такт
     e->pend = 0;
     Bind b; memset(&b, 0, sizeof b);
     if (g_locked && ParseAction(e->what, &b) && b.act == A_PY && b.arg) {               // запись (макрос) не выполнить на заблокированном экране - ждём разблокировки
@@ -3279,18 +3350,22 @@ static void PopupEdit(BOOL isNew) {
     if (g_pmode == PM_LAUNCH || g_pmode == PM_SCRIPTS || g_pmode == PM_RECORDS || (!isNew && g_nvis <= 0)) return;
     int mode = g_pmode, buf = g_curBuf, ref = isNew ? -1 : g_rows[g_vis[g_sel]].ref;
     wchar_t *cur = Dup(isNew ? L"" : g_rows[g_vis[g_sel]].text);
+    const wchar_t *orig = ref < 0 ? NULL : mode == PM_BUF ? g_buf[buf][ref] : g_hist[ref];
     PopupClose();
     wchar_t title[64];
     if (mode == PM_BUF) wsprintfW(title, isNew ? Tr(L_ED_NEW) : Tr(L_ED_BUF), buf, ref + 1);
     else lstrcpyW(title, Tr(L_ED_HIST));
     wchar_t *nt = EditDialog(title, cur);
+    // пока диалог открыт, крутится главный цикл: копирование, расписание, пульт могли сдвинуть или вытеснить записи - номер ищем заново
+    if (!isNew) ref = mode == PM_BUF ? ItemFind(g_buf[buf], g_bufN[buf], orig, cur) : ItemFind(g_hist, g_nhist, orig, cur);
     Free(cur);
-    if (nt && !*nt) { Free(nt); nt = NULL; if (!isNew) { if (mode == PM_BUF) BufRemove(buf, ref); else { HistRemove(ref); HistSave(); } } }
+    if (nt && !*nt) { Free(nt); nt = NULL; if (ref >= 0) { if (mode == PM_BUF) BufRemove(buf, ref); else { HistRemove(ref); HistSave(); } } }
     if (nt) {
         if (mode == PM_BUF) {
-            if (isNew) BufInsert(buf, nt);
+            if (ref < 0) BufInsert(buf, nt);
             else { Free(g_buf[buf][ref]); g_buf[buf][ref] = nt; BufSave(buf); }
-        } else { Free(g_hist[ref]); g_hist[ref] = nt; HistSave(); }
+        } else if (ref < 0) { if (g_histOn) HistAdd(nt); else Free(nt); }
+        else { Free(g_hist[ref]); g_hist[ref] = nt; HistSave(); }
     }
     PopupOpen(mode, buf);
 }
@@ -3319,7 +3394,7 @@ static void PopupImg(int slot) {                                                
     ImgNs::Paste(n, slot);
 }
 static void PopupTab(int i) {
-    if (i < 9) PopupSetMode(PM_BUF, i + 1); else PopupSetMode(i - 8, 0);
+    int m = ModeOfTab(i); PopupSetMode(m, m == PM_BUF ? i + 1 : 0);
 }
 static void PopupKey(UINT key, UINT mods, WCHAR ch) {
     Log(L"PopupKey key=%x mods=%x ch=%x", key, mods, (int)ch);
@@ -3343,8 +3418,8 @@ static void PopupKey(UINT key, UINT mods, WCHAR ch) {
         if (g_sel < g_nvis - 1) g_sel++; PopupEnsureVisible(); PopupRedraw(); return;
     case VK_LEFT: case VK_RIGHT:
         if (!g_nfilt) {                                                            // по кругу: буферы 1-9, история (если включена), запуск, скрипты
-            int i = buf ? g_curBuf - 1 : 8 + g_pmode, dr = key == VK_RIGHT ? 1 : NTABS - 1;
-            do i = (i + dr) % NTABS; while (i == 9 && !g_histOn);
+            int i = TabOf(g_pmode, g_curBuf), dr = key == VK_RIGHT ? 1 : NTABS - 1;
+            do i = (i + dr) % NTABS; while (TabHidden(i));
             PopupTab(i);
         }
         return;
@@ -3352,7 +3427,7 @@ static void PopupKey(UINT key, UINT mods, WCHAR ch) {
     case VK_NEXT: g_sel += VISROWS - 1; if (g_sel > g_nvis - 1) g_sel = g_nvis - 1; if (g_sel < 0) g_sel = 0; PopupEnsureVisible(); PopupRedraw(); return;
     case VK_HOME: g_sel = 0; PopupEnsureVisible(); PopupRedraw(); return;
     case VK_END: g_sel = g_nvis ? g_nvis - 1 : 0; PopupEnsureVisible(); PopupRedraw(); return;
-    case VK_TAB: { int m = (g_pmode + 1) % 5; if (m == PM_HIST && !g_histOn) m = PM_LAUNCH; PopupSetMode(m, 0); return; }
+    case VK_TAB: { int m = g_pmode; do m = (m + 1) % PM_COUNT; while (m == PM_HIST && !g_histOn); PopupSetMode(m, 0); return; }
     case VK_DELETE: PopupDelete(); return;
     case VK_F2: PopupEdit(FALSE); return;
     case VK_INSERT: if (buf) PopupEdit(TRUE); return;
@@ -3571,6 +3646,9 @@ static void InstallHooks(void) {
     if (g_hkMouse) UnhookWindowsHookEx(g_hkMouse);
     g_hkKbd = SetWindowsHookExW(WH_KEYBOARD_LL, LLKbd, g_inst, 0);
     g_hkMouse = SetWindowsHookExW(WH_MOUSE_LL, LLMouse, g_inst, 0);
+    static const BYTE kMv[] = {VK_LCONTROL, VK_RCONTROL, VK_LMENU, VK_RMENU, VK_LSHIFT, VK_RSHIFT, VK_LWIN, VK_RWIN};
+    LONG b = 0; for (int i = 0; i < 8; i++) if (GetAsyncKeyState(kMv[i]) & 0x8000) b |= ModBit(kMv[i]);
+    InterlockedExchange(&g_modBits, b);                                     // после Win+L / сна хук не видел отпускания: модификаторы - по факту
 }
 static DWORD WINAPI HookThread(LPVOID ev) {
     MSG m; PeekMessageW(&m, NULL, WM_USER, WM_USER, PM_NOREMOVE);
@@ -4535,7 +4613,9 @@ static void TmFinish(void) {
     MessageBeep(MB_ICONEXCLAMATION);
     Toast(Tr(L_TM_DONE));
     if (g_tmEnd) {
-        RunHidden(g_tmEnd == 1 ? L"shutdown.exe /s /t 30 /c \"DKeys: таймер\"" : L"shutdown.exe /r /t 30 /c \"DKeys: таймер\"");
+        wchar_t note[80], cmd[160]; int o = 0; for (const wchar_t *q = Tr(L_TM_SHUTMSG); *q && o < 79; q++) if (*q != L'"') note[o++] = *q; note[o] = 0;
+        wsprintfW(cmd, L"shutdown.exe /%c /t 30 /c \"%s\"", g_tmEnd == 1 ? L's' : L'r', note);
+        RunHidden(cmd);
         g_shutPend = TRUE;
     }
 }
@@ -5289,8 +5369,7 @@ static void DoCopy(void) {
         BYTE *d = p + sizeof *bh;
         for (int y = 0; y < ch; y++) memcpy(d + (size_t)y * cw * 4, base.bits + (size_t)(cy + ch - 1 - y) * W + cx, (size_t)cw * 4);
         GlobalUnlock(hg);
-        if (OpenClipboard(hw)) { EmptyClipboard(); ok = SetClipboardData(CF_DIB, hg) != NULL; CloseClipboard(); }
-        if (!ok) GlobalFree(hg);
+        ok = ClipSet(CF_DIB, hg);
     }
     Close();
     Toast(ok ? Tr(L_D_COPIED) : Tr(L_D_COPYFAIL));
@@ -5597,8 +5676,7 @@ static void Pick(void) {
     BOOL ok = FALSE;
     if (hg) {
         memcpy(GlobalLock(hg), t, sizeof t); GlobalUnlock(hg);
-        if (OpenClipboard(hw)) { EmptyClipboard(); ok = SetClipboardData(CF_UNICODETEXT, hg) != NULL; CloseClipboard(); }
-        if (!ok) GlobalFree(hg);
+        ok = ClipSet(CF_UNICODETEXT, hg);
     }
     Close();
     if (ok) { wchar_t m[80]; wsprintfW(m, Tr(L_PK_COPIED), t); Toast(m); }
@@ -6497,7 +6575,7 @@ struct Ev { DWORD t; int kind, a, b, x, y; Ui *ui; };                           
 static HWND hw; static HANDLE th, evReq, evDone; static volatile LONG stopF;
 static BOOL rec, paused, moved, skipUp[5]; static POINT dn, wp, lastRec; static BYTE downSet[256];
 static Ev *ev; static int nev, cap; static CRITICAL_SECTION cs; static BOOL csInit;
-static ULONGLONG t0, pauseAcc, pauseStart; static POINT reqPt; static Ui reqUi;
+static ULONGLONG t0, pauseAcc, pauseStart; static POINT reqPt; static Ui reqUi; static DWORD reqT; static volatile LONG reqWait, reqBusy;   // reqWait: хук ещё ждёт ответа; reqBusy: поток UIA занят запросом
 static const struct { const char *n; int vk; } kKN[] = {
     {"Backspace", 8}, {"Tab", 9}, {"Enter", 13}, {"Pause", 0x13}, {"CapsLock", 0x14}, {"Esc", 27}, {"Space", 32}, {"PageUp", 33}, {"PageDown", 34}, {"End", 35}, {"Home", 36},
     {"Left", 37}, {"Up", 38}, {"Right", 39}, {"Down", 40}, {"PrintScreen", 44}, {"Insert", 45}, {"Delete", 46}, {"Win", 0x5B}, {"RWin", 0x5C}, {"Apps", 0x5D},
@@ -6522,6 +6600,15 @@ static void Add(Ev e) {                                                         
     ev[j] = e;
     LeaveCriticalSection(&cs);
 }
+static void Attach(void) {                                                            // ответ пришёл после того, как хук перестал ждать: дописать элемент к уже записанному нажатию
+    if (!csInit || !(reqUi.name[0] || reqUi.aid[0] || reqUi.win[0])) return;
+    EnterCriticalSection(&cs);
+    for (int i = nev - 1; i >= 0; i--) {
+        Ev *e = &ev[i];
+        if (e->kind == 1 && e->b && e->t == reqT && e->x == reqPt.x && e->y == reqPt.y) { if (!e->ui) { e->ui = (Ui *)Alloc(sizeof(Ui)); *e->ui = reqUi; } break; }
+    }
+    LeaveCriticalSection(&cs);
+}
 static void Query(IUIAutomation *ua) {                                                // на потоке с COM: окно и элемент под reqPt
     memset(&reqUi, 0, sizeof reqUi);
     POINT pt = reqPt; HWND w = WindowFromPoint(pt), top = w ? GetAncestor(w, GA_ROOT) : NULL;
@@ -6542,7 +6629,7 @@ static DWORD WINAPI Worker(LPVOID) {                                            
     CoCreateInstance(__uuidof(CUIAutomation), NULL, CLSCTX_INPROC_SERVER, __uuidof(IUIAutomation), (void **)&ua);
     POINT last; GetCursorPos(&last); ULONGLONG chg = GetTickCount64();
     while (!stopF) {
-        if (WaitForSingleObject(evReq, 15) == WAIT_OBJECT_0) { Query(ua); SetEvent(evDone); }
+        if (WaitForSingleObject(evReq, 15) == WAIT_OBJECT_0) { Query(ua); if (InterlockedExchange(&reqWait, 0)) SetEvent(evDone); else Attach(); InterlockedExchange(&reqBusy, 0); }
         POINT p; GetCursorPos(&p);
         if (p.x != last.x || p.y != last.y) { last = p; chg = GetTickCount64(); continue; }
         if (rec && !paused && (p.x != lastRec.x || p.y != lastRec.y) && GetTickCount64() - chg >= (ULONGLONG)g_mHover && chg >= t0 + pauseAcc) {
@@ -6597,11 +6684,16 @@ static void MacroMouse(WPARAM wp, const MSLLHOOKSTRUCT *m) {
     if (dn && OnOwn(m->pt)) { skipUp[bt] = TRUE; return; }                            // нажатие на кнопку записи в макрос не попадает
     if (!dn && skipUp[bt]) { skipUp[bt] = FALSE; return; }
     Ev e; memset(&e, 0, sizeof e); e.kind = 1; e.a = bt; e.b = dn; e.x = m->pt.x; e.y = m->pt.y; e.t = Now();
-    if (dn && evReq) {                                                                // элемент под курсором: запрос в COM-поток, ждём не дольше 200 мс
-        reqPt = m->pt; ResetEvent(evDone); SetEvent(evReq);
-        if (WaitForSingleObject(evDone, 200) == WAIT_OBJECT_0 && (reqUi.name[0] || reqUi.aid[0] || reqUi.win[0])) { e.ui = (Ui *)Alloc(sizeof(Ui)); *e.ui = reqUi; }
-    }
     lastRec = m->pt;
+    if (dn && evReq && !InterlockedCompareExchange(&reqBusy, 1, 0)) {                   // элемент под курсором: запрос в COM-поток. Долго ждать в LL-хуке нельзя -
+        reqPt = m->pt; reqT = e.t; ResetEvent(evDone); InterlockedExchange(&reqWait, 1); SetEvent(evReq);   // Windows молча снимает медленный хук; не успел - допишет сам поток
+        if (WaitForSingleObject(evDone, 60) != WAIT_OBJECT_0) {
+            Add(e);
+            if (!InterlockedExchange(&reqWait, 0) && WaitForSingleObject(evDone, 50) == WAIT_OBJECT_0) Attach();   // поток успел в последний момент
+            return;
+        }
+        if (reqUi.name[0] || reqUi.aid[0] || reqUi.win[0]) { e.ui = (Ui *)Alloc(sizeof(Ui)); *e.ui = reqUi; }
+    }
     Add(e);
 }
 namespace MacroNs {
@@ -6801,7 +6893,7 @@ static void Start(void) {
     EnterCriticalSection(&cs); nev = 0; LeaveCriticalSection(&cs);
     memset(downSet, 0, sizeof downSet); memset(skipUp, 0, sizeof skipUp);
     t0 = GetTickCount64(); pauseAcc = 0; paused = FALSE; GetCursorPos(&lastRec);
-    evReq = CreateEventW(NULL, FALSE, FALSE, NULL); evDone = CreateEventW(NULL, FALSE, FALSE, NULL);
+    evReq = CreateEventW(NULL, FALSE, FALSE, NULL); evDone = CreateEventW(NULL, FALSE, FALSE, NULL); reqWait = reqBusy = 0;
     stopF = 0; th = CreateThread(NULL, 0, Worker, NULL, 0, NULL);
     rec = TRUE;
     HANDLE u = CreateThread(NULL, 0, UiaThread, NULL, 0, NULL); if (u) CloseHandle(u);
@@ -6917,7 +7009,7 @@ static DWORD RunWait(wchar_t *cmd, const wchar_t *dir, DWORD timeout, const wcha
         if (poll && GetTickCount() - lastSay >= 8000) {
             lastSay = GetTickCount();
             WIN32_FILE_ATTRIBUTE_DATA fa; ULONGLONG sz = 0; if (GetFileAttributesExW(poll, GetFileExInfoStandard, &fa)) sz = ((ULONGLONG)fa.nFileSizeHigh << 32) | fa.nFileSizeLow;
-            wchar_t v[40], m[120]; if (total) wsprintfW(v, L"%d%%", (int)(sz * 100 / total)); else wsprintfW(v, L"%d МБ", (int)(sz >> 20));
+            wchar_t v[40], m[120]; if (total) wsprintfW(v, L"%d%%", (int)(sz * 100 / total)); else wsprintfW(v, Tr(L_VOICE_DLMB), (int)(sz >> 20));
             wsprintfW(m, Tr(L_VOICE_DLPROG), v); Say(m);
         }
     }
@@ -7733,9 +7825,20 @@ static void NavRun(void) {                                      // клавиш�
         for (int i = 0; i < g_nav[d] + (d == 0); i++) NavKey(VK_DOWN);
     }
 }
-static BOOL KeepMenu(int c) {                                   // настройки: меню остаётся открытым после выбора
-    return (c >= 899 && c < 964) || (c >= 64 && c < 67) || (c >= 21 && c < 58 && c != 25) || (c >= 700 && c < 760) || c == 60 || c == 62 || (c >= 600 && c < 700 && c != 601) || (c >= 300 && c < 500 && (c - 300) % 8 < 4) || (c >= TM_ID + 12 && c < TM_ID + 40);
-}
+/* Номера пунктов меню трея. Свои пункты трея: 1..19 и 70..79. Подменю модулей - свои диапазоны в kMenuMods (не пересекаться!).
+   keep: после выбора меню открывается снова на том же пункте (переключатели настроек). */
+static BOOL KeepAll(int) { return TRUE; }
+static BOOL KeepNone(int) { return FALSE; }
+static BOOL RecKeep(int c) { return c >= 300 ? (c - 300) % 8 < 4 : c != 25 && c != 61 && c != 63; }   // папки и окно настройки оверлеев - закрыть меню
+static BOOL VolKeep(int c) { return c != 601; }
+static BOOL TmKeep(int c) { return c >= TM_ID + 12 && c < TM_ID + 40; }
+static void HidCmd(int c) { ShowHidden(c - 200); }
+static const struct MenuMod { int lo, hi; void (*cmd)(int); BOOL (*keep)(int); } kMenuMods[] = {
+    {20, 67, RecNs::Cmd, RecKeep}, {300, 500, RecNs::Cmd, RecKeep},                // запись: настройки, микрофоны 30..47, мониторы 50..57, оверлеи
+    {200, 232, HidCmd, KeepNone},                                                   // скрытые окна (g_hid[32])
+    {600, 700, VolNs::Cmd, VolKeep}, {700, 760, DupNs::Cmd, KeepAll},
+    {899, 964, SchCmd, KeepAll}, {TM_ID, TM_ID + 80, TmCommand, TmKeep},
+};
 static void TrayMenuAt(POINT pt, int again);
 static void TrayMenu(void) { POINT pt; GetCursorPos(&pt); TrayMenuAt(pt, 0); }
 static void TrayMenuAt(POINT pt, int again) {
@@ -7745,7 +7848,7 @@ static void TrayMenuAt(POINT pt, int again) {
     AddHk(m, MF_STRING, 3, Tr(L_TRAY_LAUNCH), A_LAUNCH);
     AddHk(m, MF_STRING, 8, Tr(L_TRAY_SCR), A_SCRIPTS);
     AddHk(m, MF_STRING, 19, Tr(L_TRAY_RECS), A_RECORDS);
-    AddHk(m, MF_STRING | (MacroNs::rec ? MF_CHECKED : 0), 20, Tr(L_TRAY_MACRO), A_MACRO);
+    AddHk(m, MF_STRING | (MacroNs::rec ? MF_CHECKED : 0), 72, Tr(L_TRAY_MACRO), A_MACRO);
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AddHk(m, MF_STRING, 4, Tr(L_TRAY_CAM), A_WEBCAM);
     AddHk(m, MF_STRING, 5, Tr(L_TRAY_DRAW), A_DRAW);
@@ -7789,13 +7892,17 @@ static void TrayMenuAt(POINT pt, int again) {
     SetForegroundWindow(g_hwnd);
     g_navN = 0;
     if (again && FindPath(m, again, 0) && g_navN) SetTimer(g_hwnd, TID_NAV, 40, NULL);
+    g_menuOpen = TRUE;
     int c = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, g_hwnd, NULL);
+    g_menuOpen = FALSE;
     KillTimer(g_hwnd, TID_NAV);
     PostMessageW(g_hwnd, WM_NULL, 0, 0);
     DestroyMenu(m);
-    if (KeepMenu(c)) {
-        if (c >= 899 && c < 964) SchCmd(c); else if (c >= TM_ID) TmCommand(c); else if (c >= 700 && c < 760) DupNs::Cmd(c); else if (c >= 600) VolNs::Cmd(c); else RecNs::Cmd(c);
-        TrayMenuAt(pt, c);
+    for (int i = 0; i < (int)(sizeof kMenuMods / sizeof kMenuMods[0]); i++) {
+        const MenuMod *r = &kMenuMods[i];
+        if (c < r->lo || c >= r->hi) continue;
+        r->cmd(c);
+        if (r->keep(c)) TrayMenuAt(pt, c);
         return;
     }
     switch (c) {
@@ -7804,7 +7911,7 @@ static void TrayMenuAt(POINT pt, int again) {
     case 3: PopupOpen(PM_LAUNCH); break;
     case 8: PopupOpen(PM_SCRIPTS); break;
     case 19: PopupOpen(PM_RECORDS); break;
-    case 20: Sleep(150); MacroToggle(0); break;
+    case 72: Sleep(150); MacroToggle(0); break;
     case 4: CamOpen(); break;
     case 5: Sleep(150); DrawOpen(); break;      // пауза: меню успевает исчезнуть с экрана
     case 6: Sleep(150); PickerOpen(); break;
@@ -7829,16 +7936,24 @@ static void TrayMenuAt(POINT pt, int again) {
         break;
     }
     case 16: DestroyWindow(g_hwnd); break;
-    default:
-        if ((c >= 20 && c < 70) || (c >= 300 && c < 500)) RecNs::Cmd(c);
-        else if (c >= 600 && c < 700) VolNs::Cmd(c);
-        else if (c >= 700 && c < 760) DupNs::Cmd(c);
-        else if (c >= TM_ID && c < TM_ID + 80) TmCommand(c);
-        else if (c >= 200 && c < 200 + 32) ShowHidden(c - 200);
     }
 }
 
 /* ---------- main window ---------- */
+// Команды пульта, голоса и вывод .dpy шлют клавиши: пока открыт диалог правки или меню трея, они ждут в очереди (проверка раз в 0,3 с).
+static struct { UINT msg; wchar_t *t; } g_defer[8]; static int g_ndefer;
+static BOOL Defer(UINT msg, wchar_t *t) {                                             // TRUE - отложено (t теперь у очереди)
+    if (!g_modal && !g_menuOpen) return FALSE;
+    if (g_ndefer < 8) { g_defer[g_ndefer].msg = msg; g_defer[g_ndefer].t = t; g_ndefer++; } else Free(t);
+    SetTimer(g_hwnd, TID_DEFER, 300, NULL);
+    return TRUE;
+}
+static void OnDeferTimer(void) {
+    if (g_modal || g_menuOpen) return;
+    KillTimer(g_hwnd, TID_DEFER);
+    for (int i = 0; i < g_ndefer; i++) PostMessageW(g_hwnd, g_defer[i].msg, 0, (LPARAM)g_defer[i].t);
+    g_ndefer = 0;
+}
 static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
     case WM_COPYDATA: {                                                                // DKeys.exe do "действие"
@@ -7855,12 +7970,12 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     case WM_APP_KEY: PopupKey((UINT)w, (UINT)(l >> 16) & 0xFF, (WCHAR)(l & 0xFFFF)); return 0;
     case WM_APP_CLOSE: PopupClose(); return 0;
-    case WM_APP_VCMD: { wchar_t *t = (wchar_t *)l; if (t) { VoiceCmd(t); Free(t); } return 0; }
+    case WM_APP_VCMD: { wchar_t *t = (wchar_t *)l; if (t && !Defer(m, t)) { VoiceCmd(t); Free(t); } return 0; }
     case WM_APP_PCLICK: PopupChoose((int)w); return 0;
     case WM_APP_PTAB: PopupTab((int)w); return 0;
     case WM_APP_PIMG: PopupImg((int)w); return 0;
-    case WM_APP_SPEC: { wchar_t *t = (wchar_t *)l; if (t) { g_noGrab = TRUE; ExecSpec(t); g_noGrab = FALSE; Free(t); } return 0; }
-    case WM_APP_DPY: { wchar_t *t = (wchar_t *)l; if (t) { PasteText(t); Free(t); } return 0; }
+    case WM_APP_SPEC: { wchar_t *t = (wchar_t *)l; if (t && !Defer(m, t)) { g_noGrab = TRUE; ExecSpec(t); g_noGrab = FALSE; Free(t); } return 0; }
+    case WM_APP_DPY: { wchar_t *t = (wchar_t *)l; if (t && !Defer(m, t)) { PasteText(t); Free(t); } return 0; }
     case WM_APP_MACRO: { wchar_t *t = (wchar_t *)l; if (t) { Toast(t); Free(t); } return 0; }
     case WM_TRAY:
         if (l == WM_LBUTTONUP) { if (g_hwndPop) PopupClose(); else PopupOpen(PM_BUF); }
@@ -7875,14 +7990,15 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         else if (w == TID_NAV) { KillTimer(h, TID_NAV); NavRun(); }
         else if (w == TID_SCHED) SchTick();
         else if (w == TID_SELCOPY) OnSelCopy();
+        else if (w == TID_DEFER) OnDeferTimer();
         return 0;
     case WM_CLIPBOARDUPDATE: OnClip(); return 0;
     case WM_APP_RENDERED: if (g_psPending) SetTimer(g_hwnd, TID_RESTORE, g_pasteDelay, NULL); return 0;
     case 0x2B1:                                                                       // WM_WTSSESSION_CHANGE
-        if (w == 7) { g_locked = TRUE; SchEvent(SE_LOCK); } else if (w == 8) { g_locked = FALSE; SchEvent(SE_UNLOCK); }
+        if (w == 7) { g_locked = TRUE; SchEvent(SE_LOCK); } else if (w == 8) { g_locked = FALSE; PostThreadMessageW(g_hookTid, TM_REHOOK, 0, 0); SchEvent(SE_UNLOCK); }   // хуки могли снять, пока экран был заблокирован
         return 0;
     case WM_POWERBROADCAST:
-        if (w == 0x12 || w == 7) { static DWORD wk; if (!wk || GetTickCount() - wk > 10000) { wk = GetTickCount() | 1; SchEvent(SE_WAKE); } }   // выход из сна (приходит дважды)
+        if (w == 0x12 || w == 7) { static DWORD wk; if (!wk || GetTickCount() - wk > 10000) { wk = GetTickCount() | 1; PostThreadMessageW(g_hookTid, TM_REHOOK, 0, 0); SchEvent(SE_WAKE); } }   // выход из сна (приходит дважды); хуки - заново
         else if (w == 0xA) {
             SYSTEM_POWER_STATUS sp;
             if (GetSystemPowerStatus(&sp) && sp.ACLineStatus != 255) { int ac = sp.ACLineStatus == 1; if (ac != g_acPrev) { int was = g_acPrev; g_acPrev = ac; if (was != -1) SchEvent(ac ? SE_AC : SE_BATT); } }
