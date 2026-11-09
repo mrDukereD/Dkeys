@@ -22,6 +22,7 @@
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <endpointvolume.h>
+#include <uiautomation.h>
 #include <propidl.h>
 DEFINE_GUID(CLSID_MMDeviceEnumerator, 0xBCDE0395, 0xE52F, 0x467C, 0x8E, 0x3D, 0xC4, 0x57, 0x92, 0x91, 0x69, 0x2E);
 DEFINE_GUID(IID_IMMDeviceEnumerator, 0xA95664D2, 0x9614, 0x4F35, 0xA7, 0x46, 0xDE, 0x8D, 0xB6, 0x36, 0x17, 0xE6);
@@ -68,10 +69,10 @@ void *memmove(void *d, const void *s, size_t n) {
 
 #define DKMARK ((ULONG_PTR)0x444B4559)
 enum { DM_CTRL = 1, DM_ALT = 2, DM_SHIFT = 4, DM_WIN = 8 };
-enum { A_NONE, A_COPY, A_PASTE, A_BUFFER, A_HIST, A_LAUNCH, A_RUN, A_ADMIN, A_PY, A_PYRUN, A_TOPMOST, A_TOTRAY, A_LAYOUT, A_PAUSE, A_WEBCAM, A_STOPWATCH, A_TIMER, A_DRAW, A_PICKER, A_RECORD, A_SCRIPTS, A_VOL, A_VOLSET };
-enum { PM_BUF, PM_HIST, PM_LAUNCH, PM_SCRIPTS };
+enum { A_NONE, A_COPY, A_PASTE, A_BUFFER, A_HIST, A_LAUNCH, A_RUN, A_ADMIN, A_PY, A_PYRUN, A_TOPMOST, A_TOTRAY, A_LAYOUT, A_PAUSE, A_WEBCAM, A_STOPWATCH, A_TIMER, A_DRAW, A_PICKER, A_RECORD, A_SCRIPTS, A_VOL, A_VOLSET, A_DUP, A_MACRO, A_RECORDS };
+enum { PM_BUF, PM_HIST, PM_LAUNCH, PM_SCRIPTS, PM_RECORDS };
 enum {
-    WM_APP_HOT = WM_APP + 1, WM_APP_KEY, WM_APP_CLOSE, WM_APP_PCLICK, WM_APP_PTAB, WM_APP_PIMG, WM_TRAY, WM_APP_RENDERED,
+    WM_APP_HOT = WM_APP + 1, WM_APP_KEY, WM_APP_CLOSE, WM_APP_PCLICK, WM_APP_PTAB, WM_APP_PIMG, WM_APP_MACRO, WM_TRAY, WM_APP_RENDERED,
     TM_MOUSE = WM_APP + 20, TM_REHOOK
 };
 #define TID_RESTORE 1
@@ -101,7 +102,7 @@ static HANDLE g_heap;
 static HINSTANCE g_inst;
 static HWND g_hwnd, g_hwndPop, g_hwndToast, g_popFg; static int g_popGrace;
 static HWND g_hwndClip;   // владелец буфера обмена: окно потока хука, который всегда качает сообщения
-static wchar_t g_dir[MAX_PATH], g_ini[MAX_PATH], g_memDir[MAX_PATH], g_pyDir[MAX_PATH], g_runDir[MAX_PATH], g_exe[MAX_PATH];
+static wchar_t g_dir[MAX_PATH], g_ini[MAX_PATH], g_memDir[MAX_PATH], g_pyDir[MAX_PATH], g_runDir[MAX_PATH], g_recDir[MAX_PATH], g_exe[MAX_PATH];
 static volatile LONG g_modBits, g_popup, g_paused, g_modal;
 static volatile LONG g_caps;
 static DWORD g_hookTid;
@@ -110,6 +111,7 @@ static BOOL g_elev;
 static HICON g_icon, g_iconRec; static BOOL g_recDot;
 static int g_mouseSlow = 4;   // [General] MouseSlow: во сколько раз замедлять мышь при зажатом Alt в пипетке (0/1 - выкл)
 static volatile LONG g_pickActive;
+static int g_mHover = 300, g_mPos[2] = {-99999, -99999};              // запись действий: порог остановки курсора (мс), позиция кнопки
 static BOOL g_rNoTb = TRUE, g_rCur = TRUE; static int g_rFps = 30, g_rPos[2] = {-99999, -99999}, g_rScr;   // g_rScr: 0 - монитор с кнопкой, -1 - весь рабочий стол, N - монитор N
 static BOOL g_rDummy;
 struct OvCfg { wchar_t stem[64]; int mode, x, y, sc; };      // mode: 0 выкл, 1 на видео, 2 отдельный файл; x,y - доля кадра в ‰; sc - масштаб в %
@@ -117,7 +119,7 @@ static OvCfg g_ovc[24]; static int g_novc; static BOOL g_rPwd = TRUE, g_rShow;
 static void RecShowSync(void);
 static volatile LONG g_vOn; static int g_vLim = 50, g_vCeil, g_vBoost; static wchar_t g_vDev[80];     // стабильная громкость: вкл, порог пика %, потолок громкости %, подтяжка тихого %, устройство
 static void VolToggle(void); static void VolOpen(void); static void VolSync(void);
-static volatile LONG g_dOn; static wchar_t g_dSrc[80], g_dDst[80]; static int g_dLat = 20; static void DupSync(void);      // дублирование звука: вкл, источник (пусто - по умолчанию), приёмник
+static volatile LONG g_dOn; static wchar_t g_dSrc[80], g_dDst[80]; static int g_dLat = 20; static void DupSync(void), DupToggle(void), MacroToggle(DWORD mods);      // дублирование звука: вкл, источник (пусто - по умолчанию), приёмник
 static volatile BYTE g_ioKey[65536], g_ioMouse[8]; static volatile DWORD g_ioHit[65536], g_ioMHit[8]; static volatile DWORD g_ioWheelT; static volatile int g_ioWheelD;   // состояние ввода для оверлея (из хуков)
 static OvCfg *OvCfgGet(const wchar_t *stem, BOOL create) {
     for (int i = 0; i < g_novc; i++) if (!lstrcmpiW(g_ovc[i].stem, stem)) return &g_ovc[i];
@@ -134,6 +136,7 @@ static void CamRecSync(void); static void CamRecToggle(const wchar_t *n); static
 static wchar_t g_cfgCamDev[80]; static int g_cfgCamW, g_cfgCamH, g_cfgWin[4];   // [Camera] в ini: камера, разрешение, x,y,ширина,высота окна
 static DWORD g_ignoreSeq, g_ownSeq;
 
+static wchar_t g_editor[MAX_PATH];                                                      // [General] Editor: свой редактор (иначе Notepad++ / Блокнот)
 static int g_histOn, g_histMax = 50, g_pasteDelay = 300, g_copyTimeout = 600, g_pyPause = 1, g_toasts = 1;
 static wchar_t g_python[MAX_PATH] = L"python.exe";
 
@@ -171,7 +174,9 @@ X(L_DUP_ON, "dup.menu_on", L"Дублирование") \
 X(L_DUP_SRC, "dup.src", L"Источник") \
 X(L_DUP_DST, "dup.dst", L"Приёмник") \
 X(L_DUP_DEF, "dup.default", L"Устройство по умолчанию") \
-X(L_DUP_NODST, "dup.nodst", L"Выберите приёмник в меню «Дублирование звука»") \
+X(L_DUP_TOASTON, "dup.toast_on", L"Дублирование звука: включено") \
+X(L_DUP_TOASTOFF, "dup.toast_off", L"Дублирование звука: выключено") \
+X(L_DUP_NODST,"dup.nodst", L"Выберите приёмник в меню «Дублирование звука»") \
 X(L_VOL_SET, "vol.set", L"Окно настройки порога…") \
 X(L_VOL_DEV, "vol.device", L"Устройство вывода") \
 X(L_VOL_DEVDEF, "vol.device_def", L"По умолчанию") \
@@ -222,15 +227,33 @@ X(L_TRAY_INI, "tray.open_ini", L"Открыть DKeys.ini") \
 X(L_TRAY_MEM, "tray.open_memory", L"Открыть папку memory") \
 X(L_TRAY_RELOAD, "tray.reload", L"Перечитать настройки") \
 X(L_TRAY_EXIT, "tray.exit", L"Выход") \
+X(L_TRAY_ABOUT, "tray.about", L"О программе") \
+X(L_ABOUT_TXT, "about.title", L"DKeys %s — твои самые горячие клавиши!") \
+X(L_ABOUT_BODY, "about.body", L"Помнит всё, что ты копировал, и не осуждает. Набрал «ghbdtn» вместо «привет» — починит. А главное — на хоткей можно повесить что угодно: запуск программы или скрипта, рисование прямо на экране, захват цвета пикселя, запись видео, запись и повтор своих действий мышью и клавиатурой, веб-камеру, секундомер и таймер, укрощение громких звуков и дублирование звука на второе устройство.") \
+X(L_ABOUT_AUTH, "about.authors", L"Придумал DukereD, написал Claude. Ни одна клавиша не пострадала.") \
+X(L_ABOUT_ASK, "about.ask", L"Открыть страницу проекта на GitHub?") \
 X(L_TRAY_TIPADM, "tray.tip_admin", L"DKeys (администратор)") \
 X(L_TAB_HIST, "popup.tab_history", L"История") \
 X(L_TAB_LAUNCH, "popup.tab_launch", L"Запуск") \
 X(L_TAB_SCR, "popup.tab_scripts", L"Скрипты") \
-X(L_INFO_SCR, "popup.info_scripts2", L"T - tmp.py, 1-9 - остальные, Enter - запустить   Shift+Enter - папка   Tab - режим   Esc - закрыть") \
+X(L_TAB_REC, "popup.tab_records", L"Записи") \
+X(L_INFO_REC, "popup.info_records", L"Enter - запустить   Ctrl+Enter - править   Shift+Enter - папка   Tab - режим   Esc - закрыть") \
+X(L_EMPTY_REC, "popup.records_empty", L"В папке records нет записей. Win+Shift+M - записать действия клавиатуры и мыши") \
+X(L_TRAY_MACRO, "tray.macro", L"Запись действий") \
+X(L_TRAY_RECS, "tray.records", L"Записи…") \
+X(L_M_START, "macro.start", L"Запись действий пошла: повторное нажатие или кнопка - стоп") \
+X(L_M_SAVED, "macro.saved", L"Записано: records\\%s") \
+X(L_M_EMPTY, "macro.empty", L"Запись пуста: ни одного действия") \
+X(L_M_STOPPED, "macro.stopped", L"Воспроизведение остановлено") \
+X(L_M_UIA, "macro.uia_install", L"Ставлю python-пакет uiautomation (для клика по кнопке)…") \
+X(L_M_UIAOK, "macro.uia_ok", L"uiautomation установлен") \
+X(L_M_UIAFAIL, "macro.uia_fail", L"Не удалось установить uiautomation: pip install uiautomation") \
+X(L_NOEDIT, "toast.not_editable", L"Редактировать можно скрипты и текстовые файлы") \
+X(L_INFO_SCR, "popup.info_scripts3", L"T - tmp.py, 1-9 - остальные, Enter - запустить   Ctrl+Enter - править   Shift+Enter - папка   Tab - режим   Esc - закрыть") \
 X(L_EMPTY_SCR, "popup.scripts_empty3", L"В папке scripts нет скриптов (*.py, *.bat, *.ps1)") \
 X(L_TRAY_SCR, "tray.scripts", L"Скрипты…") \
 X(L_SEARCH, "popup.search", L"Введите для поиска…") \
-X(L_INFO_LAUNCH, "popup.info_launch2", L"Enter - запустить   Shift+Enter - папка   Tab - режим   Esc - закрыть") \
+X(L_INFO_LAUNCH, "popup.info_launch3", L"Enter - запустить   Ctrl+Enter - править скрипт   Shift+Enter - папка   Tab - режим   Esc - закрыть") \
 X(L_INFO_BUF, "popup.info_buffer2", L"%d симв.   цифра/Enter - вставить   Ctrl+цифра - картинка   Del - удалить   F2 - правка   Ins - новая") \
 X(L_INFO_HIST, "popup.info_history", L"%d симв.   Enter - вставить   Del - удалить   F2 - правка   Ctrl+1..9 - в буфер") \
 X(L_EMPTY_NF, "popup.not_found", L"Ничего не найдено") \
@@ -638,6 +661,11 @@ Language=ru
 ;     record                    запись экрана в mp4 (секции [Record] и [Overlay])
 ;     volume                    стабильная громкость вкл/выкл (секция [Volume])
 ;     volumeset                 окно настройки порога громкости
+;     duplicate                 дублирование звука на второе устройство вкл/выкл (секция [Duplicate])
+;     macro                     запись действий клавиатуры и мыши: 1-е нажатие - кнопка на экране, 2-е - старт, 3-е - стоп (или кнопка: клик - старт/пауза, Ctrl+клик - стоп);
+;                               результат - скрипт records\rec_*.py (настройки скорости, повторов и клика по кнопке - в начале скрипта). Пока скрипт воспроизводится, это же
+;                               действие его останавливает. Секция [Macro]: HoverMs - через сколько мс неподвижности записывать положение курсора
+;     records                   меню записей (папка records)
 ; Win+цифры буферов перекрывают запуск закреплённых программ на панели задач.
 ; В меню буфера: Del - удалить, F2 - править, Ins - новая запись, Ctrl+Вверх/Вниз - переставить,
 ; Влево/Вправо или Win+цифра - другой буфер, Ctrl+цифра - скопировать запись в буфер, Tab - история/запуск.
@@ -665,6 +693,9 @@ Win+Tilde=launcher
 Win+P=scripts
 Win+A=volume
 Win+Shift+A=volumeset
+Win+Shift+D=duplicate
+Win+Shift+M=macro
+Win+Shift+N=records
 Ctrl+Tilde=layout
 Win+C=run calc.exe
 Win+O=topmost
@@ -677,6 +708,10 @@ Win+Shift+C=colorpicker
 Win+Shift+R=record
 )INI";
 static const char *kIni2 = u8R"INI(
+[Macro]
+; Запись действий (действие macro). HoverMs - сколько мс курсор должен стоять на месте, чтобы это положение попало в запись (100-5000)
+HoverMs=300
+
 [Scripts]
 ; Скрипты (вкладка "Скрипты" и хоткеи). Форматы строки:
 ;   Win+W=скрипт [аргументы] [@ рабочая папка]            хоткей, название - из первой строки скрипта
@@ -929,7 +964,7 @@ static BOOL ParseAction(const wchar_t *v, Bind *b) {
         {L"copy", A_COPY, 1}, {L"paste", A_PASTE, 3}, {L"buffer", A_BUFFER, 4}, {L"slots", A_BUFFER, 4}, {L"layout", A_LAYOUT, 0}, {L"history", A_HIST, 0}, {L"launcher", A_LAUNCH, 0}, {L"scripts", A_SCRIPTS, 0},
         {L"run", A_RUN, 2}, {L"admin", A_ADMIN, 2}, {L"py", A_PY, 2}, {L"pyrun", A_PYRUN, 0}, {L"topmost", A_TOPMOST, 0},
         {L"totray", A_TOTRAY, 0}, {L"pause", A_PAUSE, 0}, {L"webcam", A_WEBCAM, 0}, {L"stopwatch", A_STOPWATCH, 0}, {L"timer", A_TIMER, 0}, {L"draw", A_DRAW, 0}, {L"record", A_RECORD, 0}, {L"colorpicker", A_PICKER, 0}, {L"picker", A_PICKER, 0},
-        {L"volume", A_VOL, 0}, {L"volumeset", A_VOLSET, 0},
+        {L"volume", A_VOL, 0}, {L"volumeset", A_VOLSET, 0}, {L"duplicate", A_DUP, 0}, {L"macro", A_MACRO, 0}, {L"records", A_RECORDS, 0},
     };
     for (int i = 0; i < (int)(sizeof T / sizeof T[0]); i++) {
         if (lstrcmpiW(name, T[i].n)) continue;
@@ -1005,6 +1040,7 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
         else if (!lstrcmpiW(k, L"Python")) { if (*v) lstrcpynW(g_python, v, MAX_PATH); }
         else if (!lstrcmpiW(k, L"PyRunPause")) g_pyPause = ToInt(v) != 0;
         else if (!lstrcmpiW(k, L"Toasts")) g_toasts = ToInt(v) != 0;
+        else if (!lstrcmpiW(k, L"Editor")) { lstrcpynW(g_editor, v, MAX_PATH); int n = lstrlenW(g_editor); if (n > 1 && g_editor[0] == L'"' && g_editor[n - 1] == L'"') { g_editor[n - 1] = 0; memmove(g_editor, g_editor + 1, n * sizeof(wchar_t)); } }
         else if (!lstrcmpiW(k, L"BufferSize")) { g_bufMax = ToInt(v); if (g_bufMax < 1) g_bufMax = 1; if (g_bufMax > 10) g_bufMax = 10; }
         else if (!lstrcmpiW(k, L"LayoutWord")) g_layoutWord = ToInt(v) != 0;
         else if (!lstrcmpiW(k, L"LayoutSwitch")) g_layoutSwitch = ToInt(v) != 0;
@@ -1055,6 +1091,9 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
             while (*q && g_tmNFav < 10) { int t = ToInt(q); if (t > 0) g_tmFav[g_tmNFav++] = t; while (*q && *q != L',') q++; if (*q) q++; }
         }
         else if (!lstrcmpiW(k, L"Pos")) { const wchar_t *q = v; g_tmPos[0] = ToInt(q); while (*q && *q != L',') q++; g_tmPos[1] = *q ? ToInt(q + 1) : 80; }
+    } else if (!lstrcmpiW(s, L"Macro")) {
+        if (!lstrcmpiW(k, L"HoverMs")) { g_mHover = ToInt(v); if (g_mHover < 100) g_mHover = 100; if (g_mHover > 5000) g_mHover = 5000; }
+        else if (!lstrcmpiW(k, L"Pos")) { const wchar_t *q = v; g_mPos[0] = ToInt(q); while (*q && *q != L',') q++; g_mPos[1] = *q ? ToInt(q + 1) : -99999; }
     } else if (!lstrcmpiW(s, L"Camera")) {
         if (!lstrcmpiW(k, L"Device")) lstrcpynW(g_cfgCamDev, v, 80);
         else if (!lstrcmpiW(k, L"Resolution")) {
@@ -1633,8 +1672,8 @@ struct Pal { COLORREF bg, hdr, fg, dim, sel, acc, bd; };
 static const Pal kDark = {RGB(32, 32, 32), RGB(40, 40, 40), RGB(230, 230, 230), RGB(140, 140, 140), RGB(38, 79, 120), RGB(90, 170, 250), RGB(85, 85, 85)};
 static const Pal kLight = {RGB(250, 250, 250), RGB(240, 240, 240), RGB(28, 28, 28), RGB(125, 125, 125), RGB(204, 228, 247), RGB(0, 95, 184), RGB(170, 170, 170)};
 // вкладки: 0..8 - буферы 1..9, 9 - история, 10 - запуск, 11 - скрипты (режим = номер - 8)
-#define NTABS 12
-#define kTabName(i) Tr((i) == 0 ? L_TAB_HIST : (i) == 1 ? L_TAB_LAUNCH : L_TAB_SCR)
+#define NTABS 13
+#define kTabName(i) Tr((i) == 0 ? L_TAB_HIST : (i) == 1 ? L_TAB_LAUNCH : (i) == 2 ? L_TAB_SCR : L_TAB_REC)
 
 static Row *g_rows; static int g_nrows;
 static wchar_t **g_scrNames; static int g_nscr;      // файлы вкладки "Скрипты" (ref строки - индекс сюда)
@@ -1717,11 +1756,11 @@ static void ScrName(const wchar_t *t, wchar_t *out, int cap, BOOL bat) {      //
         return;
     }
 }
-static wchar_t **ScrList(int *cnt) {                                                  // *.py, *.bat, *.ps1 по алфавиту, tmp.py первым
+static wchar_t **ScrList(int *cnt, const wchar_t *dir, int npat) {                   // *.py, *.bat, *.ps1 (в records - только *.py) по алфавиту, tmp.py первым
     static const wchar_t *kPat[3] = {L"*.py", L"*.bat", L"*.ps1"};
     wchar_t **a = NULL; int n = 0;
-    for (int k = 0; k < 3; k++) {
-        wchar_t pat[MAX_PATH]; lstrcpynW(pat, g_pyDir, MAX_PATH); Cat(pat, MAX_PATH, kPat[k]);
+    for (int k = 0; k < npat; k++) {
+        wchar_t pat[MAX_PATH]; lstrcpynW(pat, dir, MAX_PATH); Cat(pat, MAX_PATH, kPat[k]);
         WIN32_FIND_DATAW fd; HANDLE h = FindFirstFileW(pat, &fd);
         if (h == INVALID_HANDLE_VALUE) continue;
         do {
@@ -1845,8 +1884,8 @@ static void DedupRows(void) {                                                   
         }
     }
 }
-static void ScrRow(Row *r, const wchar_t *file, const wchar_t *label) {
-    wchar_t path[MAX_PATH]; lstrcpynW(path, g_pyDir, MAX_PATH); Cat(path, MAX_PATH, file);
+static void ScrRow(Row *r, const wchar_t *file, const wchar_t *label, const wchar_t *dir) {
+    wchar_t path[MAX_PATH]; lstrcpynW(path, dir, MAX_PATH); Cat(path, MAX_PATH, file);
     DWORD sz = 0; BYTE *raw = ReadAll(path, &sz);
     if (sz > 6000) sz = 6000;
     wchar_t *txt = raw ? FromUtf8((char *)raw, sz) : Dup(L"");
@@ -1857,11 +1896,12 @@ static void ScrRow(Row *r, const wchar_t *file, const wchar_t *label) {
 static void BuildRows(void) {
     FreeRows();
     wchar_t **sf = NULL; int ns = 0;
-    if (g_pmode == PM_SCRIPTS) { sf = ScrList(&ns); g_scrNames = sf; g_nscr = ns; }
+    if (g_pmode == PM_SCRIPTS) { sf = ScrList(&ns, g_pyDir, 3); g_scrNames = sf; g_nscr = ns; }
+    else if (g_pmode == PM_RECORDS) { sf = ScrList(&ns, g_recDir, 1); g_scrNames = sf; g_nscr = ns; }
     wchar_t **rf = NULL; int nr = 0;
     if (g_pmode == PM_LAUNCH) rf = RunList(&nr);                                       // запуск: строки из ini, затем файлы папки runs
     Row br[64]; int nb = (g_pmode == PM_LAUNCH || g_pmode == PM_SCRIPTS) ? BindRows(g_pmode == PM_SCRIPTS, br, 64) : 0;     // сначала программы из хоткеев ini
-    int n = g_pmode == PM_BUF ? g_bufN[g_curBuf] : g_pmode == PM_HIST ? g_nhist : g_pmode == PM_SCRIPTS ? nb + ns : nb + g_nlaunch + nr;
+    int n = g_pmode == PM_BUF ? g_bufN[g_curBuf] : g_pmode == PM_HIST ? g_nhist : (g_pmode == PM_SCRIPTS || g_pmode == PM_RECORDS) ? nb + ns : nb + g_nlaunch + nr;
     g_rows = (Row *)Alloc(sizeof(Row) * (n ? n : 1)); g_vis = (int *)Alloc(sizeof(int) * (n ? n : 1));
     for (int i = 0; i < n; i++) {
         Row *r = &g_rows[i];
@@ -1873,10 +1913,10 @@ static void BuildRows(void) {
             r->label = Dup(l); r->text = Dup(g_buf[g_curBuf][i]); r->title = Collapse(r->text);
         } else if (g_pmode == PM_HIST) {
             r->label = Dup(L""); r->text = Dup(g_hist[i]); r->title = Collapse(r->text);
-        } else if (g_pmode == PM_SCRIPTS) {
+        } else if (g_pmode == PM_SCRIPTS || g_pmode == PM_RECORDS) {
             BOOL tmp = !lstrcmpiW(sf[i], L"tmp.py"); int k = i - (ns && !lstrcmpiW(sf[0], L"tmp.py") ? 1 : 0);
             wchar_t lb[2] = {(wchar_t)(tmp ? L'T' : k < 9 ? L'1' + k : k == 9 ? L'0' : 0), 0};     // T - tmp.py, остальные по цифрам 1-9,0
-            ScrRow(r, sf[i], lb);
+            ScrRow(r, sf[i], lb, g_pmode == PM_RECORDS ? g_recDir : g_pyDir);
         } else if (i < g_nlaunch) {
             UINT lm, lk; const wchar_t *lc = LauncherSplit(g_launch[i].v, &lm, &lk);
             r->label = Dup(L""); r->title = Dup(g_launch[i].k); r->text = Dup(lc);
@@ -1931,7 +1971,7 @@ static void PopupPaint(HWND h) {
     if (g_nfilt) { SetTextColor(dc, P.fg); DrawTextW(dc, g_filt, g_nfilt, &fr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS); }
     else { SetTextColor(dc, P.dim); DrawTextW(dc, Tr(L_SEARCH), -1, &fr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS); }
     // rows
-    int y0 = g_hh, lw = g_pmode == PM_BUF || g_pmode == PM_SCRIPTS ? Sc(28) : 0;
+    int y0 = g_hh, lw = g_pmode == PM_BUF || g_pmode == PM_SCRIPTS || g_pmode == PM_RECORDS ? Sc(28) : 0;
     for (int i = 0; i < VISROWS; i++) {
         int vi = g_top + i; if (vi >= g_nvis) break;
         Row *r = &g_rows[g_vis[vi]];
@@ -1974,6 +2014,7 @@ static void PopupPaint(HWND h) {
         wchar_t info[128];
         if (g_pmode == PM_LAUNCH) lstrcpynW(info, Tr(L_INFO_LAUNCH), 128);
         else if (g_pmode == PM_SCRIPTS) lstrcpynW(info, Tr(L_INFO_SCR), 128);
+        else if (g_pmode == PM_RECORDS) lstrcpynW(info, Tr(L_INFO_REC), 128);
         else if (g_pmode == PM_BUF) wsprintfW(info, Tr(L_INFO_BUF), tl);
         else wsprintfW(info, Tr(L_INFO_HIST), tl);
         SetTextColor(dc, P.dim);
@@ -1982,7 +2023,7 @@ static void PopupPaint(HWND h) {
         SetTextColor(dc, P.dim);
         wchar_t e[96];
         if (g_pmode == PM_BUF) wsprintfW(e, g_nfilt ? Tr(L_EMPTY_NF) : Tr(L_EMPTY_BUF), g_curBuf, g_curBuf);
-        else lstrcpynW(e, g_nfilt ? Tr(L_EMPTY_NF) : g_pmode == PM_HIST ? Tr(L_EMPTY_HIST) : g_pmode == PM_SCRIPTS ? Tr(L_EMPTY_SCR) : Tr(L_EMPTY_NF), 96);
+        else lstrcpynW(e, g_nfilt ? Tr(L_EMPTY_NF) : g_pmode == PM_HIST ? Tr(L_EMPTY_HIST) : g_pmode == PM_SCRIPTS ? Tr(L_EMPTY_SCR) : g_pmode == PM_RECORDS ? Tr(L_EMPTY_REC) : Tr(L_EMPTY_NF), 96);
         DrawTextW(dc, e, -1, &pr, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
     }
     if (g_pmode == PM_BUF) {                                                              // миниатюры картинок: 10 в ряд
@@ -2236,10 +2277,18 @@ static wchar_t *BuildEnv(const wchar_t *sel, const wchar_t *selFile) {
     out[o] = 0;
     return out;
 }
-static void RunProc(wchar_t *cmd, const wchar_t *dir, wchar_t *env) {
+static HANDLE g_playProc;                                                              // запущенная запись (макрос): её можно остановить хоткеем записи
+static BOOL PlayStop(void) {
+    if (g_playProc && WaitForSingleObject(g_playProc, 0) == WAIT_TIMEOUT) { TerminateProcess(g_playProc, 1); CloseHandle(g_playProc); g_playProc = NULL; Toast(Tr(L_M_STOPPED)); return TRUE; }
+    if (g_playProc) { CloseHandle(g_playProc); g_playProc = NULL; }
+    return FALSE;
+}
+static BOOL InDir(const wchar_t *path, const wchar_t *dir) { int n = lstrlenW(dir); return n && lstrlenW(path) > n && CompareStringOrdinal(path, n, dir, n, TRUE) == CSTR_EQUAL; }
+static void RunProc(wchar_t *cmd, const wchar_t *dir, wchar_t *env, BOOL hidden = FALSE) {
     STARTUPINFOW si; PROCESS_INFORMATION pi; memset(&si, 0, sizeof si); si.cb = sizeof si;
-    if (CreateProcessW(NULL, cmd, NULL, NULL, FALSE, CREATE_UNICODE_ENVIRONMENT, env, (dir && *dir) ? dir : g_pyDir, &si, &pi)) {
-        CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+    if (CreateProcessW(NULL, cmd, NULL, NULL, FALSE, CREATE_UNICODE_ENVIRONMENT | (hidden ? CREATE_NO_WINDOW : 0), env, (dir && *dir) ? dir : g_pyDir, &si, &pi)) {
+        CloseHandle(pi.hThread);
+        if (hidden) { if (g_playProc) CloseHandle(g_playProc); g_playProc = pi.hProcess; } else CloseHandle(pi.hProcess);
     } else {
         wchar_t m[200]; wsprintfW(m, Tr(L_T_PYFAIL), g_python); Toast(m);
     }
@@ -2249,21 +2298,25 @@ static void RunPy(const wchar_t *arg, const wchar_t *dir, BOOL hold = FALSE) {  
     SplitCmd(s, &file, &par);
     wchar_t script[MAX_PATH];
     if (file[1] == L':' || file[0] == L'\\') lstrcpynW(script, file, MAX_PATH);
-    else { lstrcpynW(script, g_pyDir, MAX_PATH); Cat(script, MAX_PATH, file); }
-    wchar_t *sel = GrabSelection();
+    else {
+        lstrcpynW(script, g_pyDir, MAX_PATH); Cat(script, MAX_PATH, file);
+        if (GetFileAttributesW(script) == INVALID_FILE_ATTRIBUTES) { wchar_t t2[MAX_PATH]; lstrcpynW(t2, g_recDir, MAX_PATH); Cat(t2, MAX_PATH, file); if (GetFileAttributesW(t2) != INVALID_FILE_ATTRIBUTES) lstrcpyW(script, t2); }
+    }
+    BOOL mac = EndsI(script, L".py") && InDir(script, g_recDir);                       // запись (макрос): без окна консоли, чтобы фокус остался в целевом окне
+    wchar_t *sel = mac ? NULL : GrabSelection();
     wchar_t tmp[MAX_PATH]; GetTempPathW(MAX_PATH, tmp); Cat(tmp, MAX_PATH, L"dkeys_sel.txt");
     if (sel) WriteText(tmp, sel);
     wchar_t *env = BuildEnv(sel, sel ? tmp : NULL);
     Buf c = {0};
     int kind = EndsI(script, L".ps1") ? 2 : (EndsI(script, L".bat") || EndsI(script, L".cmd")) ? 1 : 0;      // 0 Python, 1 bat/cmd (через cmd), 2 PowerShell
-    BOOL pz = hold && g_pyPause;
+    BOOL pz = hold && g_pyPause && !mac;
     if (pz || kind == 1) BufAdd(&c, L"cmd.exe /d /c \"");
     if (kind == 1) { BufAdd(&c, L"\""); BufAdd(&c, script); BufAdd(&c, L"\""); }
     else if (kind == 2) { BufAdd(&c, L"\"powershell.exe\" -NoProfile -ExecutionPolicy Bypass -File \""); BufAdd(&c, script); BufAdd(&c, L"\""); }
     else { BufAdd(&c, L"\""); BufAdd(&c, g_python); BufAdd(&c, L"\" \""); BufAdd(&c, script); BufAdd(&c, L"\""); }
     if (*par) { BufAdd(&c, L" "); BufAdd(&c, par); }
     if (pz) BufAdd(&c, L" & pause\""); else if (kind == 1) BufAdd(&c, L"\"");
-    RunProc(c.p, dir, env);
+    RunProc(c.p, dir, env, mac);
     Free(c.p); Free(env); Free(sel); Free(s);
 }
 static void RunPySelection(void) {
@@ -2490,6 +2543,9 @@ static void ExecBind(const Bind *b) {
     case A_RECORD: RecOpen(); break;
     case A_VOL: VolToggle(); break;
     case A_VOLSET: VolOpen(); break;
+    case A_DUP: DupToggle(); break;
+    case A_MACRO: MacroToggle(b->mods); break;
+    case A_RECORDS: OpenPopup(PM_RECORDS, 0); break;
     case A_PAUSE: InterlockedExchange(&g_paused, !g_paused); Toast(g_paused ? Tr(L_T_PAUSED) : Tr(L_T_WORKING)); break;
     }
 }
@@ -2509,13 +2565,14 @@ static void PopupChoose(int vi) {
     if (vi < 0 || vi >= g_nvis) return;
     Row *r = &g_rows[g_vis[vi]];
     int mode = g_pmode; BOOL isRun = mode == PM_LAUNCH && !r->act && r->ref >= g_nlaunch;
-    wchar_t *text = Dup(mode == PM_SCRIPTS && !r->act ? g_scrNames[r->ref] : r->text);
+    wchar_t *text = Dup((mode == PM_SCRIPTS || mode == PM_RECORDS) && !r->act ? g_scrNames[r->ref] : r->text);
     int bact = r->act; wchar_t *bdir = r->dir ? Dup(r->dir) : NULL;
     PopupClose();
     if (bact) { Bind b; memset(&b, 0, sizeof b); b.act = bact; b.arg = text; b.dir = bdir; ExecBind(&b); Free(bdir); Free(text); return; }
     if (isRun) RunFile(text);
     else if (mode == PM_LAUNCH) ExecSpec(text);
     else if (mode == PM_SCRIPTS) { wchar_t *q = (wchar_t *)Alloc((lstrlenW(text) + 3) * sizeof(wchar_t)); wsprintfW(q, L"\"%s\"", text); RunPy(q, NULL, TRUE); Free(q); }
+    else if (mode == PM_RECORDS) { wchar_t *q = (wchar_t *)Alloc((lstrlenW(text) + lstrlenW(g_recDir) + 3) * sizeof(wchar_t)); wsprintfW(q, L"\"%s%s\"", g_recDir, text); RunPy(q, NULL, FALSE); Free(q); }
     else PasteText(text);
     Free(text);
 }
@@ -2529,30 +2586,59 @@ static BOOL FindTarget(const wchar_t *cmd, const wchar_t *dir, BOOL script, wcha
     wchar_t t[MAX_PATH];
     if (isAbs) { lstrcpynW(out, ex, MAX_PATH); ok = GetFileAttributesW(out) != INVALID_FILE_ATTRIBUTES; }
     else {
-        const wchar_t *bases[3] = {dir && *dir ? dir : NULL, g_pyDir, g_runDir};
-        for (int i = 0; i < 3 && !ok; i++) if (bases[i]) { lstrcpynW(t, bases[i], MAX_PATH); { int l = lstrlenW(t); if (l && t[l - 1] != L'\\') Cat(t, MAX_PATH, L"\\"); } Cat(t, MAX_PATH, ex); if (GetFileAttributesW(t) != INVALID_FILE_ATTRIBUTES) { lstrcpynW(out, t, MAX_PATH); ok = TRUE; } }
+        const wchar_t *bases[4] = {dir && *dir ? dir : NULL, g_pyDir, g_runDir, g_recDir};
+        for (int i = 0; i < 4 && !ok; i++) if (bases[i]) { lstrcpynW(t, bases[i], MAX_PATH); { int l = lstrlenW(t); if (l && t[l - 1] != L'\\') Cat(t, MAX_PATH, L"\\"); } Cat(t, MAX_PATH, ex); if (GetFileAttributesW(t) != INVALID_FILE_ATTRIBUTES) { lstrcpynW(out, t, MAX_PATH); ok = TRUE; } }
         if (!ok) { wchar_t *fp; if (SearchPathW(NULL, ex, L".exe", MAX_PATH, t, &fp)) { lstrcpynW(out, t, MAX_PATH); ok = TRUE; } }
     }
     Free(s);
     if (!ok && script) return FindTarget(cmd, dir, FALSE, out);                       // скрипта нет - показываем сам интерпретатор
     return ok;
 }
-static void PopupReveal(void) {                                                       // Shift+Enter: показать файл программы/скрипта в проводнике
-    if (g_nvis <= 0 || (g_pmode != PM_LAUNCH && g_pmode != PM_SCRIPTS)) return;
-    Row *r = &g_rows[g_vis[g_sel]];
-    wchar_t path[MAX_PATH]; path[0] = 0; BOOL ok = FALSE;
+static BOOL NppPath(wchar_t *out) {                                                   // Notepad++, если установлен
+    static wchar_t cache[MAX_PATH]; static int st;                                  // 0 - не искали, 1 - нашли, 2 - нет
+    if (!st) {
+        st = 2; wchar_t t[MAX_PATH]; DWORD n = sizeof t;
+        if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\notepad++.exe", NULL, RRF_RT_REG_SZ, NULL, t, &n) == ERROR_SUCCESS && GetFileAttributesW(t) != INVALID_FILE_ATTRIBUTES) { lstrcpynW(cache, t, MAX_PATH); st = 1; }
+        static const wchar_t *kEnv[3] = {L"%ProgramFiles%\\Notepad++\\notepad++.exe", L"%ProgramFiles(x86)%\\Notepad++\\notepad++.exe", L"%LOCALAPPDATA%\\Programs\\Notepad++\\notepad++.exe"};
+        for (int i = 0; i < 3 && st == 2; i++) { ExpandEnvironmentStringsW(kEnv[i], t, MAX_PATH); if (GetFileAttributesW(t) != INVALID_FILE_ATTRIBUTES) { lstrcpynW(cache, t, MAX_PATH); st = 1; } }
+    }
+    if (st != 1) return FALSE;
+    lstrcpynW(out, cache, MAX_PATH); return TRUE;
+}
+static void OpenEditor(const wchar_t *path) {                                         // править файл: Notepad++, иначе Блокнот
+    wchar_t np[MAX_PATH], a[MAX_PATH + 4];
+    wsprintfW(a, L"\"%s\"", path);
+    if (g_editor[0] && GetFileAttributesW(g_editor) != INVALID_FILE_ATTRIBUTES) ShellExecuteW(NULL, NULL, g_editor, a, NULL, SW_SHOWNORMAL);
+    else if (NppPath(np)) ShellExecuteW(NULL, NULL, np, a, NULL, SW_SHOWNORMAL);
+    else ShellExecuteW(NULL, NULL, L"notepad.exe", a, NULL, SW_SHOWNORMAL);
+}
+static BOOL RowPath(wchar_t *path) {                                                  // файл выбранной строки: скрипт, запись, файл runs или цель команды
+    path[0] = 0;
+    if (g_nvis <= 0 || (g_pmode != PM_LAUNCH && g_pmode != PM_SCRIPTS && g_pmode != PM_RECORDS)) return FALSE;
+    Row *r = &g_rows[g_vis[g_sel]]; BOOL ok = FALSE;
     if (r->act) ok = FindTarget(r->text, r->act == A_PY ? NULL : r->dir, r->act != A_PY && IsScriptCmd(r->text), path);
-    else if (g_pmode == PM_SCRIPTS) { lstrcpynW(path, g_pyDir, MAX_PATH); Cat(path, MAX_PATH, g_scrNames[r->ref]); ok = TRUE; }
+    else if (g_pmode == PM_SCRIPTS || g_pmode == PM_RECORDS) { lstrcpynW(path, g_pmode == PM_RECORDS ? g_recDir : g_pyDir, MAX_PATH); Cat(path, MAX_PATH, g_scrNames[r->ref]); ok = TRUE; }
     else if (r->ref >= g_nlaunch) { lstrcpynW(path, r->text, MAX_PATH); ok = TRUE; }
     else {
         Bind b; memset(&b, 0, sizeof b);
         if (ParseAction(r->text, &b) && b.arg && (b.act == A_RUN || b.act == A_ADMIN || b.act == A_PY)) ok = FindTarget(b.arg, b.dir, b.act == A_PY || IsScriptCmd(b.arg), path);
         Free(b.arg); Free(b.dir);
     }
+    return ok;
+}
+static void PopupReveal(void) {                                                       // Shift+Enter: показать файл программы/скрипта в проводнике
+    wchar_t path[MAX_PATH]; BOOL ok = RowPath(path);
     PopupClose();
     if (!ok) { Toast(Tr(L_T_NOFILE)); return; }
     wchar_t a[MAX_PATH + 16]; wsprintfW(a, L"/select,\"%s\"", path);
     ShellExecuteW(NULL, NULL, L"explorer.exe", a, NULL, SW_SHOWNORMAL);
+}
+static void PopupEditFile(void) {                                                     // Ctrl+Enter: править скрипт (py, bat, cmd, ps1) или текстовый файл
+    wchar_t path[MAX_PATH]; BOOL ok = RowPath(path);
+    PopupClose();
+    if (!ok) { Toast(Tr(L_T_NOFILE)); return; }
+    if (!(EndsI(path, L".py") || EndsI(path, L".pyw") || EndsI(path, L".bat") || EndsI(path, L".cmd") || EndsI(path, L".ps1") || EndsI(path, L".txt") || EndsI(path, L".ini"))) { Toast(Tr(L_NOEDIT)); return; }
+    OpenEditor(path);
 }
 static void PopupReselect(int keep) {
     BuildRows();
@@ -2568,7 +2654,7 @@ static void PopupDelete(void) {
     PopupReselect(g_sel);
 }
 static void PopupEdit(BOOL isNew) {
-    if (g_pmode == PM_LAUNCH || g_pmode == PM_SCRIPTS || (!isNew && g_nvis <= 0)) return;
+    if (g_pmode == PM_LAUNCH || g_pmode == PM_SCRIPTS || g_pmode == PM_RECORDS || (!isNew && g_nvis <= 0)) return;
     int mode = g_pmode, buf = g_curBuf, ref = isNew ? -1 : g_rows[g_vis[g_sel]].ref;
     wchar_t *cur = Dup(isNew ? L"" : g_rows[g_vis[g_sel]].text);
     PopupClose();
@@ -2621,7 +2707,12 @@ static void PopupKey(UINT key, UINT mods, WCHAR ch) {
     BOOL buf = g_pmode == PM_BUF, plain = !(mods & (DM_CTRL | DM_ALT | DM_WIN));
     switch (key) {
     case VK_ESCAPE: PopupClose(); return;
-    case VK_RETURN: if ((mods & DM_SHIFT) && (g_pmode == PM_LAUNCH || g_pmode == PM_SCRIPTS)) PopupReveal(); else PopupChoose(g_sel); return;
+    case VK_RETURN:
+        if (g_pmode == PM_LAUNCH || g_pmode == PM_SCRIPTS || g_pmode == PM_RECORDS) {
+            if (mods & DM_SHIFT) { PopupReveal(); return; }
+            if (mods & DM_CTRL) { PopupEditFile(); return; }
+        }
+        PopupChoose(g_sel); return;
     case VK_UP:
         if ((mods & DM_CTRL) && buf && !g_nfilt && g_sel > 0) { BufMove(g_curBuf, g_sel, -1); PopupReselect(g_sel - 1); return; }
         if (g_sel > 0) g_sel--; PopupEnsureVisible(); PopupRedraw(); return;
@@ -2630,8 +2721,8 @@ static void PopupKey(UINT key, UINT mods, WCHAR ch) {
         if (g_sel < g_nvis - 1) g_sel++; PopupEnsureVisible(); PopupRedraw(); return;
     case VK_LEFT: case VK_RIGHT:
         if (!g_nfilt) {                                                            // по кругу: буферы 1-9, история (если включена), запуск, скрипты
-            int i = buf ? g_curBuf - 1 : 8 + g_pmode, dr = key == VK_RIGHT ? 1 : 11;
-            do i = (i + dr) % 12; while (i == 9 && !g_histOn);
+            int i = buf ? g_curBuf - 1 : 8 + g_pmode, dr = key == VK_RIGHT ? 1 : NTABS - 1;
+            do i = (i + dr) % NTABS; while (i == 9 && !g_histOn);
             PopupTab(i);
         }
         return;
@@ -2639,7 +2730,7 @@ static void PopupKey(UINT key, UINT mods, WCHAR ch) {
     case VK_NEXT: g_sel += VISROWS - 1; if (g_sel > g_nvis - 1) g_sel = g_nvis - 1; if (g_sel < 0) g_sel = 0; PopupEnsureVisible(); PopupRedraw(); return;
     case VK_HOME: g_sel = 0; PopupEnsureVisible(); PopupRedraw(); return;
     case VK_END: g_sel = g_nvis ? g_nvis - 1 : 0; PopupEnsureVisible(); PopupRedraw(); return;
-    case VK_TAB: { int m = (g_pmode + 1) % 4; if (m == PM_HIST && !g_histOn) m = PM_LAUNCH; PopupSetMode(m, 0); return; }
+    case VK_TAB: { int m = (g_pmode + 1) % 5; if (m == PM_HIST && !g_histOn) m = PM_LAUNCH; PopupSetMode(m, 0); return; }
     case VK_DELETE: PopupDelete(); return;
     case VK_F2: PopupEdit(FALSE); return;
     case VK_INSERT: if (buf) PopupEdit(TRUE); return;
@@ -2649,13 +2740,13 @@ static void PopupKey(UINT key, UINT mods, WCHAR ch) {
     }
     if ((mods & DM_WIN) && dig >= 1) { PopupSetMode(PM_BUF, dig); return; }
     if ((mods & DM_CTRL) && buf && dig >= 0) { PopupImg(dig ? dig : 10); return; }        // в окне буфера Ctrl+цифра - вставка картинки
-    if ((mods & DM_CTRL) && dig >= 1 && g_pmode != PM_LAUNCH && g_pmode != PM_SCRIPTS && g_nvis > 0) {
+    if ((mods & DM_CTRL) && dig >= 1 && g_pmode != PM_LAUNCH && g_pmode != PM_SCRIPTS && g_pmode != PM_RECORDS && g_nvis > 0) {
         BufInsert(dig, Dup(g_rows[g_vis[g_sel]].text));
         wchar_t m[64]; wsprintfW(m, Tr(L_T_TOBUF2), dig); Toast(m);
         if (buf) { g_sel = 0; PopupReselect(0); }
         return;
     }
-    if (g_pmode == PM_SCRIPTS && !g_nfilt && plain && (dig >= 0 || key == L'T')) {       // T - tmp.py, цифры - остальные по порядку
+    if ((g_pmode == PM_SCRIPTS || g_pmode == PM_RECORDS) && !g_nfilt && plain && (dig >= 0 || key == L'T')) {       // T - tmp.py, цифры - остальные по порядку
         wchar_t want = key == L'T' ? L'T' : (wchar_t)(L'0' + dig);
         for (int vi = 0; vi < g_nvis; vi++) if (g_rows[g_vis[vi]].label[0] == want) { PopupChoose(vi); return; }
         return;
@@ -2742,6 +2833,8 @@ static void TypedKey(const KBDLLHOOKSTRUCT *k, UINT mods) {
 static BYTE g_swallowed[256];
 static HHOOK g_hkKbd, g_hkMouse;
 
+static void MacroKey(UINT vk, BOOL down);
+static void MacroMouse(WPARAM wp, const MSLLHOOKSTRUCT *m);
 static LRESULT CALLBACK LLKbd(int code, WPARAM wp, LPARAM lp) {
     KBDLLHOOKSTRUCT *k = (KBDLLHOOKSTRUCT *)lp;
     if (code != HC_ACTION || k->dwExtraInfo == DKMARK) return CallNextHookEx(NULL, code, wp, lp);
@@ -2753,11 +2846,12 @@ static LRESULT CALLBACK LLKbd(int code, WPARAM wp, LPARAM lp) {
     LONG mb = ModBit(vk);
     if (mb) {
         if (down) InterlockedOr(&g_modBits, mb); else InterlockedAnd(&g_modBits, ~mb);
+        MacroKey(vk, down);
         return CallNextHookEx(NULL, code, wp, lp);
     }
     if (vk == VK_CAPITAL && down) g_caps ^= 1;
     BYTE &sw = g_swallowed[vk & 0xFF];
-    if (!down) { if (sw) { sw = 0; return 1; } return CallNextHookEx(NULL, code, wp, lp); }
+    if (!down) { if (sw) { sw = 0; return 1; } MacroKey(vk, FALSE); return CallNextHookEx(NULL, code, wp, lp); }
     if (sw) return 1;
     if (g_paused || g_modal) return CallNextHookEx(NULL, code, wp, lp);
     UINT key = NormKey(k), mods = Mods();
@@ -2774,6 +2868,7 @@ static LRESULT CALLBACK LLKbd(int code, WPARAM wp, LPARAM lp) {
         PostMessageW(g_hwnd, WM_APP_HOT, i, 0);
         return 1;
     }
+    MacroKey(vk, TRUE);
     TypedKey(k, mods);
     return CallNextHookEx(NULL, code, wp, lp);
 }
@@ -2790,6 +2885,7 @@ static LRESULT CALLBACK LLMouse(int code, WPARAM wp, LPARAM lp) {
         case WM_MOUSEWHEEL: g_ioWheelD = (short)HIWORD(mm->mouseData); g_ioWheelT = GetTickCount(); break;
         }
     }
+    if (code == HC_ACTION) MacroMouse(wp, (MSLLHOOKSTRUCT *)lp);
     if (code == HC_ACTION && wp == WM_MOUSEMOVE && g_pickActive && g_mouseSlow > 1) {
         MSLLHOOKSTRUCT *m = (MSLLHOOKSTRUCT *)lp;
         if (!(m->flags & LLMHF_INJECTED) && (g_modBits & 12)) {            // Alt зажат: движение делим на g_mouseSlow
@@ -5656,6 +5752,400 @@ static void Cmd(int c) {
     else if (c == 25) { wchar_t d[MAX_PATH]; Dir(d); CreateDirectoryW(d, NULL); ShellExecuteW(NULL, L"open", d, NULL, NULL, SW_SHOWNORMAL); }
 }
 }   // namespace RecNs
+
+/* ---------- запись действий клавиатуры и мыши -> python-скрипт в records\ ---------- */
+namespace MacroNs {
+struct Ui { wchar_t win[170], name[160], aid[100]; int type; };                       // элемент под курсором в момент клика (UI Automation)
+struct Ev { DWORD t; int kind, a, b, x, y; Ui *ui; };                                // kind: 0 клавиша (a=vk, b=вниз), 1 кнопка мыши (a=0..4, b=вниз), 2 пауза курсора, 3 колесо (a=дельта)
+static HWND hw; static HANDLE th, evReq, evDone; static volatile LONG stopF;
+static BOOL rec, paused, moved, skipUp[5]; static POINT dn, wp, lastRec; static BYTE downSet[256];
+static Ev *ev; static int nev, cap; static CRITICAL_SECTION cs; static BOOL csInit;
+static ULONGLONG t0, pauseAcc, pauseStart; static POINT reqPt; static Ui reqUi;
+static const struct { const char *n; int vk; } kKN[] = {
+    {"Backspace", 8}, {"Tab", 9}, {"Enter", 13}, {"Pause", 0x13}, {"CapsLock", 0x14}, {"Esc", 27}, {"Space", 32}, {"PageUp", 33}, {"PageDown", 34}, {"End", 35}, {"Home", 36},
+    {"Left", 37}, {"Up", 38}, {"Right", 39}, {"Down", 40}, {"PrintScreen", 44}, {"Insert", 45}, {"Delete", 46}, {"Win", 0x5B}, {"RWin", 0x5C}, {"Apps", 0x5D},
+    {"Num0", 0x60}, {"Num1", 0x61}, {"Num2", 0x62}, {"Num3", 0x63}, {"Num4", 0x64}, {"Num5", 0x65}, {"Num6", 0x66}, {"Num7", 0x67}, {"Num8", 0x68}, {"Num9", 0x69},
+    {"NumMul", 0x6A}, {"NumAdd", 0x6B}, {"NumSub", 0x6D}, {"NumDot", 0x6E}, {"NumDiv", 0x6F}, {"NumLock", 0x90}, {"ScrollLock", 0x91},
+    {"Shift", 0xA0}, {"RShift", 0xA1}, {"Ctrl", 0xA2}, {"RCtrl", 0xA3}, {"Alt", 0xA4}, {"RAlt", 0xA5},
+    {"Semicolon", 0xBA}, {"Equals", 0xBB}, {"Comma", 0xBC}, {"Minus", 0xBD}, {"Period", 0xBE}, {"Slash", 0xBF}, {"Backquote", 0xC0},
+    {"LBracket", 0xDB}, {"Backslash", 0xDC}, {"RBracket", 0xDD}, {"Quote", 0xDE}, {"Oem102", 0xE2},
+};
+static void VkName(int vk, wchar_t *o) {                                              // имя клавиши для скрипта; незнакомая - числом
+    if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) { o[0] = (wchar_t)vk; o[1] = 0; return; }
+    if (vk >= VK_F1 && vk <= VK_F24) { wsprintfW(o, L"F%d", vk - VK_F1 + 1); return; }
+    for (int i = 0; i < (int)(sizeof kKN / sizeof kKN[0]); i++) if (kKN[i].vk == vk) { for (int j = 0;; j++) { o[j] = (wchar_t)kKN[i].n[j]; if (!o[j]) break; } return; }
+    wsprintfW(o, L"0x%02X", vk);
+}
+static DWORD Now(void) { return (DWORD)(GetTickCount64() - t0 - pauseAcc); }
+static void Add(Ev e) {                                                               // вставка с сохранением порядка по времени
+    if (!csInit) return;
+    EnterCriticalSection(&cs);
+    if (nev >= cap) { cap = cap ? cap * 2 : 256; ev = (Ev *)Realloc(ev, cap * sizeof(Ev)); }
+    int j = nev++; while (j > 0 && ev[j - 1].t > e.t) { ev[j] = ev[j - 1]; j--; }
+    ev[j] = e;
+    LeaveCriticalSection(&cs);
+}
+static void Query(IUIAutomation *ua) {                                                // на потоке с COM: окно и элемент под reqPt
+    memset(&reqUi, 0, sizeof reqUi);
+    POINT pt = reqPt; HWND w = WindowFromPoint(pt), top = w ? GetAncestor(w, GA_ROOT) : NULL;
+    if (top) { wchar_t cl[64], tt[100]; cl[0] = tt[0] = 0; GetClassNameW(top, cl, 64); GetWindowTextW(top, tt, 100); wsprintfW(reqUi.win, L"%s|%s", cl, tt); }
+    if (!ua) return;
+    IUIAutomationElement *el = NULL;
+    if (SUCCEEDED(ua->ElementFromPoint(pt, &el)) && el) {
+        BSTR n = NULL, a = NULL; CONTROLTYPEID ct = 0;
+        el->get_CurrentName(&n); el->get_CurrentAutomationId(&a); el->get_CurrentControlType(&ct);
+        if (n) { lstrcpynW(reqUi.name, n, 160); SysFreeString(n); }
+        if (a) { lstrcpynW(reqUi.aid, a, 100); SysFreeString(a); }
+        reqUi.type = (int)ct; el->Release();
+    }
+}
+static DWORD WINAPI Worker(LPVOID) {                                                  // COM-поток: запросы к UI Automation и поиск остановок курсора
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    IUIAutomation *ua = NULL;
+    CoCreateInstance(__uuidof(CUIAutomation), NULL, CLSCTX_INPROC_SERVER, __uuidof(IUIAutomation), (void **)&ua);
+    POINT last; GetCursorPos(&last); ULONGLONG chg = GetTickCount64();
+    while (!stopF) {
+        if (WaitForSingleObject(evReq, 15) == WAIT_OBJECT_0) { Query(ua); SetEvent(evDone); }
+        POINT p; GetCursorPos(&p);
+        if (p.x != last.x || p.y != last.y) { last = p; chg = GetTickCount64(); continue; }
+        if (rec && !paused && (p.x != lastRec.x || p.y != lastRec.y) && GetTickCount64() - chg >= (ULONGLONG)g_mHover && chg >= t0 + pauseAcc) {
+            Ev e; memset(&e, 0, sizeof e); e.kind = 2; e.x = p.x; e.y = p.y; e.t = (DWORD)(chg - t0 - pauseAcc); lastRec = p; Add(e);
+        }
+    }
+    if (ua) ua->Release();
+    CoUninitialize();
+    return 0;
+}
+static void MsgToast(const wchar_t *t) { PostMessageW(g_hwnd, WM_APP_MACRO, 0, (LPARAM)Dup(t)); }   // тост из другого потока: покажет главное окно
+static DWORD WINAPI UiaThread(LPVOID) {                                               // при первой записи ставит python-пакет uiautomation, если его нет
+    wchar_t c1[MAX_PATH + 80]; wsprintfW(c1, L"\"%s\" -c \"import uiautomation\"", g_python);
+    STARTUPINFOW si; PROCESS_INFORMATION pi; memset(&si, 0, sizeof si); si.cb = sizeof si;
+    if (CreateProcessW(NULL, c1, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+        WaitForSingleObject(pi.hProcess, 30000); DWORD ec = 1; GetExitCodeProcess(pi.hProcess, &ec); CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+        if (ec == 0) return 0;
+    } else return 0;                                                                  // python не найден: ошибку покажет запуск скрипта
+    MsgToast(Tr(L_M_UIA));
+    wchar_t c2[MAX_PATH + 80]; wsprintfW(c2, L"\"%s\" -m pip install uiautomation", g_python);
+    memset(&si, 0, sizeof si); si.cb = sizeof si;
+    DWORD ec = 1;
+    if (CreateProcessW(NULL, c2, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+        WaitForSingleObject(pi.hProcess, 300000); GetExitCodeProcess(pi.hProcess, &ec); CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+    }
+    MsgToast(ec == 0 ? Tr(L_M_UIAOK) : Tr(L_M_UIAFAIL));
+    return 0;
+}
+static BOOL OnOwn(POINT pt) { HWND w = WindowFromPoint(pt); return hw && w && GetAncestor(w, GA_ROOT) == hw; }
+}   // namespace MacroNs
+static void MacroKey(UINT vk, BOOL down) {
+    using namespace MacroNs;
+    if (!rec || paused || vk > 255) return;
+    if (down) { if (downSet[vk]) return; downSet[vk] = 1; } else { if (!downSet[vk]) return; downSet[vk] = 0; }
+    Ev e; memset(&e, 0, sizeof e); e.kind = 0; e.a = (int)vk; e.b = down; e.t = Now(); Add(e);
+}
+static void MacroMouse(WPARAM wp, const MSLLHOOKSTRUCT *m) {
+    using namespace MacroNs;
+    if (!rec || paused || m->dwExtraInfo == DKMARK) return;
+    int bt = -1, dn = 0;
+    switch (wp) {
+    case WM_LBUTTONDOWN: bt = 0; dn = 1; break; case WM_LBUTTONUP: bt = 0; break;
+    case WM_RBUTTONDOWN: bt = 1; dn = 1; break; case WM_RBUTTONUP: bt = 1; break;
+    case WM_MBUTTONDOWN: bt = 2; dn = 1; break; case WM_MBUTTONUP: bt = 2; break;
+    case WM_XBUTTONDOWN: bt = HIWORD(m->mouseData) == 1 ? 3 : 4; dn = 1; break; case WM_XBUTTONUP: bt = HIWORD(m->mouseData) == 1 ? 3 : 4; break;
+    case WM_MOUSEWHEEL: {
+        Ev e; memset(&e, 0, sizeof e); e.kind = 3; e.a = (short)HIWORD(m->mouseData); e.x = m->pt.x; e.y = m->pt.y; e.t = Now(); Add(e); return;
+    }
+    default: return;
+    }
+    if (bt < 0) return;
+    if (dn && OnOwn(m->pt)) { skipUp[bt] = TRUE; return; }                            // нажатие на кнопку записи в макрос не попадает
+    if (!dn && skipUp[bt]) { skipUp[bt] = FALSE; return; }
+    Ev e; memset(&e, 0, sizeof e); e.kind = 1; e.a = bt; e.b = dn; e.x = m->pt.x; e.y = m->pt.y; e.t = Now();
+    if (dn && evReq) {                                                                // элемент под курсором: запрос в COM-поток, ждём не дольше 200 мс
+        reqPt = m->pt; ResetEvent(evDone); SetEvent(evReq);
+        if (WaitForSingleObject(evDone, 200) == WAIT_OBJECT_0 && (reqUi.name[0] || reqUi.aid[0] || reqUi.win[0])) { e.ui = (Ui *)Alloc(sizeof(Ui)); *e.ui = reqUi; }
+    }
+    lastRec = m->pt;
+    Add(e);
+}
+namespace MacroNs {
+static void PyStr(Buf *b, const wchar_t *s) {                                         // строка в кавычках для python
+    BufAdd(b, L"\"");
+    for (; *s; s++) {
+        if (*s == L'\\') BufAdd(b, L"\\\\"); else if (*s == L'"') BufAdd(b, L"\\\""); else if (*s < 32) BufAdd(b, L" ");
+        else BufAdd(b, s, 1);
+    }
+    BufAdd(b, L"\"");
+}
+static void Sec(Buf *b, DWORD ms) { wchar_t t[40]; wsprintfW(t, L"    wait(%u.%02u)\n", ms / 1000, (ms % 1000) / 10); BufAdd(b, t); }
+static const wchar_t *kEngine = LR"PY(
+# ===================== движок воспроизведения (править не нужно) =====================
+import ctypes, os, sys, time, tempfile, traceback
+from ctypes import wintypes as _w
+
+_u = ctypes.windll.user32
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
+except Exception:
+    try: _u.SetProcessDPIAware()
+    except Exception: pass
+
+_KEYS = {@KEYS@}
+_EXT = {"Insert", "Delete", "Home", "End", "PageUp", "PageDown", "Left", "Right", "Up", "Down", "RCtrl", "RAlt", "Win", "RWin", "Apps", "NumDiv", "PrintScreen", "NumLock"}
+_BTN = {"left": (2, 4, 0), "right": (8, 16, 0), "middle": (32, 64, 0), "x1": (128, 256, 1), "x2": (128, 256, 2)}
+
+
+class _KI(ctypes.Structure):
+    _fields_ = [("wVk", _w.WORD), ("wScan", _w.WORD), ("dwFlags", _w.DWORD), ("time", _w.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+class _MI(ctypes.Structure):
+    _fields_ = [("dx", _w.LONG), ("dy", _w.LONG), ("mouseData", _w.DWORD), ("dwFlags", _w.DWORD), ("time", _w.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+class _U(ctypes.Union):
+    _fields_ = [("ki", _KI), ("mi", _MI)]
+class _IN(ctypes.Structure):
+    _fields_ = [("type", _w.DWORD), ("u", _U)]
+
+
+def _log(s):
+    try:
+        with open(os.path.join(tempfile.gettempdir(), "dkeys_macro.log"), "a", encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + s + "\n")
+    except Exception:
+        pass
+
+def _send(i):
+    _u.SendInput(1, ctypes.byref(i), ctypes.sizeof(_IN))
+
+def _factor():
+    s = int(SPEED)
+    return float(s) if s > 1 else (1.0 / -s if s < -1 else 1.0)
+
+def wait(sec):
+    time.sleep(sec / _factor())
+
+def _vk(k):
+    if isinstance(k, int): return k
+    if len(k) == 1 and k.isalnum(): return ord(k.upper())
+    if k[0] in "Ff" and k[1:].isdigit(): return 0x6F + int(k[1:])
+    return _KEYS[k]
+
+def _key(k, up):
+    vk = _vk(k)
+    i = _IN(1)
+    i.u.ki = _KI(vk, _u.MapVirtualKeyW(vk, 0), (2 if up else 0) | (1 if k in _EXT else 0), 0, 0)
+    _send(i)
+
+def down(k): _key(k, False)
+def up(k): _key(k, True)
+def key(k):
+    _key(k, False); time.sleep(0.02); _key(k, True)
+
+def _mouse(fl, data=0):
+    i = _IN(0)
+    i.u.mi = _MI(0, 0, data, fl, 0, 0)
+    _send(i)
+
+def move(x, y):
+    _u.SetCursorPos(int(x), int(y)); time.sleep(0.02)
+def mouse_down(x, y, b="left"):
+    move(x, y); d = _BTN[b]; _mouse(d[0], d[2])
+def mouse_up(x, y, b="left"):
+    move(x, y); d = _BTN[b]; _mouse(d[1], d[2])
+def click(x, y, b="left"):
+    mouse_down(x, y, b); time.sleep(0.03); mouse_up(x, y, b)
+def wheel(n):
+    _mouse(0x800, int(n * 120) & 0xFFFFFFFF)
+
+def click_ui(x, y, b="left", win="", name="", aid="", ctype=0):
+    """Клик по кнопке (элемент ищется через uiautomation), если не нашли - по координатам x, y."""
+    if CLICK_BY_BUTTON and (name or aid):
+        try:
+            import uiautomation as auto
+            cls, _, title = win.partition("|")
+            w = None
+            if title:
+                w = auto.WindowControl(searchDepth=1, ClassName=cls, Name=title)
+                if not w.Exists(0.5, 0.1): w = None
+            if w is None:
+                w = auto.WindowControl(searchDepth=1, ClassName=cls)
+                if not w.Exists(UI_TIMEOUT, 0.2): raise LookupError("окно не найдено: " + win)
+            p = {}
+            if name: p["Name"] = name
+            if aid: p["AutomationId"] = aid
+            if ctype: p["ControlType"] = ctype
+            e = w.Control(**p)
+            if not e.Exists(UI_TIMEOUT, 0.2): raise LookupError("элемент не найден: " + (name or aid))
+            r = e.BoundingRectangle
+            if r.right <= r.left or r.bottom <= r.top: raise LookupError("у элемента нет размера: " + (name or aid))
+            click((r.left + r.right) // 2, (r.top + r.bottom) // 2, b)
+            return
+        except Exception as ex:
+            _log("click_ui: %r" % (ex,))
+    click(x, y, b)
+
+
+def _run():
+    n = 0
+    while True:
+        macro()
+        n += 1
+        if int(REPEAT) > 0 and n >= int(REPEAT): break
+        time.sleep(0.2)
+
+try:
+    _run()
+except Exception:
+    _log(traceback.format_exc())
+    raise
+)PY";
+static void Save(DWORD mods) {                                                        // события -> records\rec_ГГГГММДД_ЧЧММСС.py
+    EnterCriticalSection(&cs);
+    int n = nev;
+    for (int pass = 0; pass < 1; pass++) {                                            // хвост: нажатые модификаторы самого хоткея остановки в запись не попадают
+        while (n > 0 && ev[n - 1].kind == 0 && ev[n - 1].b) {
+            int vk = ev[n - 1].a; DWORD mb = (vk == 0x5B || vk == 0x5C) ? DM_WIN : (vk == 0xA0 || vk == 0xA1 || vk == 0x10) ? DM_SHIFT : (vk == 0xA2 || vk == 0xA3 || vk == 0x11) ? DM_CTRL : (vk == 0xA4 || vk == 0xA5 || vk == 0x12) ? DM_ALT : 0;
+            if (mb && (mods & mb)) n--; else break;
+        }
+    }
+    if (!n) { LeaveCriticalSection(&cs); Toast(Tr(L_M_EMPTY)); return; }
+    SYSTEMTIME st; GetLocalTime(&st);
+    Buf b = {0}; wchar_t t[300];
+    wsprintfW(t, L"# Запись %02d.%02d.%04d %02d:%02d\n# Строки ниже - действия по порядку, wait() - пауза в секундах (правьте и удаляйте строки свободно)\n", st.wDay, st.wMonth, st.wYear, st.wHour, st.wMinute);
+    BufAdd(&b, t);
+    BufAdd(&b, L"SPEED = 1              # скорость: от -10 до 10 (без 0). 2..10 - быстрее в N раз, -2..-10 - медленнее в N раз, 1 или -1 - как записано\n");
+    BufAdd(&b, L"REPEAT = 1             # сколько раз повторить (0 - без конца, остановка повторным нажатием хоткея записи)\n");
+    BufAdd(&b, L"CLICK_BY_BUTTON = True # True - клик по кнопке, найденной по имени (если окно сместилось); не нашли - клик по координатам. False - всегда по координатам\n");
+    BufAdd(&b, L"UI_TIMEOUT = 3         # сколько секунд ждать окно или кнопку\n\n\ndef macro():\n");
+    DWORD prev = 0; int emitted = 0;
+    for (int i = 0; i < n; i++) {
+        Ev *e = &ev[i]; wchar_t nm[24];
+        if (e->t > prev && e->t - prev >= 10) Sec(&b, e->t - prev);
+        prev = e->t;
+        if (e->kind == 0) {
+            VkName(e->a, nm);
+            if (e->b && i + 1 < n && ev[i + 1].kind == 0 && !ev[i + 1].b && ev[i + 1].a == e->a && ev[i + 1].t - e->t <= 400) {
+                wsprintfW(t, L"    key(\"%s\")\n", nm); BufAdd(&b, t); prev = ev[i + 1].t; i++;
+            } else { wsprintfW(t, L"    %s(\"%s\")\n", e->b ? L"down" : L"up", nm); BufAdd(&b, t); }
+        } else if (e->kind == 1) {
+            const wchar_t *bn = e->a == 0 ? L"left" : e->a == 1 ? L"right" : e->a == 2 ? L"middle" : e->a == 3 ? L"x1" : L"x2";
+            BOOL one = e->b && i + 1 < n && ev[i + 1].kind == 1 && !ev[i + 1].b && ev[i + 1].a == e->a && ev[i + 1].t - e->t <= 600 && (ev[i + 1].x - e->x <= 5 && e->x - ev[i + 1].x <= 5) && (ev[i + 1].y - e->y <= 5 && e->y - ev[i + 1].y <= 5);
+            if (one) {
+                Ui *u = e->ui;
+                if (u && (u->name[0] || u->aid[0])) {
+                    wsprintfW(t, L"    click_ui(%d, %d, \"%s\", win=", e->x, e->y, bn); BufAdd(&b, t); PyStr(&b, u->win);
+                    BufAdd(&b, L", name="); PyStr(&b, u->name); BufAdd(&b, L", aid="); PyStr(&b, u->aid);
+                    wsprintfW(t, L", ctype=%d)\n", u->type); BufAdd(&b, t);
+                } else { wsprintfW(t, L"    click(%d, %d, \"%s\")\n", e->x, e->y, bn); BufAdd(&b, t); }
+                prev = ev[i + 1].t; i++;
+            } else { wsprintfW(t, L"    mouse_%s(%d, %d, \"%s\")\n", e->b ? L"down" : L"up", e->x, e->y, bn); BufAdd(&b, t); }
+        } else if (e->kind == 2) { wsprintfW(t, L"    move(%d, %d)\n", e->x, e->y); BufAdd(&b, t); }
+        else { int d = e->a / 120; if (!d) d = e->a > 0 ? 1 : -1; wsprintfW(t, L"    wheel(%d)\n", d); BufAdd(&b, t); }
+        emitted++;
+    }
+    LeaveCriticalSection(&cs);
+    if (!emitted) BufAdd(&b, L"    pass\n");
+    Buf keys = {0}; wchar_t kt[60];
+    for (int i = 0; i < (int)(sizeof kKN / sizeof kKN[0]); i++) {
+        wchar_t nm[24]; for (int j = 0;; j++) { nm[j] = (wchar_t)kKN[i].n[j]; if (!nm[j]) break; }
+        wsprintfW(kt, L"\"%s\": %d, ", nm, kKN[i].vk); BufAdd(&keys, kt);
+    }
+    const wchar_t *en = kEngine, *ph = en; while (*ph && !(ph[0] == L'@' && ph[1] == L'K' && ph[2] == L'E' && ph[3] == L'Y' && ph[4] == L'S' && ph[5] == L'@')) ph++;
+    BufAdd(&b, L"\n"); BufAdd(&b, en, (int)(ph - en)); if (keys.p) BufAdd(&b, keys.p); if (*ph) BufAdd(&b, ph + 6);
+    Free(keys.p);
+    wchar_t p[MAX_PATH]; wsprintfW(p, L"%srec_%04d%02d%02d_%02d%02d%02d.py", g_recDir, st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    WriteText(p, b.p); Free(b.p);
+    wchar_t m[MAX_PATH + 60]; wsprintfW(m, Tr(L_M_SAVED), p + lstrlenW(g_recDir)); Toast(m);
+}
+static void SavePos(void) {
+    RECT r; if (!hw || !GetWindowRect(hw, &r)) return;
+    wchar_t v[32]; wsprintfW(v, L"%d,%d", r.left, r.top); IniSet(L"Macro", L"Pos", v); g_mPos[0] = r.left; g_mPos[1] = r.top;
+}
+static void Start(void) {
+    if (rec) return;
+    if (!csInit) { InitializeCriticalSection(&cs); csInit = TRUE; }
+    EnterCriticalSection(&cs); nev = 0; LeaveCriticalSection(&cs);
+    memset(downSet, 0, sizeof downSet); memset(skipUp, 0, sizeof skipUp);
+    t0 = GetTickCount64(); pauseAcc = 0; paused = FALSE; GetCursorPos(&lastRec);
+    evReq = CreateEventW(NULL, FALSE, FALSE, NULL); evDone = CreateEventW(NULL, FALSE, FALSE, NULL);
+    stopF = 0; th = CreateThread(NULL, 0, Worker, NULL, 0, NULL);
+    rec = TRUE;
+    HANDLE u = CreateThread(NULL, 0, UiaThread, NULL, 0, NULL); if (u) CloseHandle(u);
+    Toast(Tr(L_M_START));
+    if (hw) InvalidateRect(hw, NULL, FALSE);
+}
+static void Stop(DWORD mods) {
+    if (!rec) return;
+    rec = FALSE; InterlockedExchange(&stopF, 1);
+    if (th) { WaitForSingleObject(th, 1000); CloseHandle(th); th = NULL; }
+    if (evReq) { CloseHandle(evReq); evReq = NULL; } if (evDone) { CloseHandle(evDone); evDone = NULL; }
+    if (hw) InvalidateRect(hw, NULL, FALSE);
+    Save(mods);
+    EnterCriticalSection(&cs);
+    for (int i = 0; i < nev; i++) Free(ev[i].ui);
+    nev = 0; LeaveCriticalSection(&cs);
+}
+static void Pause(void) {
+    if (!rec) return;
+    if (!paused) { pauseStart = GetTickCount64(); paused = TRUE; }
+    else { pauseAcc += GetTickCount64() - pauseStart; paused = FALSE; GetCursorPos(&lastRec); }
+    if (hw) InvalidateRect(hw, NULL, FALSE);
+}
+static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    switch (m) {
+    case WM_ERASEBKGND: return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); RECT r; GetClientRect(h, &r); int S = r.right;
+        HBRUSH bg = CreateSolidBrush(RGB(32, 33, 36)); FillRect(dc, &r, bg); DeleteObject(bg);
+        HPEN pw = CreatePen(PS_SOLID, 2, RGB(255, 255, 255)); HBRUSH red = CreateSolidBrush(RGB(255, 59, 48));
+        HGDIOBJ op = SelectObject(dc, pw), ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+        Ellipse(dc, 2, 2, S - 2, S - 2);
+        SelectObject(dc, GetStockObject(NULL_PEN)); SelectObject(dc, red);
+        if (rec && paused) { RoundRect(dc, S * 32 / 100, S * 30 / 100, S * 45 / 100, S * 70 / 100 + 1, 3, 3); RoundRect(dc, S * 55 / 100, S * 30 / 100, S * 68 / 100 + 1, S * 70 / 100 + 1, 3, 3); }
+        else if (rec) RoundRect(dc, S * 31 / 100, S * 31 / 100, S * 69 / 100 + 1, S * 69 / 100 + 1, S / 10, S / 10);
+        else Ellipse(dc, S * 27 / 100, S * 27 / 100, S * 73 / 100 + 1, S * 73 / 100 + 1);
+        SelectObject(dc, op); SelectObject(dc, ob); DeleteObject(pw); DeleteObject(red);
+        EndPaint(h, &ps); return 0;
+    }
+    case WM_LBUTTONDOWN: { GetCursorPos(&dn); RECT r; GetWindowRect(h, &r); wp.x = r.left; wp.y = r.top; moved = FALSE; SetCapture(h); return 0; }
+    case WM_MOUSEMOVE:
+        if (GetCapture() == h) {
+            POINT p; GetCursorPos(&p);
+            if (!moved && (p.x - dn.x) * (p.x - dn.x) + (p.y - dn.y) * (p.y - dn.y) > 36) moved = TRUE;
+            if (moved) SetWindowPos(h, NULL, wp.x + p.x - dn.x, wp.y + p.y - dn.y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        return 0;
+    case WM_LBUTTONUP:
+        if (GetCapture() == h) {
+            ReleaseCapture();
+            if (moved) SavePos(); else if (rec) { BOOL c = (w & MK_CONTROL) != 0; if (paused ? c : !c) Stop(0); else Pause(); }
+            else Start();
+        }
+        return 0;
+    case WM_RBUTTONUP: if (!rec) DestroyWindow(h); return 0;
+    case WM_DESTROY: Stop(0); SavePos(); hw = NULL; return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+static void Open(void) {
+    POINT pt; GetCursorPos(&pt);
+    MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoW(MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST), &mi);
+    int S = MulDiv(48, GetDpiForSystem(), 96), x = mi.rcMonitor.right - S - S / 2, y = mi.rcMonitor.top + S * 2;
+    POINT sp = {g_mPos[0], g_mPos[1]};
+    if (g_mPos[0] != -99999 && MonitorFromPoint(sp, MONITOR_DEFAULTTONULL)) { x = g_mPos[0]; y = g_mPos[1]; }
+    WNDCLASSW wc; memset(&wc, 0, sizeof wc);
+    if (!GetClassInfoW(g_inst, L"DKMac", &wc)) { wc.lpfnWndProc = Proc; wc.hInstance = g_inst; wc.lpszClassName = L"DKMac"; wc.hCursor = LoadCursorW(NULL, IDC_HAND); RegisterClassW(&wc); }
+    hw = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"DKMac", L"", WS_POPUP, x, y, S, S, NULL, NULL, g_inst, NULL);
+    if (!hw) return;
+    SetWindowRgn(hw, CreateEllipticRgn(0, 0, S + 1, S + 1), TRUE);
+    SetWindowDisplayAffinity(hw, 0x11);
+    ShowWindow(hw, SW_SHOWNOACTIVATE);
+}
+}   // namespace MacroNs
+static void MacroToggle(DWORD mods) {                                                 // хоткей: идёт воспроизведение - стоп; иначе кнопка -> запись -> сохранение
+    using namespace MacroNs;
+    if (PlayStop()) return;
+    if (rec) { Stop(mods); return; }
+    if (hw) { Start(); return; }
+    Open();
+}
 static void RecOpen(void) { RecNs::Open(); }
 static void RecShowSync(void) { RecNs::ShowSync(); }
 
@@ -5965,7 +6455,7 @@ static void Sync(void) {
 }
 static HMENU Menu(void) {
     HMENU m = CreatePopupMenu(), s = CreatePopupMenu(), d = CreatePopupMenu();
-    AppendMenuW(m, MF_STRING | (g_dOn ? MF_CHECKED : 0), 700, Tr(L_DUP_ON));
+    AddHk(m, MF_STRING | (g_dOn ? MF_CHECKED : 0), 700, Tr(L_DUP_ON), A_DUP);
     AppendMenuW(s, MF_STRING | (!g_dSrc[0] ? MF_CHECKED : 0), 701, Tr(L_DUP_DEF));
     ndn = 0;
     IMMDeviceEnumerator *en = NULL; IMMDeviceCollection *col = NULL; UINT n = 0;
@@ -5994,12 +6484,14 @@ static void Cmd(int c) {
     if (c == 700) {
         g_dOn = !g_dOn; IniSet(L"Duplicate", L"Enabled", g_dOn ? L"1" : L"0"); Sync();
         if (g_dOn && !g_dDst[0]) Toast(Tr(L_DUP_NODST));
+        else Toast(g_dOn ? Tr(L_DUP_TOASTON) : Tr(L_DUP_TOASTOFF));
     } else if (c == 701) { g_dSrc[0] = 0; IniSet(L"Duplicate", L"Source", L""); }
     else if (c >= 702 && c - 702 < ndn) { lstrcpynW(g_dSrc, dn[c - 702], 80); IniSet(L"Duplicate", L"Source", g_dSrc); }
     else if (c >= 720 && c - 720 < ndn) { lstrcpynW(g_dDst, dn[c - 720], 80); IniSet(L"Duplicate", L"Sink", g_dDst); }
 }
 }   // namespace DupNs
 static void DupSync(void) { DupNs::Sync(); }
+static void DupToggle(void) { DupNs::Cmd(700); }
 
 static int g_nav[8], g_navN;                                  // путь к пункту: номера (без разделителей) по уровням
 static BOOL FindPath(HMENU m, UINT id, int depth) {            // ищет пункт id в дереве меню
@@ -6035,8 +6527,10 @@ static void TrayMenuAt(POINT pt, int again) {
     AddHk(m, g_histOn ? MF_STRING : MF_STRING | MF_GRAYED, 2, Tr(L_TRAY_HIST), A_HIST);
     AddHk(m, MF_STRING, 3, Tr(L_TRAY_LAUNCH), A_LAUNCH);
     AddHk(m, MF_STRING, 8, Tr(L_TRAY_SCR), A_SCRIPTS);
+    AddHk(m, MF_STRING, 19, Tr(L_TRAY_RECS), A_RECORDS);
     AddHk(m, MF_STRING, 4, Tr(L_TRAY_CAM), A_WEBCAM);
     AddHk(m, MF_STRING, 5, Tr(L_TRAY_DRAW), A_DRAW);
+    AddHk(m, MF_STRING | (MacroNs::rec ? MF_CHECKED : 0), 20, Tr(L_TRAY_MACRO), A_MACRO);
     AddHk(m, MF_STRING, 6, Tr(L_TRAY_PICK), A_PICKER);
     AddHk(m, MF_STRING, 7, RecNs::recording ? Tr(L_TRAY_RECSTOP) : Tr(L_TRAY_REC), A_RECORD);
     AppendMenuW(m, MF_POPUP, (UINT_PTR)RecNs::Menu(), Tr(L_TRAY_RECSET));
@@ -6065,6 +6559,8 @@ static void TrayMenuAt(POINT pt, int again) {
     AppendMenuW(m, MF_STRING, 13, Tr(L_TRAY_MEM));
     AppendMenuW(m, MF_STRING, 14, Tr(L_TRAY_RELOAD));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(m, MF_STRING, 18, Tr(L_TRAY_ABOUT));
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING, 16, Tr(L_TRAY_EXIT));
     SetForegroundWindow(g_hwnd);
     g_navN = 0;
@@ -6083,6 +6579,8 @@ static void TrayMenuAt(POINT pt, int again) {
     case 2: PopupOpen(PM_HIST); break;
     case 3: PopupOpen(PM_LAUNCH); break;
     case 8: PopupOpen(PM_SCRIPTS); break;
+    case 19: PopupOpen(PM_RECORDS); break;
+    case 20: Sleep(150); MacroToggle(0); break;
     case 4: CamOpen(); break;
     case 5: Sleep(150); DrawOpen(); break;      // пауза: меню успевает исчезнуть с экрана
     case 6: Sleep(150); PickerOpen(); break;
@@ -6091,9 +6589,18 @@ static void TrayMenuAt(POINT pt, int again) {
     case 11: AutoSet(!AutoGet()); break;
     case 15: InterlockedExchange(&g_paused, !g_paused); break;
     case 17: RestartElevated(); break;
-    case 12: ShellExecuteW(NULL, NULL, L"notepad.exe", g_ini, NULL, SW_SHOWNORMAL); break;
+    case 12: OpenEditor(g_ini); break;
     case 13: ShellExecuteW(NULL, L"open", g_memDir, NULL, NULL, SW_SHOWNORMAL); break;
     case 14: Reload(); break;
+    case 18: {
+        wchar_t t[1200]; wsprintfW(t, Tr(L_ABOUT_TXT), L"1.2"); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_BODY)); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_AUTH)); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_ASK));
+        MSGBOXPARAMSW mp; memset(&mp, 0, sizeof mp);                                  // со значком программы (ресурс 1)
+        mp.cbSize = sizeof mp; mp.hwndOwner = g_hwnd; mp.hInstance = GetModuleHandleW(NULL); mp.lpszText = t; mp.lpszCaption = Tr(L_TRAY_ABOUT);
+        mp.dwStyle = MB_YESNO | MB_USERICON | MB_SETFOREGROUND | MB_TOPMOST; mp.lpszIcon = MAKEINTRESOURCEW(1);
+        if (MessageBoxIndirectW(&mp) == IDYES)
+            ShellExecuteW(NULL, L"open", L"https://github.com/mrDukereD/Dkeys", NULL, NULL, SW_SHOWNORMAL);
+        break;
+    }
     case 16: DestroyWindow(g_hwnd); break;
     default:
         if ((c >= 20 && c < 70) || (c >= 300 && c < 500)) RecNs::Cmd(c);
@@ -6118,6 +6625,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_APP_PCLICK: PopupChoose((int)w); return 0;
     case WM_APP_PTAB: PopupTab((int)w); return 0;
     case WM_APP_PIMG: PopupImg((int)w); return 0;
+    case WM_APP_MACRO: { wchar_t *t = (wchar_t *)l; if (t) { Toast(t); Free(t); } return 0; }
     case WM_TRAY:
         if (l == WM_LBUTTONUP) { if (g_hwndPop) PopupClose(); else PopupOpen(PM_BUF); }
         else if (l == WM_RBUTTONUP) TrayMenu();
@@ -6157,6 +6665,7 @@ static void InitPaths(void) {
     lstrcpynW(g_memDir, g_dir, MAX_PATH); Cat(g_memDir, MAX_PATH, L"memory\\");
     lstrcpynW(g_pyDir, g_dir, MAX_PATH); Cat(g_pyDir, MAX_PATH, L"scripts\\");
     lstrcpynW(g_runDir, g_dir, MAX_PATH); Cat(g_runDir, MAX_PATH, L"runs\\");
+    lstrcpynW(g_recDir, g_dir, MAX_PATH); Cat(g_recDir, MAX_PATH, L"records\\");
 }
 
 static int Run(void) {
@@ -6180,7 +6689,7 @@ static int Run(void) {
         wchar_t old[MAX_PATH]; lstrcpynW(old, g_dir, MAX_PATH); Cat(old, MAX_PATH, L"py");
         if (GetFileAttributesW(g_pyDir) == INVALID_FILE_ATTRIBUTES && GetFileAttributesW(old) != INVALID_FILE_ATTRIBUTES) MoveFileW(old, g_pyDir);
     }
-    CreateDirectoryW(g_memDir, NULL); CreateDirectoryW(g_pyDir, NULL); CreateDirectoryW(g_runDir, NULL);
+    CreateDirectoryW(g_memDir, NULL); CreateDirectoryW(g_pyDir, NULL); CreateDirectoryW(g_runDir, NULL); CreateDirectoryW(g_recDir, NULL);
     LoadConfig(); BuffersLoad(); HistLoad();
     RegClass(L"DKMain", MainProc, 0); RegClass(L"DKToast", ToastProc, CS_DROPSHADOW);
     RegClass(L"DKPop", PopProc, CS_DROPSHADOW); RegClass(L"DKEdit", EdProc, 0);
