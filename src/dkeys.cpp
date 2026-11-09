@@ -14,7 +14,6 @@
 #include <gdiplus.h>
 #define NO_DSHOW_STRSAFE
 #include <dshow.h>
-#include <uiautomation.h>
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
@@ -23,6 +22,7 @@
 #include <audioclient.h>
 #include <endpointvolume.h>
 #include <uiautomation.h>
+#include <wtsapi32.h>
 #include <propidl.h>
 DEFINE_GUID(CLSID_MMDeviceEnumerator, 0xBCDE0395, 0xE52F, 0x467C, 0x8E, 0x3D, 0xC4, 0x57, 0x92, 0x91, 0x69, 0x2E);
 DEFINE_GUID(IID_IMMDeviceEnumerator, 0xA95664D2, 0x9614, 0x4F35, 0xA7, 0x46, 0xDE, 0x8D, 0xB6, 0x36, 0x17, 0xE6);
@@ -43,6 +43,7 @@ DEFINE_GUID(IID_IAudioCaptureClient, 0xC8ADBD64, 0xE71E, 0x48A0, 0xA4, 0xDE, 0x1
 #pragma comment(lib, "strmiids.lib")
 #pragma comment(lib, "uuid.lib")
 #pragma comment(lib, "comdlg32.lib")
+#pragma comment(lib, "wtsapi32.lib")
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "mfplat.lib")
 #pragma comment(lib, "mfreadwrite.lib")
@@ -72,7 +73,7 @@ enum { DM_CTRL = 1, DM_ALT = 2, DM_SHIFT = 4, DM_WIN = 8 };
 enum { A_NONE, A_COPY, A_PASTE, A_BUFFER, A_HIST, A_LAUNCH, A_RUN, A_ADMIN, A_PY, A_PYRUN, A_TOPMOST, A_TOTRAY, A_LAYOUT, A_PAUSE, A_WEBCAM, A_STOPWATCH, A_TIMER, A_DRAW, A_PICKER, A_RECORD, A_SCRIPTS, A_VOL, A_VOLSET, A_DUP, A_MACRO, A_RECORDS };
 enum { PM_BUF, PM_HIST, PM_LAUNCH, PM_SCRIPTS, PM_RECORDS };
 enum {
-    WM_APP_HOT = WM_APP + 1, WM_APP_KEY, WM_APP_CLOSE, WM_APP_PCLICK, WM_APP_PTAB, WM_APP_PIMG, WM_APP_MACRO, WM_APP_DPY, WM_TRAY, WM_APP_RENDERED,
+    WM_APP_HOT = WM_APP + 1, WM_APP_KEY, WM_APP_CLOSE, WM_APP_PCLICK, WM_APP_PTAB, WM_APP_PIMG, WM_APP_MACRO, WM_APP_DPY, WM_APP_SPEC, WM_TRAY, WM_APP_RENDERED,
     TM_MOUSE = WM_APP + 20, TM_REHOOK
 };
 #define TID_RESTORE 1
@@ -81,6 +82,7 @@ enum {
 #define TID_POPFG 4
 #define TID_TRAY 5
 #define TID_NAV 6
+#define TID_SCHED 7
 #define VISROWS g_vr
 
 struct Bind { UINT mods, key; int act, n, n2; wchar_t *arg, *dir; int lau; };      // lau: хоткей задан строкой меню запуска [Launcher]
@@ -220,6 +222,11 @@ X(L_TRAY_TIMER, "tray.timer", L"Секундомер и таймер") \
 X(L_TRAY_HISTON, "tray.history_on", L"Своя история буфера") \
 X(L_TRAY_AUTO, "tray.autostart", L"Автозапуск") \
 X(L_TRAY_PAUSE, "tray.pause", L"Пауза") \
+X(L_TRAY_SCHED, "tray.schedule", L"Расписание") \
+X(L_SCH_ON, "schedule.on", L"Включено") \
+X(L_SCH_NONE, "schedule.none", L"Нет заданий (секция [Schedule] в ini)") \
+X(L_SCH_RUN, "schedule.run", L"Расписание: %s") \
+X(L_SCH_BAD, "schedule.bad", L"Расписание: не понял условие «%s»") \
 X(L_TRAY_ELEV, "tray.elevate", L"Перезапустить от администратора") \
 X(L_TRAY_NONAME, "tray.noname", L"(без названия)") \
 X(L_TRAY_HIDDEN, "tray.hidden", L"Спрятанные окна") \
@@ -229,7 +236,7 @@ X(L_TRAY_RELOAD, "tray.reload", L"Перечитать настройки") \
 X(L_TRAY_EXIT, "tray.exit", L"Выход") \
 X(L_TRAY_ABOUT, "tray.about", L"О программе") \
 X(L_ABOUT_TXT, "about.title", L"DKeys %s — твои самые горячие клавиши!") \
-X(L_ABOUT_BODY, "about.body", L"Помнит всё, что ты копировал, и не осуждает. Набрал «ghbdtn» вместо «привет» — починит. А главное — на хоткей можно повесить что угодно: запуск программы или скрипта, рисование прямо на экране, захват цвета пикселя, запись видео, запись и повтор своих действий мышью и клавиатурой, веб-камеру, секундомер и таймер, укрощение громких звуков и дублирование звука на второе устройство.") \
+X(L_ABOUT_BODY, "about.body2", L"Помнит всё, что ты копировал, и не осуждает. Набрал «ghbdtn» вместо «привет» — починит. А главное — на хоткей можно повесить что угодно: запуск программы или скрипта, рисование прямо на экране, захват цвета пикселя, запись видео, запись и повтор своих действий мышью и клавиатурой, веб-камеру, секундомер и таймер, укрощение громких звуков и дублирование звука на второе устройство. А ещё всё это умеет срабатывать само — по расписанию, в нужный день и час.") \
 X(L_ABOUT_AUTH, "about.authors", L"Придумал DukereD, написал Claude. Ни одна клавиша не пострадала.") \
 X(L_ABOUT_ASK, "about.ask", L"Открыть страницу проекта на GitHub?") \
 X(L_TRAY_TIPADM, "tray.tip_admin", L"DKeys (администратор)") \
@@ -709,6 +716,46 @@ Win+Shift+C=colorpicker
 Win+Shift+R=record
 )INI";
 static const char *kIni2 = u8R"INI(
+[Schedule]
+; Расписание: Название=когда | что. Пункт «Расписание» в меню значка включает и выключает всё сразу и каждое задание отдельно
+; Слово off в начале условия выключает задание (меню «Расписание» ставит и убирает его само: Отчёт=off mon,wed,fri at 09:30 | ...).
+; Время последнего запуска хранится в memory\schedule.state, поэтому «раз в 2 дня» держится и после перезапуска.
+; ЧТО - любое действие, как справа от хоткея: run / admin программа, py скрипт, macro, record и т.д.
+;   Запись действий: py rec_имя.py (она в папке records). Скрипт .dpy вставит результат туда, где сейчас фокус.
+;   admin показывает запрос UAC, если сам DKeys не запущен от администратора. Выделенный текст скриптам по расписанию не передаётся.
+;   Запись (macro) не запускается на заблокированном экране - ждёт разблокировки.
+; КОГДА - слова через пробел, порядок любой. Время 24 часа ЧЧ:ММ. Длительность - число и буква: 30s 5m 2h 1d 1w (без буквы - минуты).
+;   Повтор:
+;     every 15m / every 2h / every 30s        каждые 15 минут, 2 часа, 30 секунд (минимум 5 с) от прошлого запуска
+;     every 2d at 03:00                       каждые 2 дня в 03:00 (at - одно время или несколько: at 09:00,13:30,18:00)
+;     every 2w on mon at 08:00                раз в 2 недели по понедельникам
+;     every 3mo on 1 at 10:00                 раз в 3 месяца, 1-го числа
+;     daily at 08:00                          каждый день
+;     weekdays at 09:00  /  weekends at 11:00 по будням / по выходным
+;     mon,wed,fri at 18:30                    по дням недели: mon tue wed thu fri sat sun, диапазон mon-fri (sat-mon тоже можно)
+;     monthly on 1,15,last at 10:00           каждый месяц: числа 1-31 и last (последний день месяца)
+;     once 2026-12-31 23:59                   один раз (дату можно не писать - сегодня)
+;   Ограничения для every Nm / every Nh:
+;     from 09:00 to 18:00                     только в этом окне времени
+;     on weekdays  /  on mon-fri  /  on sat,sun   только в эти дни
+;   События (вместо времени): on start (запуск DKeys), on unlock, on lock, on wake (после сна),
+;     on idle 10m (10 минут без мыши и клавиатуры - срабатывает один раз за простой), on ac / on battery (питание от сети / от батареи)
+;   Дополнения:
+;     delay 5m      выполнить не сразу, а через 5 минут после срабатывания (подходит и событиям: on start delay 5m)
+;     catchup       если время наступило, пока компьютер спал или был выключен - выполнить один раз при включении (без него такой запуск пропускается;
+;                   опоздание меньше 90 секунд считается нормой)
+; Примеры (уберите «;» в начале строки):
+;   Бэкап=every 2d at 03:00 delay 5m catchup | admin backup.bat
+;   Курс=every 30m from 09:00 to 18:00 on weekdays | py usd.py
+;   Отчёт=mon,wed,fri at 09:30,15:00 | py rec_report.py
+;   Почта=on start delay 5m | run mail.exe
+;   Блокировка=on idle 15m | run lock.bat
+;   Квартал=monthly on 1,last at 10:00 | run report.exe
+;   Поздравить=once 2026-12-31 23:59 | run congrats.exe
+;   Раз в две недели=every 2w on fri at 17:00 catchup | py cleanup.py
+;   Курс=every 30m from 09:00 to 18:00 on weekdays | notify usd_nbrb.dpy yes run https://myfin.by     (окно с текстом; Да - выполнить yes)
+Enabled=1
+
 [Macro]
 ; Запись действий (действие macro). HoverMs - сколько мс курсор должен стоять на месте, чтобы это положение попало в запись (100-5000)
 HoverMs=300
@@ -719,6 +766,11 @@ HoverMs=300
 ;   Название=[Win+T]скрипт [аргументы] [@ рабочая папка]  своё название и хоткей
 ;   Название=скрипт                                       без хоткея, только в меню
 ; Название из ini важнее строки в скрипте. Если пути нет - скрипт ищется в папке scripts. Расширения: py, bat, cmd, ps1
+; Скрипты .dpy (то, что скрипт печатает через print, вставляется в место курсора) можно показать окном вместо вставки: перед именем слово notify.
+;   Название=[Win+Shift+T]notify datetime.dpy                              окно с текстом и кнопкой OK
+;   Курс=[Win+Shift+U]notify usd_nbrb.dpy yes run https://myfin.by         кнопки Да/Нет: yes - что выполнить при «Да», no - при «Нет» (любое действие, как справа от хоткея)
+; Если заданы и yes, и no, к кнопкам добавляется Отмена (закрыть без действий); при одном из них - только Да/Нет.
+; Так же notify работает в хоткеях ([Hotkeys]) и в расписании.
 [Launcher]
 ; Меню быстрого запуска (действие launcher): Название=команда (те же команды, что в run / admin).
 ; Перед командой можно указать глобальный хоткей в квадратных скобках: Калькулятор=[Win+C]calc.exe (хоткей показывается справа в меню)
@@ -979,7 +1031,10 @@ static BOOL ParseAction(const wchar_t *v, Bind *b) {
         } else if (T[i].kind == 4) { b->n = *v ? ToInt(v) : 0; if (b->n < 0 || b->n > 9) return FALSE; }
         return TRUE;
     }
-    b->act = A_RUN; SplitDir(start, b);
+    if (!lstrcmpiW(name, L"notify")) { b->act = A_PY; SplitDir(start, b); return TRUE; }
+    const wchar_t *we = start; while (*we && *we != L' ') we++;
+    b->act = (we - start >= 4 && CompareStringOrdinal(we - 4, 4, L".dpy", 4, TRUE) == CSTR_EQUAL) ? A_PY : A_RUN;
+    SplitDir(start, b);
     return *start != 0;
 }
 
@@ -1015,6 +1070,21 @@ static CamRec *CrGet(const wchar_t *nm, BOOL create) {
     if (!create || g_ncr >= 16) return NULL;
     CamRec *c = &g_cr[g_ncr++]; memset(c, 0, sizeof *c); lstrcpyW(c->name, k); c->interval = 60; c->limitMB = 2048; c->quality = 85; c->minFree = 500; c->hFrom = 0; c->hTo = 24; c->motion = 0; c->dark = 1; c->stamp = 0; return c;
 }
+/* ---------- расписание: данные ---------- */
+enum { SE_NONE, SE_START, SE_UNLOCK, SE_LOCK, SE_WAKE, SE_IDLE, SE_AC, SE_BATT };
+#define SCH_MAX 64
+struct Sch {
+    wchar_t name[64], *when, *what;
+    BOOL ok, off, idleFired, weeks, catchup;
+    int ev, idleSec, kind, N, at[12], nat, winFrom, winTo, delay;           // kind: 0 интервал, 1 дни/недели, 2 месяцы, 3 один раз
+    unsigned wmask, dmask;                                                  // wmask: пн=бит0..вс=бит6; dmask: бит0 - последний день, бит1..31 - числа
+    ULONGLONG step, onceT, last, next, pend;                                // время - секунды местного времени (шкала FILETIME)
+};
+static Sch g_sch[SCH_MAX]; static int g_nsch; static BOOL g_schOn = TRUE, g_locked, g_noGrab; static int g_acPrev = -1;
+static wchar_t g_schBad[64];
+static void SchAdd(const wchar_t *k, const wchar_t *v);
+
+static void SchClear(void), SchFinish(void), SchBadToast(void), SchEvent(int ev), SchTick(void);
 static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
     if (s[0] == L'C' && s[1] == L'a' && s[2] == L'm' && s[3] == L':') {
         CamRec *c = CrGet(s + 4, TRUE); if (!c) return;
@@ -1092,6 +1162,8 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
             while (*q && g_tmNFav < 10) { int t = ToInt(q); if (t > 0) g_tmFav[g_tmNFav++] = t; while (*q && *q != L',') q++; if (*q) q++; }
         }
         else if (!lstrcmpiW(k, L"Pos")) { const wchar_t *q = v; g_tmPos[0] = ToInt(q); while (*q && *q != L',') q++; g_tmPos[1] = *q ? ToInt(q + 1) : 80; }
+    } else if (!lstrcmpiW(s, L"Schedule")) {
+        if (!lstrcmpiW(k, L"Enabled")) g_schOn = ToInt(v) != 0; else SchAdd(k, v);
     } else if (!lstrcmpiW(s, L"Macro")) {
         if (!lstrcmpiW(k, L"HoverMs")) { g_mHover = ToInt(v); if (g_mHover < 100) g_mHover = 100; if (g_mHover > 5000) g_mHover = 5000; }
         else if (!lstrcmpiW(k, L"Pos")) { const wchar_t *q = v; g_mPos[0] = ToInt(q); while (*q && *q != L',') q++; g_mPos[1] = *q ? ToInt(q + 1) : -99999; }
@@ -1175,8 +1247,10 @@ static void LoadConfig(void) {
     for (int i = 0; i < g_nscrIni; i++) { Free(g_scrIni[i].title); Free(g_scrIni[i].arg); Free(g_scrIni[i].dir); Free(g_scrIni[i].hk); }
     Free(g_scrIni); g_scrIni = NULL; g_nscrIni = 0;
     g_bnew = NULL; g_nbnew = g_bnewCap = 0;
+    SchClear();
     IniParse(t, CfgCb);
     Free(t);
+    SchFinish();
     Bind *old = g_bind; int oldn = g_nbind;
     AcquireSRWLockExclusive(&g_bindLock);
     g_bind = g_bnew; g_nbind = g_nbnew;
@@ -1484,6 +1558,7 @@ static BOOL ClipIsLineCopy(void) {
 
 // Скопировать выделенное в приложении, не меняя основной буфер. *line - редактор скопировал всю строку (выделения не было).
 static wchar_t *GrabSelection(BOOL *line = NULL, BYTE **img = NULL, DWORD *imgLen = NULL) {      // img: если скопирована картинка без текста - PNG (владение у вызывающего)
+    if (g_noGrab) return NULL;                                                          // запуск по расписанию: Ctrl+C в чужое окно не шлём
     Snap s; memset(&s, 0, sizeof s);
     SnapTake(&s);
     DWORD seq0 = GetClipboardSequenceNumber();
@@ -1844,7 +1919,13 @@ static int BindRows(BOOL scripts, Row *out, int max) {                          
     return n;
 }
 static void SplitCmd(wchar_t *s, wchar_t **file, wchar_t **par);
-static wchar_t *CmdKey(const wchar_t *cmd, const wchar_t *dir, BOOL script) {          // ключ для поиска дублей: полный путь запускаемого файла + аргументы, в нижнем регистре
+static const wchar_t *SkipNotify(const wchar_t *s) {                                    // слово notify перед скриптом .dpy
+    while (*s == L' ') s++;
+    if (lstrlenW(s) > 7 && CompareStringOrdinal(s, 6, L"notify", 6, TRUE) == CSTR_EQUAL && s[6] == L' ') { s += 7; while (*s == L' ') s++; }
+    return s;
+}
+static wchar_t *CmdKey(const wchar_t *cmd0, const wchar_t *dir, BOOL script) {         // ключ для поиска дублей: полный путь запускаемого файла + аргументы, в нижнем регистре
+    const wchar_t *cmd = SkipNotify(cmd0);
     wchar_t *s = Dup(cmd), *file, *par; SplitCmd(s, &file, &par);
     wchar_t *args = par;
     if (script) { wchar_t *q = par; while (*q) { wchar_t *f2, *p2; SplitCmd(q, &f2, &p2); if (*f2 && *f2 != L'-') { args = p2; break; } q = p2; } }
@@ -2294,7 +2375,7 @@ static void RunProc(wchar_t *cmd, const wchar_t *dir, wchar_t *env, BOOL hidden 
         wchar_t m[200]; wsprintfW(m, Tr(L_T_PYFAIL), g_python); Toast(m);
     }
 }
-struct DpyJob { wchar_t *cmd; wchar_t *dir; };
+struct DpyJob { wchar_t *cmd, *dir, *cap, *yes, *no; BOOL notify; };
 static DWORD WINAPI DpyThread(void *a) {                                              // .dpy: скрипт печатает результат в stdout, DKeys вставляет его в место курсора
     DpyJob *j = (DpyJob *)a;
     SECURITY_ATTRIBUTES sa; sa.nLength = sizeof sa; sa.lpSecurityDescriptor = NULL; sa.bInheritHandle = TRUE;
@@ -2319,6 +2400,12 @@ static DWORD WINAPI DpyThread(void *a) {                                        
             int o = (n >= 3 && (unsigned char)buf[0] == 0xEF && (unsigned char)buf[1] == 0xBB && (unsigned char)buf[2] == 0xBF) ? 3 : 0;
             if (code != 0) {
                 wchar_t m[120]; wsprintfW(m, Tr(L_DPY_ERR), (int)code); PostMessageW(g_hwnd, WM_APP_MACRO, 0, (LPARAM)Dup(m));
+            } else if (n > o && j->notify) {                                           // окно «info»: OK, либо Да/Нет, если заданы yes/no
+                wchar_t *txt = FromUtf8(buf + o, n - o);
+                int r = MessageBoxW(NULL, txt, j->cap, MB_ICONINFORMATION | (j->yes && j->no ? MB_YESNOCANCEL : (j->yes || j->no) ? MB_YESNO : MB_OK) | MB_SETFOREGROUND | MB_TOPMOST);
+                wchar_t *act = r == IDYES ? j->yes : r == IDNO ? j->no : NULL;
+                if (act && *act) PostMessageW(g_hwnd, WM_APP_SPEC, 0, (LPARAM)Dup(act));
+                Free(txt);
             } else if (n > o) PostMessageW(g_hwnd, WM_APP_DPY, 0, (LPARAM)FromUtf8(buf + o, n - o));
             Free(buf);
         }
@@ -2326,28 +2413,53 @@ static DWORD WINAPI DpyThread(void *a) {                                        
         if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
         CloseHandle(rd);
     }
-    Free(j->cmd); Free(j->dir); Free(j);
+    Free(j->cmd); Free(j->dir); Free(j->cap); Free(j->yes); Free(j->no); Free(j);
     return 0;
 }
-static void RunDpy(const wchar_t *script, const wchar_t *par, const wchar_t *dir) {
+static void RunDpy(const wchar_t *script, const wchar_t *par0, const wchar_t *dir, BOOL notify) {
+    wchar_t *par = Dup(par0), *yes = NULL, *no = NULL;
+    if (notify) {                                                                       // "аргументы yes действие no действие"
+        wchar_t **cur = NULL; (void)cur;
+        wchar_t *q = par;
+        while (*q) {
+            wchar_t *w = q; while (*q && *q != L' ') q++;
+            int l = (int)(q - w);
+            BOOL y = l == 3 && CompareStringOrdinal(w, 3, L"yes", 3, TRUE) == CSTR_EQUAL, nn = l == 2 && CompareStringOrdinal(w, 2, L"no", 2, TRUE) == CSTR_EQUAL;
+            if (y || nn) {
+                if (w > par) w[-1] = 0; else *w = 0;
+                if (*q) q++;
+                while (*q == L' ') q++;
+                if (y) yes = q; else no = q;
+            } else while (*q == L' ') q++;
+        }
+        for (wchar_t *a = yes; a && *a; ) { int l = lstrlenW(a); while (l > 0 && a[l - 1] == L' ') a[--l] = 0; break; }
+        for (wchar_t *a = no; a && *a; ) { int l = lstrlenW(a); while (l > 0 && a[l - 1] == L' ') a[--l] = 0; break; }
+    }
     SetEnvironmentVariableW(L"PYTHONIOENCODING", L"utf-8");                           // вывод python - UTF-8 независимо от кодовой страницы
     Buf c = {0};
     BufAdd(&c, L"\""); BufAdd(&c, g_python); BufAdd(&c, L"\" \""); BufAdd(&c, script); BufAdd(&c, L"\"");
-    if (par && *par) { BufAdd(&c, L" "); BufAdd(&c, par); }
+    if (*par) { BufAdd(&c, L" "); BufAdd(&c, par); }
     DpyJob *j = (DpyJob *)Alloc(sizeof(DpyJob)); j->cmd = c.p; j->dir = Dup(dir ? dir : L"");
+    const wchar_t *nm = script; for (const wchar_t *q = script; *q; q++) if (*q == L'\\' || *q == L'/') nm = q + 1;
+    j->cap = Dup(nm); j->notify = notify;
+    if (yes && *yes) j->yes = Dup(yes);
+    if (no && *no) j->no = Dup(no);
+    Free(par);
     HANDLE h = CreateThread(NULL, 0, DpyThread, j, 0, NULL);
     if (h) CloseHandle(h); else { Free(j->cmd); Free(j->dir); Free(j); }
 }
 static void RunPy(const wchar_t *arg, const wchar_t *dir, BOOL hold = FALSE) {   // hold: окно консоли остаётся открытым (pause)
     wchar_t *s = Dup(arg), *file, *par;
     SplitCmd(s, &file, &par);
+    BOOL notify = FALSE;
+    if (!lstrcmpiW(file, L"notify") && *par) { notify = TRUE; SplitCmd(par, &file, &par); }   // py notify x.dpy [yes действие] [no действие]
     wchar_t script[MAX_PATH];
     if (file[1] == L':' || file[0] == L'\\') lstrcpynW(script, file, MAX_PATH);
     else {
         lstrcpynW(script, g_pyDir, MAX_PATH); Cat(script, MAX_PATH, file);
         if (GetFileAttributesW(script) == INVALID_FILE_ATTRIBUTES) { wchar_t t2[MAX_PATH]; lstrcpynW(t2, g_recDir, MAX_PATH); Cat(t2, MAX_PATH, file); if (GetFileAttributesW(t2) != INVALID_FILE_ATTRIBUTES) lstrcpyW(script, t2); }
     }
-    if (EndsI(script, L".dpy")) { RunDpy(script, par, dir); Free(s); return; }          // результат скрипта вставляется в место курсора
+    if (EndsI(script, L".dpy")) { RunDpy(script, par, dir, notify); Free(s); return; }          // результат скрипта вставляется в место курсора
     BOOL mac = EndsI(script, L".py") && InDir(script, g_recDir);                       // запись (макрос): без окна консоли, чтобы фокус остался в целевом окне
     wchar_t *sel = mac ? NULL : GrabSelection();
     wchar_t tmp[MAX_PATH]; GetTempPathW(MAX_PATH, tmp); Cat(tmp, MAX_PATH, L"dkeys_sel.txt");
@@ -2601,6 +2713,358 @@ static void ExecSpec(const wchar_t *spec) {
     Free(b.arg); Free(b.dir);
 }
 
+/* ---------- расписание ---------- */
+static ULONGLONG SchNow(void) {
+    SYSTEMTIME st; GetLocalTime(&st); FILETIME ft; SystemTimeToFileTime(&st, &ft);
+    return (((ULONGLONG)ft.dwHighDateTime << 32) | ft.dwLowDateTime) / 10000000ULL;
+}
+static void SchYmd(ULONGLONG day, int *y, int *m, int *dd) {
+    ULONGLONG t = day * 86400ULL * 10000000ULL; FILETIME ft; ft.dwLowDateTime = (DWORD)t; ft.dwHighDateTime = (DWORD)(t >> 32);
+    SYSTEMTIME st; FileTimeToSystemTime(&ft, &st); *y = st.wYear; *m = st.wMonth; *dd = st.wDay;
+}
+static int SchDim(int y, int m) {
+    static const int D[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    return m == 2 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0) ? 29 : D[m - 1];
+}
+static int SchN(const wchar_t *s, int n) { int v = 0; for (int i = 0; i < n; i++) { if (s[i] < L'0' || s[i] > L'9') return -1; v = v * 10 + (s[i] - L'0'); } return v; }
+static ULONGLONG SchDate(const wchar_t *s) {                                           // ГГГГ-ММ-ДД -> номер дня (0 - не дата)
+    if (lstrlenW(s) != 10 || s[4] != L'-' || s[7] != L'-') return 0;
+    int y = SchN(s, 4), m = SchN(s + 5, 2), dd = SchN(s + 8, 2);
+    if (y < 1970 || m < 1 || m > 12 || dd < 1 || dd > SchDim(y, m)) return 0;
+    SYSTEMTIME st; memset(&st, 0, sizeof st); st.wYear = (WORD)y; st.wMonth = (WORD)m; st.wDay = (WORD)dd;
+    FILETIME ft; if (!SystemTimeToFileTime(&st, &ft)) return 0;
+    return (((ULONGLONG)ft.dwHighDateTime << 32) | ft.dwLowDateTime) / 10000000ULL / 86400ULL;
+}
+static int SchTime(const wchar_t *s) {                                                 // ЧЧ:ММ -> секунды от полуночи, -1 - не время
+    int h = 0, m = 0, n = 0;
+    while (*s >= L'0' && *s <= L'9' && n < 2) { h = h * 10 + (*s++ - L'0'); n++; }
+    if (!n || *s != L':') return -1;
+    s++; n = 0;
+    while (*s >= L'0' && *s <= L'9' && n < 2) { m = m * 10 + (*s++ - L'0'); n++; }
+    if (n != 2 || *s || h > 23 || m > 59) return -1;
+    return h * 3600 + m * 60;
+}
+static LONGLONG SchDur(const wchar_t *s) {                                             // 30s 5m 2h 1d 1w (без буквы - минуты) -> секунды, -1 - ошибка
+    LONGLONG n = 0; int k = 0;
+    while (*s >= L'0' && *s <= L'9') { n = n * 10 + (*s++ - L'0'); k++; }
+    if (!k) return -1;
+    if (!*s || !lstrcmpiW(s, L"m") || !lstrcmpiW(s, L"min")) return n * 60;
+    if (!lstrcmpiW(s, L"s") || !lstrcmpiW(s, L"sec")) return n;
+    if (!lstrcmpiW(s, L"h") || !lstrcmpiW(s, L"hr")) return n * 3600;
+    if (!lstrcmpiW(s, L"d")) return n * 86400;
+    if (!lstrcmpiW(s, L"w")) return n * 604800;
+    return -1;
+}
+static int SchWd(const wchar_t *s) {
+    static const wchar_t *K[7] = {L"mon", L"tue", L"wed", L"thu", L"fri", L"sat", L"sun"};
+    for (int i = 0; i < 7; i++) if (!lstrcmpiW(s, K[i])) return i;
+    return -1;
+}
+static BOOL SchDays(wchar_t *s, Sch *e) {                                              // список через запятую: дни недели, диапазоны, weekdays/weekends/daily, числа 1-31, last
+    for (wchar_t *p = s; *p; ) {
+        wchar_t *q = p; while (*q && *q != L',') q++;
+        wchar_t sv = *q; *q = 0; BOOL ok = TRUE; int a;
+        if (!lstrcmpiW(p, L"weekdays")) e->wmask |= 0x1F;
+        else if (!lstrcmpiW(p, L"weekends")) e->wmask |= 0x60;
+        else if (!lstrcmpiW(p, L"daily")) e->wmask |= 0x7F;
+        else if (!lstrcmpiW(p, L"last")) e->dmask |= 1;
+        else if (lstrlenW(p) == 7 && p[3] == L'-') {
+            wchar_t x[4], y[4]; memcpy(x, p, 3 * sizeof(wchar_t)); x[3] = 0; memcpy(y, p + 4, 3 * sizeof(wchar_t)); y[3] = 0;
+            int wa = SchWd(x), wb = SchWd(y);
+            if (wa < 0 || wb < 0) ok = FALSE; else for (int i = wa; ; i = (i + 1) % 7) { e->wmask |= 1u << i; if (i == wb) break; }
+        } else if ((a = SchWd(p)) >= 0) e->wmask |= 1u << a;
+        else { int n = SchN(p, lstrlenW(p)); if (n >= 1 && n <= 31 && lstrlenW(p) <= 2) e->dmask |= 1u << n; else ok = FALSE; }
+        *q = sv; if (!ok) return FALSE;
+        p = *q ? q + 1 : q;
+    }
+    return TRUE;
+}
+static BOOL SchTimes(wchar_t *s, Sch *e) {
+    for (wchar_t *p = s; *p; ) {
+        wchar_t *q = p; while (*q && *q != L',') q++;
+        wchar_t sv = *q; *q = 0; int t = SchTime(p); *q = sv;
+        if (t < 0 || e->nat >= 12) return FALSE;
+        e->at[e->nat++] = t; p = *q ? q + 1 : q;
+    }
+    return TRUE;
+}
+static void SchTrim(wchar_t *s) {
+    int n = lstrlenW(s); while (n > 0 && (s[n - 1] == L' ' || s[n - 1] == L'\t')) s[--n] = 0;
+    int k = 0; while (s[k] == L' ' || s[k] == L'\t') k++;
+    if (k) memmove(s, s + k, (n - k + 1) * sizeof(wchar_t));
+}
+static BOOL SchParse(Sch *e) {
+    wchar_t buf[256]; lstrcpynW(buf, e->when, 256);
+    wchar_t *t[24]; int n = 0;
+    for (wchar_t *p = buf; *p && n < 24; ) {
+        while (*p == L' ' || *p == L'\t') p++;
+        if (!*p) break;
+        t[n++] = p; while (*p && *p != L' ' && *p != L'\t') p++;
+        if (*p) *p++ = 0;
+    }
+    e->off = FALSE; e->ev = 0; e->kind = -1; e->N = 1; e->nat = 0; e->winFrom = e->winTo = -1; e->delay = 0; e->catchup = FALSE; e->wmask = e->dmask = 0; e->weeks = FALSE; e->step = 0;
+    for (int i = 0; i < n; i++) {
+        wchar_t *w = t[i], *nx = i + 1 < n ? t[i + 1] : NULL;
+        if (!lstrcmpiW(w, L"every")) {
+            if (!nx) return FALSE;
+            i++;
+            const wchar_t *u = nx; int c = 0, k = 0;
+            while (*u >= L'0' && *u <= L'9') { c = c * 10 + (*u++ - L'0'); k++; }
+            if (!k) c = 1;
+            if (c < 1) return FALSE;
+            e->N = c;
+            if (!lstrcmpiW(u, L"s") || !lstrcmpiW(u, L"sec")) { e->kind = 0; e->step = c; }
+            else if (!lstrcmpiW(u, L"m") || !lstrcmpiW(u, L"min") || !lstrcmpiW(u, L"minute")) { e->kind = 0; e->step = c * 60ULL; }
+            else if (!lstrcmpiW(u, L"h") || !lstrcmpiW(u, L"hr") || !lstrcmpiW(u, L"hour")) { e->kind = 0; e->step = c * 3600ULL; }
+            else if (!lstrcmpiW(u, L"d") || !lstrcmpiW(u, L"day")) { e->kind = 1; e->weeks = FALSE; }
+            else if (!lstrcmpiW(u, L"w") || !lstrcmpiW(u, L"wk") || !lstrcmpiW(u, L"week")) { e->kind = 1; e->weeks = TRUE; }
+            else if (!lstrcmpiW(u, L"mo") || !lstrcmpiW(u, L"month")) e->kind = 2;
+            else return FALSE;
+        } else if (!lstrcmpiW(w, L"daily")) { e->kind = 1; e->weeks = FALSE; e->N = 1; }
+        else if (!lstrcmpiW(w, L"monthly")) { e->kind = 2; e->N = 1; }
+        else if (!lstrcmpiW(w, L"once")) {
+            e->kind = 3; ULONGLONG day = 0; int tod = 0;
+            while (nx) {
+                ULONGLONG dd = SchDate(nx); int tt = SchTime(nx);
+                if (dd) day = dd; else if (tt >= 0) tod = tt; else break;
+                i++; nx = i + 1 < n ? t[i + 1] : NULL;
+            }
+            if (!day) day = SchNow() / 86400ULL;
+            e->onceT = day * 86400ULL + tod;
+        } else if (!lstrcmpiW(w, L"at")) { if (!nx || !SchTimes(nx, e)) return FALSE; i++; }
+        else if (!lstrcmpiW(w, L"from")) {
+            if (i + 3 >= n || lstrcmpiW(t[i + 2], L"to")) return FALSE;
+            e->winFrom = SchTime(nx); e->winTo = SchTime(t[i + 3]);
+            if (e->winFrom < 0 || e->winTo < 0) return FALSE;
+            i += 3;
+        } else if (!lstrcmpiW(w, L"delay")) { LONGLONG v = nx ? SchDur(nx) : -1; if (v < 0) return FALSE; e->delay = (int)v; i++; }
+        else if (!lstrcmpiW(w, L"catchup")) e->catchup = TRUE;
+        else if (!lstrcmpiW(w, L"off")) e->off = TRUE;
+        else if (!lstrcmpiW(w, L"on")) {
+            if (!nx) return FALSE;
+            i++;
+            if (!lstrcmpiW(nx, L"start")) e->ev = SE_START;
+            else if (!lstrcmpiW(nx, L"unlock")) e->ev = SE_UNLOCK;
+            else if (!lstrcmpiW(nx, L"lock")) e->ev = SE_LOCK;
+            else if (!lstrcmpiW(nx, L"wake")) e->ev = SE_WAKE;
+            else if (!lstrcmpiW(nx, L"ac")) e->ev = SE_AC;
+            else if (!lstrcmpiW(nx, L"battery")) e->ev = SE_BATT;
+            else if (!lstrcmpiW(nx, L"idle")) {
+                LONGLONG v = i + 1 < n ? SchDur(t[i + 1]) : -1;
+                if (v < 1) return FALSE;
+                e->ev = SE_IDLE; e->idleSec = (int)v; i++;
+            } else if (!SchDays(nx, e)) return FALSE;
+        } else {
+            if (!SchDays(w, e)) return FALSE;
+            if (e->kind < 0) { e->kind = 1; e->weeks = TRUE; e->N = 1; }
+        }
+    }
+    if (!e->ev && e->kind < 0) return FALSE;
+    if (!e->ev && e->kind == 0 && e->step < 5) return FALSE;
+    if (!e->nat && e->kind >= 1 && e->kind <= 2) { e->at[0] = 0; e->nat = 1; }
+    for (int i = 1; i < e->nat; i++) { int x = e->at[i], j = i - 1; while (j >= 0 && e->at[j] > x) { e->at[j + 1] = e->at[j]; j--; } e->at[j + 1] = x; }
+    return TRUE;
+}
+static void SchAdd(const wchar_t *k, const wchar_t *v) {
+    if (g_nsch >= SCH_MAX) return;
+    Sch *e = &g_sch[g_nsch]; memset(e, 0, sizeof *e);
+    lstrcpynW(e->name, k, 64);
+    const wchar_t *bar = v; while (*bar && *bar != L'|') bar++;
+    e->when = DupN(v, (int)(bar - v)); SchTrim(e->when);
+    e->what = Dup(*bar ? bar + 1 : L""); SchTrim(e->what);
+    e->ok = *e->what && SchParse(e);
+    g_nsch++;
+}
+static void SchClear(void) {
+    for (int i = 0; i < g_nsch; i++) { Free(g_sch[i].when); Free(g_sch[i].what); }
+    g_nsch = 0;
+}
+static BOOL SchQual(const Sch *e, ULONGLONG d, ULONGLONG base) {                        // подходит ли день d (номер дня) под правило
+    int wd = (int)(d % 7);                                                              // 1601-01-01 - понедельник
+    if (e->kind == 1) {
+        if (e->weeks) {
+            LONGLONG df = (LONGLONG)(d / 7) - (LONGLONG)(base / 7);
+            if (((df % e->N) + e->N) % e->N) return FALSE;
+            return e->wmask ? ((e->wmask >> wd) & 1) != 0 : wd == (int)(base % 7);
+        }
+        LONGLONG df = (LONGLONG)d - (LONGLONG)base;
+        if (((df % e->N) + e->N) % e->N) return FALSE;
+        return !e->wmask || ((e->wmask >> wd) & 1);
+    }
+    int y, m, dd, by, bm, bd; SchYmd(d, &y, &m, &dd); SchYmd(base, &by, &bm, &bd);
+    LONGLONG df = (LONGLONG)(y * 12 + m) - (LONGLONG)(by * 12 + bm);
+    if (((df % e->N) + e->N) % e->N) return FALSE;
+    if (e->wmask && !((e->wmask >> wd) & 1)) return FALSE;
+    if (!e->dmask) return dd == 1;
+    return ((e->dmask >> dd) & 1) || ((e->dmask & 1) && dd == SchDim(y, m));
+}
+static ULONGLONG SchClamp(const Sch *e, ULONGLONG c) {                                  // для every Nm/Nh: окно from..to и дни on
+    for (int i = 0; i < 800; i++) {
+        ULONGLONG d = c / 86400ULL; int tod = (int)(c % 86400ULL);
+        BOOL day = !e->wmask || ((e->wmask >> (d % 7)) & 1);
+        if (day && (e->winFrom < 0 || (tod >= e->winFrom && tod <= e->winTo))) return c;
+        if (day && e->winFrom >= 0 && tod < e->winFrom) c = d * 86400ULL + e->winFrom;
+        else c = (d + 1) * 86400ULL + (e->winFrom >= 0 ? e->winFrom : 0);
+    }
+    return 0;
+}
+static ULONGLONG SchNext(const Sch *e, ULONGLONG from) {                                // ближайший запуск строго после from (0 - больше не будет)
+    if (e->ev) return 0;
+    if (e->kind == 3) return e->last >= e->onceT ? 0 : e->onceT;
+    if (e->kind == 0) return SchClamp(e, e->last ? e->last + e->step : from + e->step);
+    ULONGLONG base = (e->last ? e->last : from) / 86400ULL, d0 = from / 86400ULL;
+    for (ULONGLONG d = d0; d < d0 + 800; d++) {
+        if (!SchQual(e, d, base)) continue;
+        for (int k = 0; k < e->nat; k++) { ULONGLONG c = d * 86400ULL + e->at[k]; if (c > from) return c; }
+    }
+    return 0;
+}
+static void SchU64(ULONGLONG v, wchar_t *o) {
+    wchar_t t[24]; int n = 0, k = 0;
+    do { t[n++] = L'0' + (wchar_t)(v % 10); v /= 10; } while (v);
+    while (n) o[k++] = t[--n];
+    o[k] = 0;
+}
+static void SchSave(void) {                                                             // memory\schedule.state: имя, время последнего запуска
+    Buf b = {0};
+    for (int i = 0; i < g_nsch; i++) {
+        Sch *e = &g_sch[i]; if (!e->last) continue;
+        wchar_t num[24]; SchU64(e->last, num);
+        BufAdd(&b, e->name); BufAdd(&b, L"\t"); BufAdd(&b, num); BufAdd(&b, L"\n");
+    }
+    wchar_t p[MAX_PATH]; MemPath(p, L"schedule.state"); WriteText(p, b.p ? b.p : L""); Free(b.p);
+}
+static void SchLoad(void) {
+    wchar_t p[MAX_PATH]; MemPath(p, L"schedule.state"); DWORD sz = 0; BYTE *raw = ReadAll(p, &sz);
+    if (!raw) return;
+    wchar_t *t = FromUtf8((char *)raw, sz); Free(raw);
+    for (wchar_t *ln = t; *ln; ) {
+        wchar_t *e1 = ln; while (*e1 && *e1 != L'\n') e1++;
+        wchar_t sv = *e1; *e1 = 0;
+        wchar_t *t1 = ln; while (*t1 && *t1 != L'\t') t1++;
+        if (*t1) {
+            *t1++ = 0; wchar_t *t2 = t1; while (*t2 && *t2 != L'\t') t2++;
+            if (*t2) *t2 = 0;
+            ULONGLONG v = 0; for (wchar_t *q = t1; *q >= L'0' && *q <= L'9'; q++) v = v * 10 + (*q - L'0');
+            for (int i = 0; i < g_nsch; i++) if (!lstrcmpiW(g_sch[i].name, ln)) g_sch[i].last = v;
+        }
+        if (!sv) break;
+        ln = e1 + 1;
+    }
+    Free(t);
+}
+static void SchFinish(void) {
+    SchLoad();
+    ULONGLONG now = SchNow(); g_schBad[0] = 0;
+    for (int i = 0; i < g_nsch; i++) {
+        Sch *e = &g_sch[i]; e->idleFired = FALSE; e->pend = 0; e->next = 0;
+        if (!e->ok) { if (!g_schBad[0]) lstrcpynW(g_schBad, e->name, 64); continue; }
+        if (!e->ev && e->kind != 3 && !e->last) e->last = now;                          // начало отсчёта (интервал и «каждые N дней» держатся и после перезапуска)
+        if (!e->ev) e->next = SchNext(e, e->last ? e->last : now);
+    }
+    SchSave();
+}
+static void SchBadToast(void) {
+    if (!g_schBad[0]) return;
+    wchar_t m[160]; wsprintfW(m, Tr(L_SCH_BAD), g_schBad); g_schBad[0] = 0; Toast(m);
+}
+static void SchRun(Sch *e, ULONGLONG now) {
+    e->pend = 0;
+    Bind b; memset(&b, 0, sizeof b);
+    if (g_locked && ParseAction(e->what, &b) && b.act == A_PY && b.arg) {               // запись (макрос) не выполнить на заблокированном экране - ждём разблокировки
+        wchar_t path[MAX_PATH];
+        if (FindTarget(b.arg, NULL, FALSE, path) && InDir(path, g_recDir)) { Free(b.arg); Free(b.dir); e->pend = now + 20; return; }
+    }
+    Free(b.arg); Free(b.dir);
+    wchar_t m[160]; wsprintfW(m, Tr(L_SCH_RUN), e->name); Toast(m);
+    g_noGrab = TRUE; ExecSpec(e->what); g_noGrab = FALSE;
+}
+static void SchTrig(Sch *e, ULONGLONG now) {
+    if (e->pend) return;
+    e->last = now; SchSave();
+    if (e->delay > 0) e->pend = now + e->delay; else SchRun(e, now);
+}
+static void SchEvent(int ev) {
+    if (!g_schOn) return;
+    ULONGLONG now = SchNow();
+    for (int i = 0; i < g_nsch; i++) if (g_sch[i].ok && !g_sch[i].off && g_sch[i].ev == ev) SchTrig(&g_sch[i], now);
+}
+static void SchTick(void) {
+    if (!g_schOn || !g_nsch) return;
+    ULONGLONG now = SchNow();
+    LASTINPUTINFO li; li.cbSize = sizeof li; int idle = 0;
+    if (GetLastInputInfo(&li)) idle = (int)((GetTickCount() - li.dwTime) / 1000);
+    for (int i = 0; i < g_nsch; i++) {
+        Sch *e = &g_sch[i]; if (!e->ok || e->off) continue;
+        if (e->pend) { if (now >= e->pend) SchRun(e, now); continue; }
+        if (e->ev == SE_IDLE) {
+            if (idle >= e->idleSec) { if (!e->idleFired) { e->idleFired = TRUE; SchTrig(e, now); } } else e->idleFired = FALSE;
+        } else if (!e->ev && e->next && now >= e->next) {
+            BOOL missed = now - e->next > 90;                                           // время прошло, пока компьютер спал или был выключен
+            if (!missed || e->catchup) SchTrig(e, now);
+            else { if (e->kind == 0 || e->kind == 3) e->last = now; SchSave(); }
+            e->next = SchNext(e, now);
+        }
+    }
+}
+static void SchFmt(ULONGLONG s, wchar_t *o) {
+    ULONGLONG t = s * 10000000ULL; FILETIME ft; ft.dwLowDateTime = (DWORD)t; ft.dwHighDateTime = (DWORD)(t >> 32);
+    SYSTEMTIME st; FileTimeToSystemTime(&ft, &st);
+    wsprintfW(o, L"%02d.%02d %02d:%02d", st.wDay, st.wMonth, st.wHour, st.wMinute);
+}
+static HMENU SchMenu(void) {                                                            // ids 899 (всё сразу) и 900.. (каждое задание)
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING | (g_schOn ? MF_CHECKED : 0), 899, Tr(L_SCH_ON));
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    if (!g_nsch) AppendMenuW(m, MF_STRING | MF_GRAYED, 0, Tr(L_SCH_NONE));
+    for (int i = 0; i < g_nsch; i++) {
+        Sch *e = &g_sch[i]; wchar_t t[200], inf[48];
+        if (!e->ok) lstrcpyW(inf, L"?");
+        else if (e->ev || !e->next) lstrcpynW(inf, e->ev ? e->when : L"-", 28);
+        else SchFmt(e->next, inf);
+        wsprintfW(t, L"%s\t%s", e->name, inf);
+        AppendMenuW(m, MF_STRING | (e->off ? 0 : MF_CHECKED) | (e->ok ? 0 : MF_GRAYED), 900 + i, t);
+    }
+    return m;
+}
+static void SchIniOff(const wchar_t *name, BOOL off) {                                  // слово off в начале условия строки задания в ini
+    DWORD sz = 0; BYTE *raw = ReadAll(g_ini, &sz); if (!raw) return;
+    wchar_t *t = FromUtf8((char *)raw, sz); Free(raw);
+    Buf out = {0}; BOOL inSect = FALSE; int klen = lstrlenW(name);
+    wchar_t *p = t;
+    while (*p) {
+        wchar_t *ls = p; while (*p && *p != L'\n') p++;
+        wchar_t *le = p; if (*p) p++;
+        wchar_t *ce = le; if (ce > ls && ce[-1] == L'\r') ce--;
+        wchar_t *a = ls; while (a < ce && (*a == L' ' || *a == L'\t')) a++;
+        if (a < ce && *a == L'[') {
+            wchar_t *r = a + 1, *rs = r; while (r < ce && *r != L']') r++;
+            inSect = (r - rs) == 8 && CompareStringOrdinal(rs, 8, L"Schedule", 8, TRUE) == CSTR_EQUAL;
+        } else if (inSect && a < ce && *a != L';' && *a != L'#') {
+            wchar_t *eq = a; while (eq < ce && *eq != L'=') eq++;
+            if (eq < ce) {
+                wchar_t *ke = eq; while (ke > a && (ke[-1] == L' ' || ke[-1] == L'\t')) ke--;
+                if ((ke - a) == klen && CompareStringOrdinal(a, klen, name, klen, TRUE) == CSTR_EQUAL) {
+                    wchar_t *v = eq + 1; while (v < ce && (*v == L' ' || *v == L'\t')) v++;
+                    BOOL has = ce - v >= 3 && CompareStringOrdinal(v, 3, L"off", 3, TRUE) == CSTR_EQUAL && (v + 3 == ce || v[3] == L' ' || v[3] == L'\t');
+                    if (off && !has) { BufAdd(&out, ls, (int)(eq + 1 - ls)); BufAdd(&out, L"off "); BufAdd(&out, v, (int)(p - v)); continue; }
+                    if (!off && has) { wchar_t *u = v + 3; while (u < ce && (*u == L' ' || *u == L'\t')) u++; BufAdd(&out, ls, (int)(eq + 1 - ls)); BufAdd(&out, u, (int)(p - u)); continue; }
+                }
+            }
+        }
+        BufAdd(&out, ls, (int)(p - ls));
+    }
+    if (out.p) WriteText(g_ini, out.p);
+    Free(out.p); Free(t);
+}
+static void SchCmd(int c) {
+    if (c == 899) { g_schOn = !g_schOn; IniSet(L"Schedule", L"Enabled", g_schOn ? L"1" : L"0"); return; }
+    int i = c - 900; if (i < 0 || i >= g_nsch) return;
+    Sch *e = &g_sch[i]; e->off = !e->off; SchIniOff(e->name, e->off);
+    if (!e->off && !e->ev) { ULONGLONG now = SchNow(); if (e->kind == 0 || e->kind == 3) e->last = now; e->next = SchNext(e, now); }
+    SchSave();
+}
+
 /* ---------- popup key handling ---------- */
 static void RunFile(const wchar_t *path) {                                            // файл из папки runs: стандартной программой Windows; ps1 - через PowerShell
     if (EndsI(path, L".ps1")) { wchar_t *q = (wchar_t *)Alloc((lstrlenW(path) + 3) * sizeof(wchar_t)); wsprintfW(q, L"\"%s\"", path); RunPy(q, NULL, TRUE); Free(q); return; }
@@ -2623,7 +3087,7 @@ static void PopupChoose(int vi) {
     Free(text);
 }
 static BOOL FindTarget(const wchar_t *cmd, const wchar_t *dir, BOOL script, wchar_t *out) {   // файл, который запускает команда (для Shift+Enter)
-    wchar_t *s = Dup(cmd), *file, *par; SplitCmd(s, &file, &par);
+    wchar_t *s = Dup(SkipNotify(cmd)), *file, *par; SplitCmd(s, &file, &par);
     if (script) {                                                                     // python x.py / powershell -File x.ps1: берём сам скрипт, а не интерпретатор
         wchar_t *q = par; while (*q) { wchar_t *f2, *p2; SplitCmd(q, &f2, &p2); if (*f2 && *f2 != L'-') { file = f2; break; } q = p2; }
     }
@@ -3049,7 +3513,7 @@ static void Reload(void) {
     if (g_histOn != was) { if (g_histOn) AddClipboardFormatListener(g_hwnd); else RemoveClipboardFormatListener(g_hwnd); }
     PostThreadMessageW(g_hookTid, TM_REHOOK, 0, 0);
     RecShowSync(); VolSync(); DupSync(); CamRecSync();
-    Toast(Tr(L_T_RELOADED));
+    Toast(Tr(L_T_RELOADED)); SchBadToast();
 }
 /* ---------- веб-камера (DirectShow): предпросмотр в окне ---------- */
 struct CamRes { int w, h, idx; LONGLONG iv; };
@@ -6563,7 +7027,7 @@ static void NavRun(void) {                                      // клавиш�
     }
 }
 static BOOL KeepMenu(int c) {                                   // настройки: меню остаётся открытым после выбора
-    return (c >= 20 && c < 58 && c != 25) || (c >= 700 && c < 760) || c == 60 || c == 62 || (c >= 600 && c < 700 && c != 601) || (c >= 300 && c < 500 && (c - 300) % 8 < 4) || (c >= TM_ID + 12 && c < TM_ID + 40);
+    return (c >= 899 && c < 964) || (c >= 20 && c < 58 && c != 25) || (c >= 700 && c < 760) || c == 60 || c == 62 || (c >= 600 && c < 700 && c != 601) || (c >= 300 && c < 500 && (c - 300) % 8 < 4) || (c >= TM_ID + 12 && c < TM_ID + 40);
 }
 static void TrayMenuAt(POINT pt, int again);
 static void TrayMenu(void) { POINT pt; GetCursorPos(&pt); TrayMenuAt(pt, 0); }
@@ -6590,6 +7054,7 @@ static void TrayMenuAt(POINT pt, int again) {
     AddHk(m, MF_STRING | (g_histOn ? MF_CHECKED : 0), 10, Tr(L_TRAY_HISTON), A_HIST);
     AppendMenuW(m, MF_STRING | (AutoGet() ? MF_CHECKED : 0), 11, Tr(L_TRAY_AUTO));
     AddHk(m, MF_STRING | (g_paused ? MF_CHECKED : 0), 15, Tr(L_TRAY_PAUSE), A_PAUSE);
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)SchMenu(), Tr(L_TRAY_SCHED));
     if (!g_elev) AppendMenuW(m, MF_STRING, 17, Tr(L_TRAY_ELEV));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     for (int i = g_nhid - 1; i >= 0; i--) if (!IsWindow(g_hid[i])) { memmove(g_hid + i, g_hid + i + 1, (g_nhid - i - 1) * sizeof(HWND)); g_nhid--; }
@@ -6619,7 +7084,7 @@ static void TrayMenuAt(POINT pt, int again) {
     PostMessageW(g_hwnd, WM_NULL, 0, 0);
     DestroyMenu(m);
     if (KeepMenu(c)) {
-        if (c >= TM_ID) TmCommand(c); else if (c >= 700 && c < 760) DupNs::Cmd(c); else if (c >= 600) VolNs::Cmd(c); else RecNs::Cmd(c);
+        if (c >= 899 && c < 964) SchCmd(c); else if (c >= TM_ID) TmCommand(c); else if (c >= 700 && c < 760) DupNs::Cmd(c); else if (c >= 600) VolNs::Cmd(c); else RecNs::Cmd(c);
         TrayMenuAt(pt, c);
         return;
     }
@@ -6674,6 +7139,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_APP_PCLICK: PopupChoose((int)w); return 0;
     case WM_APP_PTAB: PopupTab((int)w); return 0;
     case WM_APP_PIMG: PopupImg((int)w); return 0;
+    case WM_APP_SPEC: { wchar_t *t = (wchar_t *)l; if (t) { g_noGrab = TRUE; ExecSpec(t); g_noGrab = FALSE; Free(t); } return 0; }
     case WM_APP_DPY: { wchar_t *t = (wchar_t *)l; if (t) { PasteText(t); Free(t); } return 0; }
     case WM_APP_MACRO: { wchar_t *t = (wchar_t *)l; if (t) { Toast(t); Free(t); } return 0; }
     case WM_TRAY:
@@ -6687,9 +7153,20 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         else if (w == TID_POPFG) OnPopFg();
         else if (w == TID_TRAY) TrayAdd();
         else if (w == TID_NAV) { KillTimer(h, TID_NAV); NavRun(); }
+        else if (w == TID_SCHED) SchTick();
         return 0;
     case WM_CLIPBOARDUPDATE: OnClip(); return 0;
     case WM_APP_RENDERED: if (g_psPending) SetTimer(g_hwnd, TID_RESTORE, g_pasteDelay, NULL); return 0;
+    case 0x2B1:                                                                       // WM_WTSSESSION_CHANGE
+        if (w == 7) { g_locked = TRUE; SchEvent(SE_LOCK); } else if (w == 8) { g_locked = FALSE; SchEvent(SE_UNLOCK); }
+        return 0;
+    case WM_POWERBROADCAST:
+        if (w == 0x12 || w == 7) { static DWORD wk; if (!wk || GetTickCount() - wk > 10000) { wk = GetTickCount() | 1; SchEvent(SE_WAKE); } }   // выход из сна (приходит дважды)
+        else if (w == 0xA) {
+            SYSTEM_POWER_STATUS sp;
+            if (GetSystemPowerStatus(&sp) && sp.ACLineStatus != 255) { int ac = sp.ACLineStatus == 1; if (ac != g_acPrev) { int was = g_acPrev; g_acPrev = ac; if (was != -1) SchEvent(ac ? SE_AC : SE_BATT); } }
+        }
+        return TRUE;
     case WM_QUERYENDSESSION: return TRUE;
     case WM_ENDSESSION: if (w) { for (int i = 0; i < g_nhid; i++) if (IsWindow(g_hid[i])) ShowWindow(g_hid[i], SW_SHOW); } return 0;
     case WM_DESTROY: if (RecNs::hw) DestroyWindow(RecNs::hw); VolNs::Stop(); DupNs::Stop(); CamRecNs::Stop(); PostQuitMessage(0); return 0;     // запись корректно дописывается
@@ -6781,6 +7258,9 @@ static int Run(void) {
     ChangeWindowMessageFilterEx(g_hwnd, g_msgTaskbar, MSGFLT_ALLOW, NULL);   // от админа иначе не получим сообщение от explorer
     g_icon = (HICON)LoadImageW(g_inst, MAKEINTRESOURCEW(1), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR);
     TrayAdd();
+    WTSRegisterSessionNotification(g_hwnd, 0);
+    { SYSTEM_POWER_STATUS sp; if (GetSystemPowerStatus(&sp) && sp.ACLineStatus != 255) g_acPrev = sp.ACLineStatus == 1; }
+    SetTimer(g_hwnd, TID_SCHED, 5000, NULL);
     g_caps = GetKeyState(VK_CAPITAL) & 1;
     HANDLE ev = CreateEventW(NULL, TRUE, FALSE, NULL);
     HANDLE ht = CreateThread(NULL, 0, HookThread, ev, 0, &g_hookTid);
@@ -6788,6 +7268,7 @@ static int Run(void) {
     SetThreadPriority(ht, THREAD_PRIORITY_ABOVE_NORMAL);
     if (g_histOn) AddClipboardFormatListener(g_hwnd);
     RecShowSync(); VolSync(); DupSync(); CamRecSync();
+    SchEvent(SE_START); SchBadToast();
     MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0) > 0) { if (g_hwndRec && IsDialogMessageW(g_hwndRec, &msg)) continue; TranslateMessage(&msg); DispatchMessageW(&msg); }
     for (int i = 0; i < g_nhid; i++) if (IsWindow(g_hid[i])) ShowWindow(g_hid[i], SW_SHOW);
