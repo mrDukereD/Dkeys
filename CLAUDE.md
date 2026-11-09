@@ -7,6 +7,7 @@
 - `src/dkeys.cpp` — вся программа (чистый WinAPI, один файл). `src/dkeys.rc` + `src/dkeys.ico` — версия и иконка (ресурс №1; `python src/mkicon.py` пересобирает ico из `icon.png`).
 - `build.cmd` — сборка MSVC в `obj\`, затем **убивает работающий DKeys** и копирует exe в `D:\Progs\DKeys` (`DEST`, аргумент `run` — запустить). Пользовательский DKeys работает от админа, а оболочка Claude — нет: `taskkill` и копирование не пройдут. Тогда попросить пользователя закрыть DKeys; чужой процесс по имени не убивать. `build_dbg.cmd` — отладочная сборка с логом `%TEMP%\dkeys.log`.
 - `D:\Progs\DKeys` — рабочая копия пользователя (exe, `DKeys.ini`, `memory\`, `scripts\`, `records\`, …). **Не в git; `memory\` не трогать и не удалять.**
+- `scripts/` — копия пользовательских скриптов из `D:\Progs\DKeys\scripts` (без `tmp.py`); при изменении там — копировать сюда.
 - Вне git (`.gitignore`): `obj/`, `dist/`, `WireKeys/`, `wkbackup.wkb3`.
 
 ## Ограничения
