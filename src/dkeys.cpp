@@ -6715,6 +6715,35 @@ static void InitPaths(void) {
     lstrcpynW(g_recDir, g_dir, MAX_PATH); Cat(g_recDir, MAX_PATH, L"records\\");
 }
 
+static const wchar_t kEx1[] = LR"PY(# Вставить дату и время
+# .dpy: DKeys запускает скрипт без окна и вставляет в место курсора всё, что он напечатал (print).
+# Формат: %d день, %m месяц, %y год (2 цифры), %Y год (4), %H час, %M минуты, %S секунды.
+import datetime
+print(datetime.datetime.now().strftime("%d.%m.%y %H:%M"))
+)PY";
+static const wchar_t kEx2[] = LR"PY(# Курс доллара НБРБ
+# .dpy: вставляет в место курсора официальный курс USD к белорусскому рублю, например 2.9921.
+# Источник: API НБРБ, запасной - страница myfin.by/bank/kursy_valjut_nbrb.
+import json, re, urllib.request
+
+def get(url):
+    r = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    return urllib.request.urlopen(r, timeout=8).read().decode("utf-8")
+
+try:
+    rate = json.loads(get("https://api.nbrb.by/exrates/rates/USD?parammode=2"))["Cur_OfficialRate"]
+    print(rate)
+except Exception:
+    html = get("https://myfin.by/bank/kursy_valjut_nbrb")
+    m = re.search(r'kursy_valjut_nbrb/usd[^>]*>[^<]*</a></td><td>([\d.,]+)</td>', html)
+    print(m.group(1))
+)PY";
+static void MakeScripts(void) {                                                       // папка scripts создана впервые: кладём два примера .dpy
+    wchar_t f[MAX_PATH];
+    lstrcpynW(f, g_pyDir, MAX_PATH); Cat(f, MAX_PATH, L"datetime.dpy"); WriteText(f, kEx1);
+    lstrcpynW(f, g_pyDir, MAX_PATH); Cat(f, MAX_PATH, L"usd_nbrb.dpy"); WriteText(f, kEx2);
+}
+
 static int Run(void) {
     g_heap = GetProcessHeap();
     g_inst = GetModuleHandleW(NULL);
@@ -6736,7 +6765,9 @@ static int Run(void) {
         wchar_t old[MAX_PATH]; lstrcpynW(old, g_dir, MAX_PATH); Cat(old, MAX_PATH, L"py");
         if (GetFileAttributesW(g_pyDir) == INVALID_FILE_ATTRIBUTES && GetFileAttributesW(old) != INVALID_FILE_ATTRIBUTES) MoveFileW(old, g_pyDir);
     }
-    CreateDirectoryW(g_memDir, NULL); CreateDirectoryW(g_pyDir, NULL); CreateDirectoryW(g_runDir, NULL); CreateDirectoryW(g_recDir, NULL);
+    CreateDirectoryW(g_memDir, NULL);
+    if (CreateDirectoryW(g_pyDir, NULL)) MakeScripts();
+    CreateDirectoryW(g_runDir, NULL); CreateDirectoryW(g_recDir, NULL);
     LoadConfig(); BuffersLoad(); HistLoad();
     RegClass(L"DKMain", MainProc, 0); RegClass(L"DKToast", ToastProc, CS_DROPSHADOW);
     RegClass(L"DKPop", PopProc, CS_DROPSHADOW); RegClass(L"DKEdit", EdProc, 0);
