@@ -1,7 +1,7 @@
 # DKeys
 
 Крошечная portable-замена WireKeys для Windows: мультибуфер обмена, хоткеи, исправление раскладки, экранные утилиты. Живёт в трее.
-Чистый WinAPI на C++ без CRT, одна exe (~170 КБ), настройки в `DKeys.ini`.
+Чистый WinAPI на C++ без CRT, одна exe, настройки в `DKeys.ini`.
 
 **Скачать готовый exe (версия 1.2):** [Releases](https://github.com/mrDukereD/Dkeys/releases/latest)
 
