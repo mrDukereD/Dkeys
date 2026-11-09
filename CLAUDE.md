@@ -111,3 +111,7 @@
 ## Запись действий (macro / records)
 
 Действие `macro` (Win+Shift+M; `MacroNs`, форма как у `RecNs`, класс `DKMac`) и `records` (Win+Shift+N, вкладка `PM_RECORDS`, папка `records\`). Хуки `LLKbd`/`LLMouse` зовут `MacroKey`/`MacroMouse` (события с `DKMARK` игнорируются). Результат - `records\rec_*.py`: вверху настройки `SPEED` (-10..10, без 0), `REPEAT`, `CLICK_BY_BUTTON`, `UI_TIMEOUT`, затем линейная `macro()` из `wait/key/click/move`, ниже движок (ctypes `SendInput`, `uiautomation` для клика по кнопке; ставится через pip при первой записи). Курсор пишется, если стоит дольше `[Macro] HoverMs`. Запущенная запись идёт скрытым процессом (`g_playProc`), повтор `macro` её останавливает. Ctrl+Enter в списках - `OpenEditor`: `[General] Editor=`, иначе Notepad++ (реестр App Paths/Program Files), иначе Блокнот; так же открывается ini из меню трея. Лог движка: `%TEMP%\dkeys_macro.log`.
+
+## Скрипты .dpy
+
+Файл `*.dpy` в `scripts\` (вкладка «Скрипты», `[Scripts]`, `py`): `RunPy` -> `RunDpy` -> поток `DpyThread`: python запускается скрыто (`CREATE_NO_WINDOW`, stdout в трубу, `PYTHONIOENCODING=utf-8`, лимит 15 с и 1 МБ), вывод без хвостовых переводов строки в UTF-8 -> `WM_APP_DPY` -> `PasteText` в главном потоке. Код возврата не 0 - тост `L_DPY_ERR`. Выделение не захватывается (нет задержки на Ctrl+C), `DKEYS_SEL` не передаётся.

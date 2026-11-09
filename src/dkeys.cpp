@@ -72,7 +72,7 @@ enum { DM_CTRL = 1, DM_ALT = 2, DM_SHIFT = 4, DM_WIN = 8 };
 enum { A_NONE, A_COPY, A_PASTE, A_BUFFER, A_HIST, A_LAUNCH, A_RUN, A_ADMIN, A_PY, A_PYRUN, A_TOPMOST, A_TOTRAY, A_LAYOUT, A_PAUSE, A_WEBCAM, A_STOPWATCH, A_TIMER, A_DRAW, A_PICKER, A_RECORD, A_SCRIPTS, A_VOL, A_VOLSET, A_DUP, A_MACRO, A_RECORDS };
 enum { PM_BUF, PM_HIST, PM_LAUNCH, PM_SCRIPTS, PM_RECORDS };
 enum {
-    WM_APP_HOT = WM_APP + 1, WM_APP_KEY, WM_APP_CLOSE, WM_APP_PCLICK, WM_APP_PTAB, WM_APP_PIMG, WM_APP_MACRO, WM_TRAY, WM_APP_RENDERED,
+    WM_APP_HOT = WM_APP + 1, WM_APP_KEY, WM_APP_CLOSE, WM_APP_PCLICK, WM_APP_PTAB, WM_APP_PIMG, WM_APP_MACRO, WM_APP_DPY, WM_TRAY, WM_APP_RENDERED,
     TM_MOUSE = WM_APP + 20, TM_REHOOK
 };
 #define TID_RESTORE 1
@@ -241,6 +241,7 @@ X(L_INFO_REC, "popup.info_records", L"Enter - запустить   Ctrl+Enter - 
 X(L_EMPTY_REC, "popup.records_empty", L"В папке records нет записей. Win+Shift+M - записать действия клавиатуры и мыши") \
 X(L_TRAY_MACRO, "tray.macro", L"Запись действий") \
 X(L_TRAY_RECS, "tray.records", L"Записи…") \
+X(L_DPY_ERR, "dpy.error", L"Скрипт .dpy завершился с ошибкой (код %d)") \
 X(L_M_START, "macro.start", L"Запись действий пошла: повторное нажатие или кнопка - стоп") \
 X(L_M_SAVED, "macro.saved", L"Записано: records\\%s") \
 X(L_M_EMPTY, "macro.empty", L"Запись пуста: ни одного действия") \
@@ -1757,7 +1758,7 @@ static void ScrName(const wchar_t *t, wchar_t *out, int cap, BOOL bat) {      //
     }
 }
 static wchar_t **ScrList(int *cnt, const wchar_t *dir, int npat) {                   // *.py, *.bat, *.ps1 (в records - только *.py) по алфавиту, tmp.py первым
-    static const wchar_t *kPat[3] = {L"*.py", L"*.bat", L"*.ps1"};
+    static const wchar_t *kPat[4] = {L"*.py", L"*.bat", L"*.ps1", L"*.dpy"};
     wchar_t **a = NULL; int n = 0;
     for (int k = 0; k < npat; k++) {
         wchar_t pat[MAX_PATH]; lstrcpynW(pat, dir, MAX_PATH); Cat(pat, MAX_PATH, kPat[k]);
@@ -1812,7 +1813,7 @@ static int BindRows(BOOL scripts, Row *out, int max) {                          
         r->act = A_PY; r->ref = -1; r->label = Dup(L""); r->hk = Dup(e->hk); r->text = Dup(e->arg); r->dir = e->dir ? Dup(e->dir) : NULL;
         wchar_t sp[MAX_PATH], nm[100]; nm[0] = 0;
         if (e->title) lstrcpynW(nm, e->title, 100);
-        else if (FindTarget(e->arg, NULL, FALSE, sp) && (EndsI(sp, L".py") || EndsI(sp, L".pyw") || EndsI(sp, L".bat") || EndsI(sp, L".cmd") || EndsI(sp, L".ps1"))) {
+        else if (FindTarget(e->arg, NULL, FALSE, sp) && (EndsI(sp, L".py") || EndsI(sp, L".pyw") || EndsI(sp, L".bat") || EndsI(sp, L".cmd") || EndsI(sp, L".ps1") || EndsI(sp, L".dpy"))) {
             DWORD sz = 0; BYTE *raw = ReadAll(sp, &sz);
             if (raw) { if (sz > 6000) sz = 6000; wchar_t *txt = FromUtf8((char *)raw, sz); ScrName(txt, nm, 100, EndsI(sp, L".bat") || EndsI(sp, L".cmd")); Free(txt); Free(raw); }
         }
@@ -1828,7 +1829,7 @@ static int BindRows(BOOL scripts, Row *out, int max) {                          
         r->act = b->act; r->ref = -1; r->label = Dup(L""); r->hk = Dup(hk); r->text = Dup(b->arg); r->dir = b->dir ? Dup(b->dir) : NULL;
         r->title = Dup(b->act == A_ADMIN ? L"admin " : L""); { int l = lstrlenW(r->title); wchar_t *t = (wchar_t *)Alloc((l + lstrlenW(b->arg) + 1) * sizeof(wchar_t)); lstrcpyW(t, r->title); lstrcatW(t, b->arg); Free(r->title); r->title = t; }
         wchar_t sp[MAX_PATH];                                                         // скрипт: заголовок - из первой строки-комментария файла, как у файлов папки scripts
-        if (scripts && FindTarget(b->arg, b->act == A_PY ? NULL : b->dir, b->act != A_PY && IsScriptCmd(b->arg), sp) && (EndsI(sp, L".py") || EndsI(sp, L".pyw") || EndsI(sp, L".bat") || EndsI(sp, L".cmd") || EndsI(sp, L".ps1"))) {
+        if (scripts && FindTarget(b->arg, b->act == A_PY ? NULL : b->dir, b->act != A_PY && IsScriptCmd(b->arg), sp) && (EndsI(sp, L".py") || EndsI(sp, L".pyw") || EndsI(sp, L".bat") || EndsI(sp, L".cmd") || EndsI(sp, L".ps1") || EndsI(sp, L".dpy"))) {
             DWORD sz = 0; BYTE *raw = ReadAll(sp, &sz);
             if (raw) {
                 if (sz > 6000) sz = 6000;
@@ -1896,7 +1897,7 @@ static void ScrRow(Row *r, const wchar_t *file, const wchar_t *label, const wcha
 static void BuildRows(void) {
     FreeRows();
     wchar_t **sf = NULL; int ns = 0;
-    if (g_pmode == PM_SCRIPTS) { sf = ScrList(&ns, g_pyDir, 3); g_scrNames = sf; g_nscr = ns; }
+    if (g_pmode == PM_SCRIPTS) { sf = ScrList(&ns, g_pyDir, 4); g_scrNames = sf; g_nscr = ns; }
     else if (g_pmode == PM_RECORDS) { sf = ScrList(&ns, g_recDir, 1); g_scrNames = sf; g_nscr = ns; }
     wchar_t **rf = NULL; int nr = 0;
     if (g_pmode == PM_LAUNCH) rf = RunList(&nr);                                       // запуск: строки из ini, затем файлы папки runs
@@ -2293,6 +2294,50 @@ static void RunProc(wchar_t *cmd, const wchar_t *dir, wchar_t *env, BOOL hidden 
         wchar_t m[200]; wsprintfW(m, Tr(L_T_PYFAIL), g_python); Toast(m);
     }
 }
+struct DpyJob { wchar_t *cmd; wchar_t *dir; };
+static DWORD WINAPI DpyThread(void *a) {                                              // .dpy: скрипт печатает результат в stdout, DKeys вставляет его в место курсора
+    DpyJob *j = (DpyJob *)a;
+    SECURITY_ATTRIBUTES sa; sa.nLength = sizeof sa; sa.lpSecurityDescriptor = NULL; sa.bInheritHandle = TRUE;
+    HANDLE rd = NULL, wr = NULL;
+    if (CreatePipe(&rd, &wr, &sa, 0)) {
+        SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+        HANDLE nul = CreateFileW(L"NUL", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, NULL);
+        STARTUPINFOW si; PROCESS_INFORMATION pi; memset(&si, 0, sizeof si); si.cb = sizeof si;
+        si.dwFlags = STARTF_USESTDHANDLES; si.hStdInput = nul; si.hStdOutput = wr; si.hStdError = nul;
+        if (CreateProcessW(NULL, j->cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, (j->dir && *j->dir) ? j->dir : g_pyDir, &si, &pi)) {
+            CloseHandle(wr); wr = NULL; CloseHandle(pi.hThread);
+            char *buf = (char *)Alloc(1 << 20); int n = 0; DWORD t0 = GetTickCount(); BOOL done = FALSE;
+            while (!done && GetTickCount() - t0 < 15000) {
+                DWORD av = 0;
+                if (!PeekNamedPipe(rd, NULL, 0, NULL, &av, NULL)) break;                 // труба закрыта - процесс завершился
+                if (av) { DWORD got = 0; if (!ReadFile(rd, buf + n, (DWORD)((1 << 20) - 1 - n < (int)av ? (1 << 20) - 1 - n : av), &got, NULL) || !got) break; n += got; if (n >= (1 << 20) - 1) break; }
+                else Sleep(10);
+            }
+            if (WaitForSingleObject(pi.hProcess, 200) == WAIT_TIMEOUT) TerminateProcess(pi.hProcess, 1);
+            DWORD code = 0; GetExitCodeProcess(pi.hProcess, &code); CloseHandle(pi.hProcess);
+            while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r')) n--;            // хвостовой перевод строки не нужен
+            int o = (n >= 3 && (unsigned char)buf[0] == 0xEF && (unsigned char)buf[1] == 0xBB && (unsigned char)buf[2] == 0xBF) ? 3 : 0;
+            if (code != 0) {
+                wchar_t m[120]; wsprintfW(m, Tr(L_DPY_ERR), (int)code); PostMessageW(g_hwnd, WM_APP_MACRO, 0, (LPARAM)Dup(m));
+            } else if (n > o) PostMessageW(g_hwnd, WM_APP_DPY, 0, (LPARAM)FromUtf8(buf + o, n - o));
+            Free(buf);
+        }
+        if (wr) CloseHandle(wr);
+        if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
+        CloseHandle(rd);
+    }
+    Free(j->cmd); Free(j->dir); Free(j);
+    return 0;
+}
+static void RunDpy(const wchar_t *script, const wchar_t *par, const wchar_t *dir) {
+    SetEnvironmentVariableW(L"PYTHONIOENCODING", L"utf-8");                           // вывод python - UTF-8 независимо от кодовой страницы
+    Buf c = {0};
+    BufAdd(&c, L"\""); BufAdd(&c, g_python); BufAdd(&c, L"\" \""); BufAdd(&c, script); BufAdd(&c, L"\"");
+    if (par && *par) { BufAdd(&c, L" "); BufAdd(&c, par); }
+    DpyJob *j = (DpyJob *)Alloc(sizeof(DpyJob)); j->cmd = c.p; j->dir = Dup(dir ? dir : L"");
+    HANDLE h = CreateThread(NULL, 0, DpyThread, j, 0, NULL);
+    if (h) CloseHandle(h); else { Free(j->cmd); Free(j->dir); Free(j); }
+}
 static void RunPy(const wchar_t *arg, const wchar_t *dir, BOOL hold = FALSE) {   // hold: окно консоли остаётся открытым (pause)
     wchar_t *s = Dup(arg), *file, *par;
     SplitCmd(s, &file, &par);
@@ -2302,6 +2347,7 @@ static void RunPy(const wchar_t *arg, const wchar_t *dir, BOOL hold = FALSE) {  
         lstrcpynW(script, g_pyDir, MAX_PATH); Cat(script, MAX_PATH, file);
         if (GetFileAttributesW(script) == INVALID_FILE_ATTRIBUTES) { wchar_t t2[MAX_PATH]; lstrcpynW(t2, g_recDir, MAX_PATH); Cat(t2, MAX_PATH, file); if (GetFileAttributesW(t2) != INVALID_FILE_ATTRIBUTES) lstrcpyW(script, t2); }
     }
+    if (EndsI(script, L".dpy")) { RunDpy(script, par, dir); Free(s); return; }          // результат скрипта вставляется в место курсора
     BOOL mac = EndsI(script, L".py") && InDir(script, g_recDir);                       // запись (макрос): без окна консоли, чтобы фокус остался в целевом окне
     wchar_t *sel = mac ? NULL : GrabSelection();
     wchar_t tmp[MAX_PATH]; GetTempPathW(MAX_PATH, tmp); Cat(tmp, MAX_PATH, L"dkeys_sel.txt");
@@ -2637,7 +2683,7 @@ static void PopupEditFile(void) {                                               
     wchar_t path[MAX_PATH]; BOOL ok = RowPath(path);
     PopupClose();
     if (!ok) { Toast(Tr(L_T_NOFILE)); return; }
-    if (!(EndsI(path, L".py") || EndsI(path, L".pyw") || EndsI(path, L".bat") || EndsI(path, L".cmd") || EndsI(path, L".ps1") || EndsI(path, L".txt") || EndsI(path, L".ini"))) { Toast(Tr(L_NOEDIT)); return; }
+    if (!(EndsI(path, L".py") || EndsI(path, L".pyw") || EndsI(path, L".bat") || EndsI(path, L".cmd") || EndsI(path, L".ps1") || EndsI(path, L".dpy") || EndsI(path, L".txt") || EndsI(path, L".ini"))) { Toast(Tr(L_NOEDIT)); return; }
     OpenEditor(path);
 }
 static void PopupReselect(int keep) {
@@ -6007,8 +6053,8 @@ static void Save(DWORD mods) {                                                  
     }
     if (!n) { LeaveCriticalSection(&cs); Toast(Tr(L_M_EMPTY)); return; }
     SYSTEMTIME st; GetLocalTime(&st);
-    Buf b = {0}; wchar_t t[300];
-    wsprintfW(t, L"# Запись %02d.%02d.%04d %02d:%02d\n# Строки ниже - действия по порядку, wait() - пауза в секундах (правьте и удаляйте строки свободно)\n", st.wDay, st.wMonth, st.wYear, st.wHour, st.wMinute);
+    Buf b = {0}; wchar_t t[400];
+    wsprintfW(t, L"# Запись %02d.%02d.%04d %02d:%02d\n# Строки ниже - действия по порядку, wait() - пауза в секундах (правьте и удаляйте строки свободно)\n# Если нужен цикл используйте for i in range(5):\n", st.wDay, st.wMonth, st.wYear, st.wHour, st.wMinute);
     BufAdd(&b, t);
     BufAdd(&b, L"SPEED = 1              # скорость: от -10 до 10 (без 0). 2..10 - быстрее в N раз, -2..-10 - медленнее в N раз, 1 или -1 - как записано\n");
     BufAdd(&b, L"REPEAT = 1             # сколько раз повторить (0 - без конца, остановка повторным нажатием хоткея записи)\n");
@@ -6625,6 +6671,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_APP_PCLICK: PopupChoose((int)w); return 0;
     case WM_APP_PTAB: PopupTab((int)w); return 0;
     case WM_APP_PIMG: PopupImg((int)w); return 0;
+    case WM_APP_DPY: { wchar_t *t = (wchar_t *)l; if (t) { PasteText(t); Free(t); } return 0; }
     case WM_APP_MACRO: { wchar_t *t = (wchar_t *)l; if (t) { Toast(t); Free(t); } return 0; }
     case WM_TRAY:
         if (l == WM_LBUTTONUP) { if (g_hwndPop) PopupClose(); else PopupOpen(PM_BUF); }
