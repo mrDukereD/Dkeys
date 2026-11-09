@@ -70,10 +70,10 @@ void *memmove(void *d, const void *s, size_t n) {
 
 #define DKMARK ((ULONG_PTR)0x444B4559)
 enum { DM_CTRL = 1, DM_ALT = 2, DM_SHIFT = 4, DM_WIN = 8 };
-enum { A_NONE, A_COPY, A_PASTE, A_BUFFER, A_HIST, A_LAUNCH, A_RUN, A_ADMIN, A_PY, A_PYRUN, A_TOPMOST, A_TOTRAY, A_LAYOUT, A_PAUSE, A_WEBCAM, A_STOPWATCH, A_TIMER, A_DRAW, A_PICKER, A_RECORD, A_SCRIPTS, A_VOL, A_VOLSET, A_DUP, A_MACRO, A_RECORDS, A_AUDIO };
+enum { A_NONE, A_COPY, A_PASTE, A_BUFFER, A_HIST, A_LAUNCH, A_RUN, A_ADMIN, A_PY, A_PYRUN, A_TOPMOST, A_TOTRAY, A_LAYOUT, A_PAUSE, A_WEBCAM, A_STOPWATCH, A_TIMER, A_DRAW, A_PICKER, A_RECORD, A_SCRIPTS, A_VOL, A_VOLSET, A_DUP, A_MACRO, A_RECORDS, A_AUDIO, A_VOICE, A_SCRIPTN, A_VOICECMD };
 enum { PM_BUF, PM_HIST, PM_LAUNCH, PM_SCRIPTS, PM_RECORDS };
 enum {
-    WM_APP_HOT = WM_APP + 1, WM_APP_KEY, WM_APP_CLOSE, WM_APP_PCLICK, WM_APP_PTAB, WM_APP_PIMG, WM_APP_MACRO, WM_APP_DPY, WM_APP_SPEC, WM_TRAY, WM_APP_RENDERED,
+    WM_APP_HOT = WM_APP + 1, WM_APP_KEY, WM_APP_CLOSE, WM_APP_PCLICK, WM_APP_PTAB, WM_APP_PIMG, WM_APP_MACRO, WM_APP_DPY, WM_APP_SPEC, WM_TRAY, WM_APP_RENDERED, WM_APP_VCMD,
     TM_MOUSE = WM_APP + 20, TM_REHOOK
 };
 #define TID_RESTORE 1
@@ -96,7 +96,7 @@ static IUnknown *CamObj(int k);
 static void TmToggle(int mode);
 static void DrawOpen(void);
 static void PickerOpen(void);
-static void RecOpen(void), RecAudioOpen(void);
+static void RecOpen(void), RecAudioOpen(void), VoiceToggle(void), VoiceCmdToggle(void), VoiceCmdInit(void), VoiceCmd(const wchar_t *), TmStartFor(int), RunScriptN(int);
 static BOOL RegClass(const wchar_t *name, WNDPROC proc, UINT style);
 struct BB { BYTE *p; DWORD n, cap; };
 
@@ -107,6 +107,7 @@ static HWND g_hwnd, g_hwndPop, g_hwndToast, g_popFg; static int g_popGrace;
 static HWND g_hwndClip;   // владелец буфера обмена: окно потока хука, который всегда качает сообщения
 static wchar_t g_dir[MAX_PATH], g_ini[MAX_PATH], g_memDir[MAX_PATH], g_pyDir[MAX_PATH], g_runDir[MAX_PATH], g_recDir[MAX_PATH], g_exe[MAX_PATH];
 static volatile LONG g_modBits, g_popup, g_paused, g_modal;
+static volatile LONG g_voiceSt; static wchar_t g_vcModel[40] = L"small", g_vcLang[8]; static int g_vcThr, g_vcPause = 600, g_vcMaxChunk = 15, g_vcSil = 300; static BOOL g_vcStream, g_vcLive = TRUE, g_vcDebug; static wchar_t g_vcPrompt[200], g_vcCmdModel[40], g_cmdPrompt[360]; static volatile LONG g_vcCmd; static BOOL g_cmdGo, g_cmdDirty = TRUE;   // голосовые команды: модель, подсказка, режим команды, словарь устарел   // голосовой набор: состояние (0 пусто, 1 запись, 2 распознавание, 3 скачивание), модель, язык, потоки
 static BOOL g_selCopy; static wchar_t g_selIgn[2048]; static POINT g_selDn, g_selUpP; static DWORD g_selUpT;   // автокопирование выделенного мышью
 static volatile LONG g_caps;
 static DWORD g_hookTid;
@@ -208,6 +209,22 @@ X(L_REC_SAVED, "rec.saved", L"Видео сохранено: %s") \
 X(L_REC_AUDSAVED, "rec.audio_saved", L"Звук сохранён: %s") \
 X(L_REC_AUDKB, "rec.audio_kbps", L"Диктофон: %d кбит/с") \
 X(L_TRAY_AUD, "tray.dictaphone", L"Диктофон") \
+X(L_TRAY_VOICE, "tray.voice", L"Голосовой набор") \
+X(L_VOICE_ASK, "voice.ask2", L"Для голосового набора нужно скачать распознаватель речи Whisper (около 3 МБ, github.com) и модель «%s» (huggingface.co; small - около 465 МБ). Файлы сохранятся в папку whisper рядом с программой, дальше всё работает без интернета. Скачать сейчас?") \
+X(L_VOICE_REC, "voice.rec", L"Говорите... Ещё раз - закончить") \
+X(L_VOICE_WORK, "voice.work", L"Распознаю...") \
+X(L_VOICE_DLENG, "voice.dl_engine", L"Скачиваю распознаватель Whisper...") \
+X(L_VOICE_DLPROG, "voice.dl_progress", L"Скачиваю модель: %s") \
+X(L_VOICE_READY, "voice.ready", L"Whisper установлен. Голосовой набор готов") \
+X(L_VOICE_DLERR, "voice.dl_error", L"Не удалось скачать Whisper (нужны интернет, curl и tar)") \
+X(L_VOICE_EMPTY, "voice.empty", L"Речь не распознана") \
+X(L_VOICE_ERR, "voice.error", L"Голосовой набор: ошибка распознавания") \
+X(L_VOICE_CMDREC, "voice.cmd_listen2", L"Говорите команду...") \
+X(L_VOICE_CMD, "voice.cmd", L"Команда: %s") \
+X(L_VOICE_NOCMD, "voice.cmd_unknown", L"Не понял: %s") \
+X(L_VOICE_AMBIG, "voice.cmd_ambiguous", L"Не уверен, какая команда: %s") \
+X(L_VOICE_CONFIRM, "voice.cmd_confirm", L"Выполнить команду «%s»?") \
+X(L_VOICE_BUSY, "voice.busy", L"Голосовой набор сейчас недоступен (идёт запись, распознавание или загрузка)") \
 X(L_REC_FAIL, "rec.fail", L"Не удалось начать запись") \
 X(L_REC_OV, "rec.ov", L"Оверлей ввода (клавиши, мышь)") \
 X(L_REC_OV_OFF, "rec.ov_off", L"Выключен") \
@@ -243,7 +260,7 @@ X(L_TRAY_RELOAD, "tray.reload", L"Перечитать настройки") \
 X(L_TRAY_EXIT, "tray.exit", L"Выход") \
 X(L_TRAY_ABOUT, "tray.about", L"О программе") \
 X(L_ABOUT_TXT, "about.title", L"DKeys %s — твои самые горячие клавиши!") \
-X(L_ABOUT_BODY, "about.body4", L"Помнит всё, что ты копировал (а выделенное мышкой может копировать само), и не осуждает. Набрал «ghbdtn» вместо «привет» — починит. А главное — на хоткей можно повесить что угодно: запуск программы или скрипта, рисование прямо на экране, захват цвета пикселя, запись видео и звука, запись и повтор своих действий мышью и клавиатурой, веб-камеру, секундомер и таймер, укрощение громких звуков и дублирование звука на второе устройство. А ещё всё это умеет срабатывать само — по расписанию, в нужный день и час.") \
+X(L_ABOUT_BODY, "about.body5", L"Помнит всё, что ты копировал (а выделенное мышкой может копировать само), и не осуждает. Набрал «ghbdtn» вместо «привет» — починит. Умеет печатать под диктовку и слушаться голосовых команд. А главное — на хоткей можно повесить что угодно: запуск программы или скрипта, рисование прямо на экране, захват цвета пикселя, запись видео и звука, запись и повтор своих действий мышью и клавиатурой, веб-камеру, секундомер и таймер, укрощение громких звуков и дублирование звука на второе устройство. А ещё всё это умеет срабатывать само — по расписанию, в нужный день и час.") \
 X(L_ABOUT_AUTH, "about.authors", L"Придумал DukereD, написал Claude. Ни одна клавиша не пострадала.") \
 X(L_ABOUT_ASK, "about.ask", L"Открыть страницу проекта на GitHub?") \
 X(L_TRAY_TIPADM, "tray.tip_admin", L"DKeys (администратор)") \
@@ -682,6 +699,7 @@ Language=ru
 ;                               действие его останавливает. Секция [Macro]: HoverMs - через сколько мс неподвижности записывать положение курсора
 ;     records                   меню записей (папка records)
 ;     audio (или dictaphone)    диктофон: запись звука с микрофона в .m4a; те же кнопка и управление, что у записи экрана (микрофон, папка, качество - в «Настройки записи»)
+;     voice (или dictation), voicecmd (голосовая команда)     голосовой набор: 1-е нажатие - запись с микрофона, 2-е - распознавание (whisper.cpp, без интернета), текст вставляется в место курсора; язык - по раскладке (секция [Voice])
 ; Win+цифры буферов перекрывают запуск закреплённых программ на панели задач.
 ; В меню буфера: Del - удалить, F2 - править, Ins - новая запись, Ctrl+Вверх/Вниз - переставить,
 ; Влево/Вправо или Win+цифра - другой буфер, Ctrl+цифра - скопировать запись в буфер, Tab - история/запуск.
@@ -713,6 +731,8 @@ Win+Shift+D=duplicate
 Win+Shift+M=macro
 Win+Shift+N=records
 Ctrl+Win+S=audio
+Win+G=voice
+Win+Z=voicecmd
 Ctrl+Tilde=layout
 Win+C=run calc.exe
 Win+O=topmost
@@ -764,6 +784,30 @@ static const char *kIni2 = u8R"INI(
 ;   Раз в две недели=every 2w on fri at 17:00 catchup | py cleanup.py
 ;   Курс=every 30m from 09:00 to 18:00 on weekdays | notify usd_nbrb.dpy yes run https://myfin.by     (окно с текстом; Да - выполнить yes)
 Enabled=1
+
+[Voice]
+; Голосовой набор (Win+G, действие voice): первое нажатие - запись с микрофона, второе - распознавание, текст вставляется в место курсора.
+; Работает без интернета через whisper.cpp; при первом запуске DKeys предложит скачать распознаватель и модель в папку whisper\ рядом с exe.
+; Model - модель (tiny, base, small, medium: больше - точнее, но медленнее; файл whisper\ggml-<Model>.bin). Language - язык: пусто - по раскладке клавиатуры, либо код (ru, en, auto).
+; Threads - число потоков процессора (0 - по умолчанию).
+Model=small
+Language=
+Threads=0
+; Mode - whole: распознать всё целиком после остановки; stream: резать речь на куски по паузам и распознавать их, пока вы говорите (после остановки ждать только последний кусок).
+; StreamInsert - в режиме stream: live - вставлять каждый кусок сразу, как готов; end - собрать всё и вставить в конце.
+; Pause - мс тишины, после которых режется кусок. MaxChunk - самый длинный кусок, секунд. Silence - порог тишины (громкость 20-3000; сам подстраивается под шум микрофона, но не ниже этого).
+; Prompt - подсказка модели: имена, термины, как вы пишете (например: Привет, DKeys, Notepad++).
+Mode=whole
+StreamInsert=live
+Pause=600
+MaxChunk=15
+Silence=300
+; Голосовые команды: Win+Z (действие voicecmd) - скажите команду, запись сама закончится после паузы. Фразы и действия - в файле langs\<язык>.commands.ini (создаётся сам, правьте и добавляйте свои).
+; CommandModel - модель для команд (пусто - та же, что Model; для коротких фраз хватает base/tiny).
+CommandModel=
+; Debug=1 - писать журнал whisper\voice.log и сохранять куски записи в whisper\debug\ (для отладки; в этих файлах ваш голос, потом удалите).
+Debug=0
+Prompt=
 
 [AutoCopy]
 ; Автокопирование: текст, выделенный мышью (протяжка или двойной/тройной клик над текстом), сразу копируется в обычный буфер.
@@ -1022,6 +1066,14 @@ static void SplitDir(const wchar_t *v, Bind *b) {
     const wchar_t *d = v + at + 3; while (*d == L' ') d++;
     b->dir = Dup(d);
 }
+static int ParseDur(const wchar_t *v) {                                                 // "3h", "90m", "45s", "1.5h" (без единицы - минуты) -> секунды
+    while (*v == L' ') v++;
+    int a = 0; while (*v >= L'0' && *v <= L'9') a = a * 10 + (*v++ - L'0');
+    int f = 0; if (*v == L'.' && v[1] >= L'0' && v[1] <= L'9') { f = v[1] - L'0'; v += 2; while (*v >= L'0' && *v <= L'9') v++; }
+    int mul = 60; if ((*v | 32) == L's') mul = 1; else if ((*v | 32) == L'h') mul = 3600;
+    long long sec = (long long)a * mul + (long long)f * mul / 10; if (sec > 7 * 86400) sec = 7 * 86400;
+    return (int)sec;
+}
 static BOOL ParseAction(const wchar_t *v, Bind *b) {
     while (*v == L' ') v++;
     const wchar_t *start = v, *w = v;
@@ -1033,8 +1085,8 @@ static BOOL ParseAction(const wchar_t *v, Bind *b) {
     static const Act T[] = {
         {L"copy", A_COPY, 1}, {L"paste", A_PASTE, 3}, {L"buffer", A_BUFFER, 4}, {L"slots", A_BUFFER, 4}, {L"layout", A_LAYOUT, 0}, {L"history", A_HIST, 0}, {L"launcher", A_LAUNCH, 0}, {L"scripts", A_SCRIPTS, 0},
         {L"run", A_RUN, 2}, {L"admin", A_ADMIN, 2}, {L"py", A_PY, 2}, {L"pyrun", A_PYRUN, 0}, {L"topmost", A_TOPMOST, 0},
-        {L"totray", A_TOTRAY, 0}, {L"pause", A_PAUSE, 0}, {L"webcam", A_WEBCAM, 0}, {L"stopwatch", A_STOPWATCH, 0}, {L"timer", A_TIMER, 0}, {L"draw", A_DRAW, 0}, {L"record", A_RECORD, 0}, {L"colorpicker", A_PICKER, 0}, {L"picker", A_PICKER, 0},
-        {L"volume", A_VOL, 0}, {L"volumeset", A_VOLSET, 0}, {L"duplicate", A_DUP, 0}, {L"macro", A_MACRO, 0}, {L"records", A_RECORDS, 0}, {L"audio", A_AUDIO, 0}, {L"dictaphone", A_AUDIO, 0},
+        {L"totray", A_TOTRAY, 0}, {L"pause", A_PAUSE, 0}, {L"webcam", A_WEBCAM, 0}, {L"stopwatch", A_STOPWATCH, 0}, {L"timer", A_TIMER, 5}, {L"script", A_SCRIPTN, 6}, {L"draw", A_DRAW, 0}, {L"record", A_RECORD, 0}, {L"colorpicker", A_PICKER, 0}, {L"picker", A_PICKER, 0},
+        {L"volume", A_VOL, 0}, {L"volumeset", A_VOLSET, 0}, {L"duplicate", A_DUP, 0}, {L"macro", A_MACRO, 0}, {L"records", A_RECORDS, 0}, {L"audio", A_AUDIO, 0}, {L"dictaphone", A_AUDIO, 0}, {L"voicecmd", A_VOICECMD, 0}, {L"voice", A_VOICE, 0}, {L"dictation", A_VOICE, 0},
     };
     for (int i = 0; i < (int)(sizeof T / sizeof T[0]); i++) {
         if (lstrcmpiW(name, T[i].n)) continue;
@@ -1046,6 +1098,8 @@ static BOOL ParseAction(const wchar_t *v, Bind *b) {
             b->n2 = ToInt(v);
             if (b->n < 1 || b->n > 9 || b->n2 < 1 || b->n2 > 10) return FALSE;
         } else if (T[i].kind == 4) { b->n = *v ? ToInt(v) : 0; if (b->n < 0 || b->n > 9) return FALSE; }
+        else if (T[i].kind == 5) b->n = *v ? ParseDur(v) : 0;                         // timer [время]: со временем - сразу запустить
+        else if (T[i].kind == 6) { b->n = ToInt(v); if (b->n < 1 || b->n > 10) return FALSE; }
         return TRUE;
     }
     if (!lstrcmpiW(name, L"notify")) { b->act = A_PY; SplitDir(start, b); return TRUE; }
@@ -1182,6 +1236,18 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
         else if (!lstrcmpiW(k, L"Pos")) { const wchar_t *q = v; g_tmPos[0] = ToInt(q); while (*q && *q != L',') q++; g_tmPos[1] = *q ? ToInt(q + 1) : 80; }
     } else if (!lstrcmpiW(s, L"Schedule")) {
         if (!lstrcmpiW(k, L"Enabled")) g_schOn = ToInt(v) != 0; else SchAdd(k, v);
+    } else if (!lstrcmpiW(s, L"Voice")) {
+        if (!lstrcmpiW(k, L"Model")) { int o = 0; for (int i = 0; v[i] && o < 39; i++) if ((v[i] >= L'a' && v[i] <= L'z') || (v[i] >= L'A' && v[i] <= L'Z') || (v[i] >= L'0' && v[i] <= L'9') || v[i] == L'.' || v[i] == L'-' || v[i] == L'_') g_vcModel[o++] = v[i]; g_vcModel[o] = 0; if (!o) lstrcpyW(g_vcModel, L"small"); }
+        else if (!lstrcmpiW(k, L"Language")) { int o = 0; for (int i = 0; v[i] && o < 7; i++) if ((v[i] >= L'a' && v[i] <= L'z') || (v[i] >= L'A' && v[i] <= L'Z') || v[i] == L'-') g_vcLang[o++] = v[i]; g_vcLang[o] = 0; }
+        else if (!lstrcmpiW(k, L"Mode")) g_vcStream = (v[0] | 32) == L's';
+        else if (!lstrcmpiW(k, L"StreamInsert")) g_vcLive = (v[0] | 32) != L'e';
+        else if (!lstrcmpiW(k, L"Pause")) { g_vcPause = ToInt(v); if (g_vcPause < 200) g_vcPause = 200; if (g_vcPause > 3000) g_vcPause = 3000; }
+        else if (!lstrcmpiW(k, L"MaxChunk")) { g_vcMaxChunk = ToInt(v); if (g_vcMaxChunk < 3) g_vcMaxChunk = 3; if (g_vcMaxChunk > 60) g_vcMaxChunk = 60; }
+        else if (!lstrcmpiW(k, L"Silence")) { g_vcSil = ToInt(v); if (g_vcSil < 20) g_vcSil = 20; if (g_vcSil > 3000) g_vcSil = 3000; }
+        else if (!lstrcmpiW(k, L"Debug")) g_vcDebug = ToInt(v) != 0;
+        else if (!lstrcmpiW(k, L"CommandModel")) { int o = 0; for (int i = 0; v[i] && o < 39; i++) if ((v[i] >= L'a' && v[i] <= L'z') || (v[i] >= L'A' && v[i] <= L'Z') || (v[i] >= L'0' && v[i] <= L'9') || v[i] == L'.' || v[i] == L'-' || v[i] == L'_') g_vcCmdModel[o++] = v[i]; g_vcCmdModel[o] = 0; }
+        else if (!lstrcmpiW(k, L"Prompt")) { int o = 0; for (int i = 0; v[i] && o < 199; i++) if (v[i] != L'"') g_vcPrompt[o++] = v[i]; g_vcPrompt[o] = 0; }
+        else if (!lstrcmpiW(k, L"Threads")) { g_vcThr = ToInt(v); if (g_vcThr < 0 || g_vcThr > 64) g_vcThr = 0; }
     } else if (!lstrcmpiW(s, L"AutoCopy")) {
         if (!lstrcmpiW(k, L"Enabled")) g_selCopy = ToInt(v) != 0;
         else if (!lstrcmpiW(k, L"Ignore")) { int n = lstrlenW(g_selIgn); if (n && n < 2047) g_selIgn[n++] = L','; lstrcpynW(g_selIgn + n, v, 2048 - n); }
@@ -1268,7 +1334,7 @@ static void LoadConfig(void) {
     for (int i = 0; i < g_nscrIni; i++) { Free(g_scrIni[i].title); Free(g_scrIni[i].arg); Free(g_scrIni[i].dir); Free(g_scrIni[i].hk); }
     Free(g_scrIni); g_scrIni = NULL; g_nscrIni = 0;
     g_bnew = NULL; g_nbnew = g_bnewCap = 0;
-    SchClear(); g_selCopy = FALSE; g_selIgn[0] = 0;
+    SchClear(); g_selCopy = FALSE; g_selIgn[0] = 0; lstrcpyW(g_vcModel, L"small"); g_vcLang[0] = 0; g_vcThr = 0; g_vcPause = 600; g_vcMaxChunk = 15; g_vcSil = 300; g_vcStream = FALSE; g_vcLive = TRUE; g_vcDebug = FALSE; g_vcPrompt[0] = 0; g_vcCmdModel[0] = 0; g_cmdDirty = TRUE;
     IniParse(t, CfgCb);
     Free(t);
     SchFinish();
@@ -1279,6 +1345,7 @@ static void LoadConfig(void) {
     FreeBinds(old, oldn);
     g_bnew = NULL;
     LoadLang();
+    VoiceCmdInit();                                                                         // создать/перечитать langs\<язык>.commands.ini
 }
 
 /* ---------- clipboard ---------- */
@@ -2697,6 +2764,15 @@ static void OpenPopup(int mode, int buf) {
     if (g_hwndPop && g_pmode == mode && (mode != PM_BUF || !buf || buf == g_curBuf)) PopupClose();
     else PopupOpen(mode, buf);
 }
+static void RunScriptN(int n) {                                                                // n-й скрипт папки scripts (как цифры во вкладке «Скрипты»; tmp.py не считается)
+    int cnt = 0; wchar_t **a = ScrList(&cnt, g_pyDir, 4); int k = 0;
+    for (int i = 0; i < cnt; i++) {
+        if (!lstrcmpiW(a[i], L"tmp.py") || ++k != n) continue;
+        wchar_t *q = (wchar_t *)Alloc((lstrlenW(g_pyDir) + lstrlenW(a[i]) + 3) * sizeof(wchar_t)); wsprintfW(q, L"\"%s%s\"", g_pyDir, a[i]); RunPy(q, NULL, TRUE); Free(q);
+    }
+    for (int i = 0; i < cnt; i++) Free(a[i]);
+    Free(a);
+}
 static void ExecBind(const Bind *b) {
     Log(L"ExecBind act=%d n=%d", b->act, b->n);
     if (b->act != A_LAYOUT) InterlockedExchange(&g_lastValid, 0);
@@ -2716,7 +2792,7 @@ static void ExecBind(const Bind *b) {
     case A_LAYOUT: FixLayout(); break;
     case A_WEBCAM: CamOpen(); break;
     case A_STOPWATCH: TmToggle(1); break;
-    case A_TIMER: TmToggle(2); break;
+    case A_TIMER: if (b->n > 0) TmStartFor(b->n); else TmToggle(2); break;
     case A_DRAW: DrawOpen(); break;
     case A_PICKER: PickerOpen(); break;
     case A_RECORD: RecOpen(); break;
@@ -2726,6 +2802,9 @@ static void ExecBind(const Bind *b) {
     case A_MACRO: MacroToggle(b->mods); break;
     case A_RECORDS: OpenPopup(PM_RECORDS, 0); break;
     case A_AUDIO: RecAudioOpen(); break;
+    case A_VOICE: VoiceToggle(); break;
+    case A_VOICECMD: VoiceCmdToggle(); break;
+    case A_SCRIPTN: RunScriptN(b->n); break;
     case A_PAUSE: InterlockedExchange(&g_paused, !g_paused); Toast(g_paused ? Tr(L_T_PAUSED) : Tr(L_T_WORKING)); break;
     }
 }
@@ -5986,7 +6065,7 @@ static void StartAud(void) {
     recording = TRUE; Repaint();
 }
 static void Start(void) {
-    if (recording || !hw || ovBusy()) return;
+    if (recording || !hw || ovBusy() || g_voiceSt) return;
     if (aud) { StartAud(); return; }
     CalcCr(&cr); ScanOv();
     if (!csOk) { InitializeCriticalSection(&cs); csOk = TRUE; }
@@ -6280,7 +6359,7 @@ static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
 }
 static void OpenMode(BOOL a) {                                    // a: диктофон; повторный вызов - старт, потом стоп; другой режим - переключает кнопку
     if (recording) { Stop(); return; }
-    if (hw) { if (aud != a) { aud = a; Repaint(); if (a) ShowFree(); else ShowSync(); } else Start(); return; }
+    if (hw) { if (aud != a) { aud = a; Repaint(); if (a) ShowFree(); else ShowSync(); if (g_cmdGo) Start(); } else Start(); return; }
     aud = a;
     POINT pt; GetCursorPos(&pt);
     MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoW(MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST), &mi);
@@ -6294,6 +6373,7 @@ static void OpenMode(BOOL a) {                                    // a: дикт
     SetWindowDisplayAffinity(hw, 0x11);                      // WDA_EXCLUDEFROMCAPTURE: кнопка не попадает в видео
     ShowWindow(hw, SW_SHOWNOACTIVATE);
     if (!aud) ShowSync();
+    if (g_cmdGo) Start();                                           // голосовая команда: сразу начать запись
 }
 static void Open(void) { OpenMode(FALSE); }
 static void OpenAudio(void) { OpenMode(TRUE); }
@@ -6791,10 +6871,489 @@ static void MacroToggle(DWORD mods) {                                           
     if (rec) { Stop(mods); return; }
     if (hw) { Start(); return; }
     Open();
+    if (g_cmdGo && hw) Start();
 }
 static void RecOpen(void) { RecNs::Open(); }
 static void RecAudioOpen(void) { RecNs::OpenAudio(); }
 static void RecShowSync(void) { RecNs::ShowSync(); }
+
+/* ---------- голосовой набор: микрофон -> WAV 16 кГц -> whisper.cpp (whisper\whisper-cli.exe + модель) -> текст в место курсора ---------- */
+namespace VoiceNs {
+static const wchar_t kEngUrl[] = L"https://github.com/mrDukereD/Dkeys/releases/download/whisper-engine/whisper-engine-x64.zip";
+static const wchar_t kModUrl[] = L"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-%s.bin";
+static wchar_t lang[8];
+static volatile LONG stopF;
+static void Dir(wchar_t *p) { lstrcpynW(p, g_dir, MAX_PATH); Cat(p, MAX_PATH, L"whisper\\"); }
+static BOOL FindCli(wchar_t *out) {
+    static const wchar_t *s[2] = {L"whisper-cli.exe", L"Release\\whisper-cli.exe"};
+    for (int i = 0; i < 2; i++) { Dir(out); Cat(out, MAX_PATH, s[i]); if (GetFileAttributesW(out) != INVALID_FILE_ATTRIBUTES) return TRUE; }
+    return FALSE;
+}
+static void ModelPath(wchar_t *p, const wchar_t *m) { Dir(p); Cat(p, MAX_PATH, L"ggml-"); Cat(p, MAX_PATH, m); Cat(p, MAX_PATH, L".bin"); }
+static BOOL HaveModel(const wchar_t *m) { wchar_t a[MAX_PATH]; ModelPath(a, m); return GetFileAttributesW(a) != INVALID_FILE_ATTRIBUTES; }
+static BOOL Ready(void) { wchar_t a[MAX_PATH]; return FindCli(a) && HaveModel(g_vcModel) && (!g_vcCmdModel[0] || HaveModel(g_vcCmdModel)); }
+static void Say(const wchar_t *t) { PostMessageW(g_hwnd, WM_APP_MACRO, 0, (LPARAM)Dup(t)); }
+// Скрытый запуск и ожидание. out != NULL - stdout в этот файл-трубу (читает вызывающий); poll - файл, размер которого показываем как ход загрузки.
+static DWORD RunWait(wchar_t *cmd, const wchar_t *dir, DWORD timeout, const wchar_t *poll, ULONGLONG total) {
+    STARTUPINFOW si; PROCESS_INFORMATION pi; memset(&si, 0, sizeof si); si.cb = sizeof si;
+    if (!CreateProcessW(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, dir, &si, &pi)) return (DWORD)-1;
+    CloseHandle(pi.hThread);
+    DWORD t0 = GetTickCount(), lastSay = t0, code = (DWORD)-1;
+    for (;;) {
+        DWORD w = WaitForSingleObject(pi.hProcess, 1000);
+        if (w == WAIT_OBJECT_0) { GetExitCodeProcess(pi.hProcess, &code); break; }
+        if (GetTickCount() - t0 > timeout) { TerminateProcess(pi.hProcess, 1); break; }
+        if (poll && GetTickCount() - lastSay >= 8000) {
+            lastSay = GetTickCount();
+            WIN32_FILE_ATTRIBUTE_DATA fa; ULONGLONG sz = 0; if (GetFileAttributesExW(poll, GetFileExInfoStandard, &fa)) sz = ((ULONGLONG)fa.nFileSizeHigh << 32) | fa.nFileSizeLow;
+            wchar_t v[40], m[120]; if (total) wsprintfW(v, L"%d%%", (int)(sz * 100 / total)); else wsprintfW(v, L"%d МБ", (int)(sz >> 20));
+            wsprintfW(m, Tr(L_VOICE_DLPROG), v); Say(m);
+        }
+    }
+    CloseHandle(pi.hProcess); return code;
+}
+static BOOL GetModel(const wchar_t *m, const wchar_t *dir) {
+    wchar_t mp[MAX_PATH], part[MAX_PATH], url[200], cmd[1400];
+    if (HaveModel(m)) return TRUE;
+    ModelPath(mp, m); lstrcpyW(part, mp); Cat(part, MAX_PATH, L".part"); DeleteFileW(part);
+    wsprintfW(url, kModUrl, m);
+    wsprintfW(cmd, L"curl.exe -L -f -s -S -o \"%s\" \"%s\"", part, url);
+    BOOL ok = RunWait(cmd, dir, 4 * 3600 * 1000, part, lstrcmpiW(m, L"small") ? 0 : 487601967ULL) == 0 && MoveFileExW(part, mp, MOVEFILE_REPLACE_EXISTING);
+    if (!ok) DeleteFileW(part);
+    return ok;
+}
+static DWORD WINAPI DlThread(LPVOID) {
+    wchar_t d[MAX_PATH], dd[MAX_PATH], cli[MAX_PATH], zip[MAX_PATH], cmd[1400];
+    Dir(d); CreateDirectoryW(d, NULL); lstrcpyW(dd, d); dd[lstrlenW(dd) - 1] = 0;           // без хвостового \ (иначе \" в командной строке)
+    BOOL ok = TRUE;
+    if (!FindCli(cli)) {
+        Say(Tr(L_VOICE_DLENG));
+        lstrcpyW(zip, d); Cat(zip, MAX_PATH, L"engine.zip");
+        wsprintfW(cmd, L"curl.exe -L -f -s -S -o \"%s\" \"%s\"", zip, kEngUrl);
+        ok = RunWait(cmd, d, 600000, NULL, 0) == 0;
+        if (ok) { wsprintfW(cmd, L"tar.exe -xf \"%s\" -C \"%s\"", zip, dd); ok = RunWait(cmd, d, 120000, NULL, 0) == 0 && FindCli(cli); }
+        DeleteFileW(zip);
+    }
+    if (ok) ok = GetModel(g_vcModel, d);
+    if (ok && g_vcCmdModel[0]) ok = GetModel(g_vcCmdModel, d);
+    InterlockedExchange(&g_voiceSt, 0);
+    Say(ok ? Tr(L_VOICE_READY) : Tr(L_VOICE_DLERR));
+    return 0;
+}
+static BOOL WriteWav(const wchar_t *path, const short *pcm, SIZE_T n) {
+    BYTE h[44] = {'R','I','F','F',0,0,0,0,'W','A','V','E','f','m','t',' ',16,0,0,0,1,0,1,0,0x80,0x3E,0,0,0x00,0x7D,0,0,2,0,16,0,'d','a','t','a',0,0,0,0};
+    DWORD dl = (DWORD)(n * 2); *(DWORD *)(h + 4) = 36 + dl; *(DWORD *)(h + 40) = dl;
+    HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL); if (f == INVALID_HANDLE_VALUE) return FALSE;
+    DWORD w = 0; BOOL ok = WriteFile(f, h, 44, &w, NULL) && WriteFile(f, pcm, dl, &w, NULL); CloseHandle(f); return ok;
+}
+// ---- голосовые команды: словарь langs\<язык>.commands.ini, нечёткое сопоставление фразы ----
+static const char kCmdRu[] = u8R"CMD(; DKeys: голосовые команды (хоткей voicecmd: сказать команду, запись закончится после паузы). Сказали фразу - выполнилось действие справа от =.
+; Вариантов фразы у одного действия может быть несколько через |. Знак ! в начале - перед выполнением спросить подтверждение.
+; Подстановки: {N} - число (цифрами или словами из [Numbers]), {U} - единица из [Units], {NAME} - название из меню запуска ([Launcher]), только в конце фразы.
+; Действие - любая строка, как в хоткеях ini: audio, record, timer 3h, script 2, run notepad.exe ... ({N}, {U}, {NAME} в ней подставляются).
+; Распознанная речь сравнивается с фразами нечётко (опечатки Whisper прощаются), лишние слова вокруг фразы допустимы.
+; Другой язык: скопируйте файл в <язык>.commands.ini (язык - Language в [General]) и переведите слова. Файл сам не перезаписывается.
+[Commands]
+включи диктофон | запусти диктофон | диктофон = audio
+запись экрана | включи запись экрана | запусти запись экрана | запись видео | включи запись видео = record
+запись действий | включи запись действий | запиши действия = macro
+покажи записи | открой записи = records
+рисовалка | включи рисовалку | открой рисовалку = draw
+пипетка | включи пипетку | определи цвет = picker
+веб камера | вебкамера | покажи камеру | включи камеру = webcam
+секундомер | включи секундомер | запусти секундомер = stopwatch
+таймер на {N} {U} | включи таймер на {N} {U} | поставь таймер на {N} {U} | запусти таймер на {N} {U} = timer {N}{U}
+стабильная громкость | включи стабильную громкость | выключи стабильную громкость = volume
+дублирование звука | включи дублирование звука | выключи дублирование звука = duplicate
+покажи буфер | открой буфер = buffer
+покажи историю | открой историю = history
+меню запуска | покажи запуск | открой запуск = launcher
+покажи скрипты | открой скрипты | скрипты = scripts
+выполни скрипт {N} | запусти скрипт {N} | скрипт {N} = script {N}
+исправь раскладку | поправь раскладку = layout
+поверх всех окон | закрепи окно = topmost
+убери в трей | спрячь в трей = totray
+запусти блокнот | открой блокнот | блокнот = run notepad.exe
+запусти калькулятор | открой калькулятор | калькулятор = run calc.exe
+запусти проводник | открой проводник = run explorer.exe
+запусти {NAME} | открой {NAME} = run {NAME}
+! выключи компьютер = run shutdown.exe /s /t 30
+! перезагрузи компьютер = run shutdown.exe /r /t 30
+отмени выключение = run shutdown.exe /a
+
+[Units]
+секунда | секунды | секунд | секунду = s
+минута | минуты | минут | минуту = m
+час | часа | часов = h
+
+[Numbers]
+ноль = 0
+один | одна | одну = 1
+два | две = 2
+три = 3
+четыре = 4
+пять = 5
+шесть = 6
+семь = 7
+восемь = 8
+девять = 9
+десять = 10
+одиннадцать = 11
+двенадцать = 12
+тринадцать = 13
+четырнадцать = 14
+пятнадцать = 15
+шестнадцать = 16
+семнадцать = 17
+восемнадцать = 18
+девятнадцать = 19
+двадцать = 20
+тридцать = 30
+сорок = 40
+пятьдесят = 50
+шестьдесят = 60
+семьдесят = 70
+восемьдесят = 80
+девяносто = 90
+сто = 100
+двести = 200
+триста = 300
+четыреста = 400
+пятьсот = 500
+полтора | полторы = 1.5
+)CMD";
+struct CmdPat { int nw; wchar_t w[10][32]; char ty[10]; wchar_t *act; BOOL conf; };       // ty: 0 слово, 1 {N}, 2 {U}, 3 {NAME}
+struct CmdWord { wchar_t w[32]; wchar_t code[16]; int val; };
+static CmdPat *g_cmd; static int g_ncmd; static CmdWord *g_unit, *g_num; static int g_nunit, g_nnum;
+static int Tok(const wchar_t *s, wchar_t (*t)[32], int max) {                                // слова: нижний регистр, ё=е, цифры с точкой (3,5 -> 3.5)
+    int n = 0, l = 0; wchar_t cur[32];
+    for (const wchar_t *p = s;; p++) {
+        wchar_t c = *p;
+        BOOL keep = c && (IsCharAlphaNumericW(c) || ((c == L'.' || c == L',') && l && cur[l - 1] >= L'0' && cur[l - 1] <= L'9' && p[1] >= L'0' && p[1] <= L'9'));
+        if (keep) { if (l < 31) { wchar_t lc = c; CharLowerBuffW(&lc, 1); if (lc == 0x451) lc = 0x435; if (lc == L',') lc = L'.'; cur[l++] = lc; } }
+        else { if (l && n < max) { cur[l] = 0; lstrcpyW(t[n++], cur); } l = 0; }
+        if (!c) break;
+    }
+    return n;
+}
+static int Lev(const wchar_t *a, const wchar_t *b) {
+    int la = lstrlenW(a), lb = lstrlenW(b); if (la > 63 || lb > 63) return 99;
+    int p[65], c[65]; for (int j = 0; j <= lb; j++) p[j] = j;
+    for (int i = 1; i <= la; i++) {
+        c[0] = i;
+        for (int j = 1; j <= lb; j++) { int v = p[j - 1] + (a[i - 1] != b[j - 1]); if (p[j] + 1 < v) v = p[j] + 1; if (c[j - 1] + 1 < v) v = c[j - 1] + 1; c[j] = v; }
+        memcpy(p, c, (lb + 1) * sizeof(int));
+    }
+    return p[lb];
+}
+static int Allow(int len) { return len <= 3 ? 0 : len <= 6 ? 1 : 2; }
+static int DecTenths(const wchar_t *s) { int a = 0; while (*s >= L'0' && *s <= L'9') a = a * 10 + (*s++ - L'0'); int f = 0; if (*s == L'.' && s[1] >= L'0' && s[1] <= L'9') f = s[1] - L'0'; return a * 10 + f; }
+static void CmdCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
+    BOOL isCmd = !lstrcmpiW(s, L"Commands"), isUnit = !lstrcmpiW(s, L"Units"), isNum = !lstrcmpiW(s, L"Numbers");
+    if (!isCmd && !isUnit && !isNum) return;
+    BOOL conf = FALSE; while (*k == L' ') k++; if (isCmd && *k == L'!') { conf = TRUE; k++; }
+    BOOL first = TRUE; const wchar_t *q = k;
+    while (*q) {
+        const wchar_t *e = q; while (*e && *e != L'|') e++;
+        wchar_t ph[160]; int l = (int)(e - q); if (l > 159) l = 159; memcpy(ph, q, l * sizeof(wchar_t)); ph[l] = 0;
+        if (isCmd && g_ncmd < 200 && g_nunit >= 0) {
+            CmdPat *c = &g_cmd[g_ncmd]; memset(c, 0, sizeof *c); c->conf = conf;
+            wchar_t wd[10][32]; int nw = Tok(ph, wd, 10);                                    // слова фразы; {N}/{U}/{NAME} Tok разобьёт на букву - распознаем отдельно
+            const wchar_t *r = ph;
+            while (*r && c->nw < 10) {
+                while (*r == L' ') r++; if (!*r) break;
+                const wchar_t *w = r; while (*r && *r != L' ') r++;
+                int wl = (int)(r - w);
+                if (wl == 3 && CompareStringOrdinal(w, 3, L"{N}", 3, TRUE) == CSTR_EQUAL) c->ty[c->nw++] = 1;
+                else if (wl == 3 && CompareStringOrdinal(w, 3, L"{U}", 3, TRUE) == CSTR_EQUAL) c->ty[c->nw++] = 2;
+                else if (wl == 6 && CompareStringOrdinal(w, 6, L"{NAME}", 6, TRUE) == CSTR_EQUAL) c->ty[c->nw++] = 3;
+                else { wchar_t one[40]; int ol = wl > 38 ? 38 : wl; memcpy(one, w, ol * sizeof(wchar_t)); one[ol] = 0; wchar_t tt[3][32]; int nt = Tok(one, tt, 3); for (int z = 0; z < nt && c->nw < 10; z++) { lstrcpyW(c->w[c->nw], tt[z]); c->ty[c->nw++] = 0; } }
+            }
+            (void)nw; (void)wd;
+            if (c->nw) {
+                c->act = Dup(v); g_ncmd++;
+                if (first) { int pl = lstrlenW(g_cmdPrompt); for (int z = 0; z < c->nw && pl < 330; z++) if (!c->ty[z]) { if (pl) g_cmdPrompt[pl++] = L' '; int zl = lstrlenW(c->w[z]); if (pl + zl > 340) break; memcpy(g_cmdPrompt + pl, c->w[z], zl * sizeof(wchar_t)); pl += zl; } if (pl < 350) { g_cmdPrompt[pl++] = L'.'; } g_cmdPrompt[pl] = 0; }
+            }
+        } else if (isUnit && g_nunit < 40) {
+            wchar_t tt[2][32]; if (Tok(ph, tt, 2) >= 1) { CmdWord *w = &g_unit[g_nunit++]; lstrcpyW(w->w, tt[0]); lstrcpynW(w->code, v, 16); }
+        } else if (isNum && g_nnum < 100) {
+            wchar_t tt[2][32]; if (Tok(ph, tt, 2) >= 1) { CmdWord *w = &g_num[g_nnum++]; lstrcpyW(w->w, tt[0]); w->val = DecTenths(v); }
+        }
+        first = FALSE; q = *e ? e + 1 : e;
+    }
+}
+static void CmdLoad(void) {
+    if (!g_cmdDirty) return;
+    g_cmdDirty = FALSE;
+    if (!g_cmd) { g_cmd = (CmdPat *)Alloc(200 * sizeof(CmdPat)); g_unit = (CmdWord *)Alloc(40 * sizeof(CmdWord)); g_num = (CmdWord *)Alloc(100 * sizeof(CmdWord)); }
+    for (int i = 0; i < g_ncmd; i++) Free(g_cmd[i].act);
+    g_ncmd = g_nunit = g_nnum = 0; g_cmdPrompt[0] = 0;
+    wchar_t dir[MAX_PATH], path[MAX_PATH];
+    lstrcpynW(dir, g_dir, MAX_PATH); Cat(dir, MAX_PATH, L"langs\\");
+    lstrcpynW(path, dir, MAX_PATH); Cat(path, MAX_PATH, g_lang); Cat(path, MAX_PATH, L".commands.ini");
+    DWORD sz = 0; BYTE *raw = ReadAll(path, &sz);
+    if (!raw) { CreateDirectoryW(dir, NULL); WriteAtomic(path, kCmdRu, (DWORD)(sizeof kCmdRu - 1)); raw = ReadAll(path, &sz); }
+    if (!raw) return;
+    wchar_t *t = FromUtf8((char *)raw, sz); Free(raw);
+    IniParse(t, CmdCb); Free(t);
+}
+static int NumAt(wchar_t (*t)[32], int nt, int p, int *tenths) {                                // число с позиции p: цифрами или словами (слова складываются: двадцать пять = 25)
+    int cnt = 0, sum = 0;
+    while (p + cnt < nt) {
+        const wchar_t *w = t[p + cnt]; int v = -1;
+        if (w[0] >= L'0' && w[0] <= L'9') { if (cnt) break; sum = DecTenths(w); cnt = 1; break; }
+        for (int i = 0; i < g_nnum; i++) if (Lev(w, g_num[i].w) <= (lstrlenW(g_num[i].w) >= 6 ? 1 : 0)) { v = g_num[i].val; break; }
+        if (v < 0) break;
+        sum += v; cnt++;
+    }
+    *tenths = sum; return cnt;
+}
+struct Res { int cost, pat, nameIdx, tenths; wchar_t ucode[16]; };
+static BOOL MatchPat(const CmdPat *c, wchar_t (*t)[32], int nt, int start, Res *r) {
+    int pos = start, cost = start * 2; r->nameIdx = -1; r->tenths = 0; r->ucode[0] = 0;
+    for (int i = 0; i < c->nw; i++) {
+        if (pos >= nt) return FALSE;
+        if (c->ty[i] == 0) { int dd = Lev(t[pos], c->w[i]); if (dd > Allow(lstrlenW(c->w[i]))) return FALSE; cost += dd * 2; pos++; }
+        else if (c->ty[i] == 1) { int k = NumAt(t, nt, pos, &r->tenths); if (!k) return FALSE; pos += k; }
+        else if (c->ty[i] == 2) {
+            int f = -1; for (int j = 0; j < g_nunit; j++) if (Lev(t[pos], g_unit[j].w) <= Allow(lstrlenW(g_unit[j].w))) { f = j; break; }
+            if (f < 0) return FALSE;
+            lstrcpyW(r->ucode, g_unit[f].code); pos++;
+        } else {                                                                              // {NAME}: остаток фразы сравниваем с названиями из [Launcher]
+            wchar_t rest[64]; int o = 0; rest[0] = 0;
+            for (int k = pos; k < nt; k++) { int l = lstrlenW(t[k]); if (o + l + 1 > 63) break; if (o) rest[o++] = L' '; memcpy(rest + o, t[k], l * sizeof(wchar_t)); o += l; }
+            rest[o] = 0;
+            int bi = -1, bd = 99;
+            for (int n = 0; n < g_nlaunch; n++) {
+                wchar_t tn[8][32], nm[64]; int ntn = Tok(g_launch[n].k, tn, 8), no = 0; nm[0] = 0;
+                for (int k = 0; k < ntn; k++) { int l = lstrlenW(tn[k]); if (no + l + 1 > 63) break; if (no) nm[no++] = L' '; memcpy(nm + no, tn[k], l * sizeof(wchar_t)); no += l; }
+                nm[no] = 0; if (!no) continue;
+                int dd = Lev(rest, nm); if (dd <= no / 4 + 1 && dd < bd) { bd = dd; bi = n; }
+            }
+            if (bi < 0) return FALSE;
+            r->nameIdx = bi; cost += bd * 2; pos = nt;
+        }
+    }
+    int extra = nt - pos; cost += extra * 2;
+    if (start + extra > 2) return FALSE;
+    r->cost = cost; return TRUE;
+}
+static void Subst(const wchar_t *act, const Res *r, wchar_t *out, int cap) {
+    int o = 0;
+    for (const wchar_t *p = act; *p && o < cap - 40;) {
+        if (CompareStringOrdinal(p, 3, L"{N}", 3, TRUE) == CSTR_EQUAL) { o += wsprintfW(out + o, r->tenths % 10 ? L"%d.%d" : L"%d", r->tenths / 10, r->tenths % 10); p += 3; }
+        else if (CompareStringOrdinal(p, 3, L"{U}", 3, TRUE) == CSTR_EQUAL) { lstrcpyW(out + o, r->ucode); o += lstrlenW(r->ucode); p += 3; }
+        else if (CompareStringOrdinal(p, 6, L"{NAME}", 6, TRUE) == CSTR_EQUAL) {
+            if (r->nameIdx >= 0) { UINT lm, lk; const wchar_t *lc = LauncherSplit(g_launch[r->nameIdx].v, &lm, &lk); int l = lstrlenW(lc); if (o + l < cap - 4) { memcpy(out + o, lc, l * sizeof(wchar_t)); o += l; } }
+            p += 6;
+        } else out[o++] = *p++;
+    }
+    out[o] = 0;
+}
+static void VLog(const char *msg, const char *txt, int tl);
+static void RunCmdText(const wchar_t *text) {                                                // главный поток: сопоставить, подтвердить, выполнить
+    CmdLoad();
+    wchar_t (*t)[32] = (wchar_t (*)[32])Alloc(sizeof(wchar_t[32]) * 40); int nt = Tok(text, t, 40);
+    Res best, second; best.cost = second.cost = 1000; best.pat = second.pat = -1;
+    for (int pidx = 0; pidx < g_ncmd; pidx++) {
+        Res r; r.cost = 1000;
+        for (int st = 0; st < 3 && st < nt; st++) { Res x; if (MatchPat(&g_cmd[pidx], t, nt, st, &x) && x.cost < r.cost) r = x; }
+        if (r.cost >= 1000) continue;
+        r.pat = pidx;
+        if (r.cost < best.cost) { second = best; best = r; }
+        else if (r.cost < second.cost && lstrcmpW(g_cmd[pidx].act, g_cmd[best.pat].act)) second = r;
+    }
+    Free(t);
+    wchar_t shown[110], m[260]; lstrcpynW(shown, text, 100);
+    if (g_vcDebug) { char lm[160]; wsprintfA(lm, "cmd tokens=%d patterns=%d best=%d cost=%d second=%d:", nt, g_ncmd, best.pat, best.cost, second.cost); char u8[300]; int ul = WideCharToMultiByte(CP_UTF8, 0, shown, -1, u8, 299, NULL, NULL); VLog(lm, u8, ul > 0 ? ul - 1 : 0); }
+    if (best.pat < 0 || best.cost > 5) { wsprintfW(m, Tr(L_VOICE_NOCMD), shown); Toast(m); return; }
+    if (second.pat >= 0 && second.cost - best.cost < 2 && lstrcmpW(g_cmd[second.pat].act, g_cmd[best.pat].act)) { wsprintfW(m, Tr(L_VOICE_AMBIG), shown); Toast(m); return; }
+    wchar_t act[400]; Subst(g_cmd[best.pat].act, &best, act, 400);
+    wsprintfW(m, Tr(L_VOICE_CMD), shown); Toast(m);
+    if (g_cmd[best.pat].conf) {
+        wchar_t q[260]; wsprintfW(q, Tr(L_VOICE_CONFIRM), shown);
+        if (MessageBoxW(NULL, q, Tr(L_TRAY_VOICE), MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST) != IDYES) return;
+    }
+    g_noGrab = TRUE; g_cmdGo = TRUE; ExecSpec(act); g_cmdGo = FALSE; g_noGrab = FALSE;
+}
+// Запуск whisper-cli и сбор stdout (UTF-8). Возвращает буфер (Free) или NULL.
+static char *Recognize(const wchar_t *wav, int *len, SIZE_T ns, BOOL cm) {
+    wchar_t cli[MAX_PATH], mp[MAX_PATH], d[MAX_PATH], cmd[1200]; *len = 0;
+    if (!FindCli(cli)) return NULL;
+    ModelPath(mp, cm && g_vcCmdModel[0] ? g_vcCmdModel : g_vcModel); Dir(d);
+    SYSTEM_INFO sy; GetSystemInfo(&sy); int th = g_vcThr > 0 ? g_vcThr : (int)sy.dwNumberOfProcessors / 2; if (th < 4) th = 4; if (th > 16) th = 16;
+    int ac = (int)(ns / 320) + 300; wchar_t acs[24]; acs[0] = 0; if (ac < 1400) { if (ac < 500) ac = 500; wsprintfW(acs, L" -ac %d", ac); }   // энкодер Whisper считает 30 с; для короткой записи уменьшаем контекст (50 отсчётов на секунду) - в разы быстрее
+    wchar_t pr[400]; pr[0] = 0; const wchar_t *ptxt = cm ? g_cmdPrompt : g_vcPrompt; if (*ptxt) wsprintfW(pr, L" --prompt \"%s\"", ptxt);
+    wsprintfW(cmd, L"\"%s\" -m \"%s\" -f \"%s\" -l %s -nt -np -bs 1 -mc 0 -nf -t %d%s%s", cli, mp, wav, cm ? g_lang : lang, th, acs, pr);
+    SECURITY_ATTRIBUTES sa; sa.nLength = sizeof sa; sa.lpSecurityDescriptor = NULL; sa.bInheritHandle = TRUE;
+    HANDLE rd = NULL, wr = NULL; if (!CreatePipe(&rd, &wr, &sa, 0)) return NULL;
+    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+    HANDLE nul = CreateFileW(L"NUL", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, NULL);
+    STARTUPINFOW si; PROCESS_INFORMATION pi; memset(&si, 0, sizeof si); si.cb = sizeof si;
+    si.dwFlags = STARTF_USESTDHANDLES; si.hStdInput = nul; si.hStdOutput = wr; si.hStdError = nul;
+    char *buf = NULL;
+    if (CreateProcessW(NULL, cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS, NULL, d, &si, &pi)) {
+        CloseHandle(wr); wr = NULL; CloseHandle(pi.hThread);
+        buf = (char *)Alloc(1 << 20); int n = 0; DWORD t0 = GetTickCount();
+        while (GetTickCount() - t0 < 300000) {                                              // до 5 минут
+            DWORD av = 0;
+            if (!PeekNamedPipe(rd, NULL, 0, NULL, &av, NULL)) break;
+            if (av) { DWORD got = 0; if (!ReadFile(rd, buf + n, (DWORD)((1 << 20) - 1 - n < (int)av ? (1 << 20) - 1 - n : av), &got, NULL) || !got) break; n += got; if (n >= (1 << 20) - 1) break; }
+            else Sleep(30);
+        }
+        if (WaitForSingleObject(pi.hProcess, 300) == WAIT_TIMEOUT) TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hProcess); *len = n;
+    }
+    if (wr) CloseHandle(wr);
+    if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
+    CloseHandle(rd); return buf;
+}
+static void VLog(const char *msg, const char *txt, int tl) {                                  // журнал отладки Debug=1: whisper\voice.log
+    if (!g_vcDebug) return;
+    wchar_t pth[MAX_PATH]; Dir(pth); Cat(pth, MAX_PATH, L"voice.log");
+    char t[300]; wsprintfA(t, "%u %s ", GetTickCount(), msg);
+    HANDLE f = CreateFileW(pth, FILE_APPEND_DATA, FILE_SHARE_READ, NULL, OPEN_ALWAYS, 0, NULL); if (f == INVALID_HANDLE_VALUE) return;
+    DWORD w; WriteFile(f, t, lstrlenA(t), &w, NULL); if (txt && tl > 0) WriteFile(f, txt, tl, &w, NULL); WriteFile(f, "\r\n", 2, &w, NULL); CloseHandle(f);
+}
+struct Chunk { short *pcm; SIZE_T n; int kind; };                                          // kind: 0 обычный, 1 последний, 2 последний - микрофон не открылся
+static Chunk q[16]; static int qh, qt; static CRITICAL_SECTION qcs; static BOOL qInit;
+static BOOL Push(short *src, SIZE_T n, int kind) {
+    short *c = NULL; if (n) { c = (short *)Alloc(n * 2); memcpy(c, src, n * 2); }
+    for (int w = 0; w < 1200; w++) {
+        EnterCriticalSection(&qcs);
+        if (qt - qh < 16) { Chunk *k = &q[qt & 15]; k->pcm = c; k->n = n; k->kind = kind; qt++; LeaveCriticalSection(&qcs); return TRUE; }
+        LeaveCriticalSection(&qcs); Sleep(100);
+    }
+    Free(c); return FALSE;
+}
+static BOOL Pop(Chunk *c) { BOOL ok = FALSE; EnterCriticalSection(&qcs); if (qh < qt) { *c = q[qh & 15]; qh++; ok = TRUE; } LeaveCriticalSection(&qcs); return ok; }
+static int ISqrt(long long x) { if (x <= 0) return 0; long long r = x, y = (r + 1) / 2; while (y < r) { r = y; y = (r + x / r) / 2; } return (int)r; }
+// Распознавание кусков по очереди; вставка текста - сразу (live) или в конце (end).
+static DWORD WINAPI RecogThread(LPVOID) {
+    char *acc = NULL; int an = 0; BOOL any = FALSE, fail = FALSE, err = FALSE, done = FALSE, first = TRUE; Chunk c;
+    while (!done) {
+        if (!Pop(&c)) { Sleep(40); continue; }
+        done = c.kind != 0; if (c.kind == 2) err = TRUE;
+        else if (c.n >= 8000) {                                                             // короче полсекунды - не речь
+            BOOL cm = g_vcCmd != 0;
+            int pk = 0; for (SIZE_T i = 0; i < c.n; i++) { int a = c.pcm[i] < 0 ? -c.pcm[i] : c.pcm[i]; if (a > pk) pk = a; }
+            if (pk > 0 && pk < 12000) { int g = 24000 / pk; if (g > 8) g = 8; for (SIZE_T i = 0; i < c.n; i++) c.pcm[i] = (short)(c.pcm[i] * g); }   // тихий микрофон - подтягиваем
+            wchar_t wav[MAX_PATH]; int len = 0; char *out = NULL; DWORD t0 = GetTickCount();
+            if (g_vcDebug) { Dir(wav); Cat(wav, MAX_PATH, L"debug\\"); CreateDirectoryW(wav, NULL); wchar_t nm[40]; wsprintfW(nm, L"chunk_%u.wav", t0); Cat(wav, MAX_PATH, nm); }
+            else { GetTempPathW(MAX_PATH, wav); Cat(wav, MAX_PATH, L"dkeys_voice.wav"); }
+            { char m[80]; wsprintfA(m, "chunk samples=%d kind=%d", (int)c.n, c.kind); VLog(m, NULL, 0); }
+            if (WriteWav(wav, c.pcm, c.n)) out = Recognize(wav, &len, c.n, cm);
+            if (!g_vcDebug) DeleteFileW(wav);                                               // запись голоса на диске не оставляем
+            { char m[80]; wsprintfA(m, "recognized ms=%d len=%d:", (int)(GetTickCount() - t0), len); VLog(m, out, len); }
+            if (!out) fail = TRUE;
+            else {
+                for (int i = 0; i < len; i++) if (out[i] == '\r' || out[i] == '\n') out[i] = ' ';
+                int s = 0; while (s < len && out[s] == ' ') s++;
+                while (len > s && out[len - 1] == ' ') len--;
+                if (len - s >= 2 && ((out[s] == '[' && out[len - 1] == ']') || (out[s] == '(' && out[len - 1] == ')'))) len = s;   // [BLANK_AUDIO] и т.п.
+                if (len > s) {
+                    any = TRUE;
+                    if (g_vcLive && !cm) {
+                        char *t = (char *)Alloc(len - s + 2); int o = 0; if (!first) t[o++] = ' '; memcpy(t + o, out + s, len - s); o += len - s;
+                        PostMessageW(g_hwnd, WM_APP_DPY, 0, (LPARAM)FromUtf8(t, o)); Free(t);
+                    } else {
+                        acc = (char *)Realloc(acc, an + len - s + 2); if (an) acc[an++] = ' '; memcpy(acc + an, out + s, len - s); an += len - s;
+                    }
+                    first = FALSE;
+                }
+                Free(out);
+            }
+        }
+        Free(c.pcm);
+    }
+    if (acc && an) { if (g_vcCmd) InterlockedExchange(&g_voiceSt, 0); PostMessageW(g_hwnd, g_vcCmd ? WM_APP_VCMD : WM_APP_DPY, 0, (LPARAM)FromUtf8(acc, an)); }   // команде нужно свободное состояние (запись видео не стартует при занятом голосе)
+    Free(acc);
+    if (err) Say(Tr(L_REC_FAIL)); else if (fail && !any) Say(Tr(L_VOICE_ERR)); else if (!any) Say(Tr(L_VOICE_EMPTY));
+    InterlockedExchange(&g_voiceSt, 0);
+    return 0;
+}
+// Запись с микрофона 16 кГц моно. В режиме stream речь режется на куски по паузам (громкость блоками по 100 мс).
+static DWORD WINAPI VoiceThread(LPVOID) {
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    const SIZE_T cap = g_vcStream ? (SIZE_T)g_vcMaxChunk * 16000 + 3200 : 16000 * 300;      // без stream - не больше 5 минут
+    short *pcm = (short *)Alloc(cap * 2); SIZE_T n = 0; BOOL mic = RecNs::AudioInit(TRUE);
+    if (mic) {
+        RecNs::aclient->Start(); int acc = 0, cnt = 0, blk = 0, floorv = 1 << 30, silentMs = 0; long long bsum = 0; BOOL speech = FALSE;
+        int bc = 0, idle = 0;
+        auto feed = [&](short v) {                                                          // один отсчёт 16 кГц
+            if (n < cap) pcm[n++] = v;
+            bsum += (long long)v * v;
+            if (++blk < 1600) return;
+            int rms = ISqrt(bsum / 1600); blk = 0; bsum = 0;
+            if (!g_vcStream && !g_vcCmd) return;
+            if (rms < floorv) floorv = rms;
+            int thr = floorv * 3; if (thr < g_vcSil) thr = g_vcSil; if (thr > 3000) thr = 3000;
+            if (rms >= thr) { speech = TRUE; silentMs = 0; } else silentMs += 100;
+            if (g_vcDebug && ++bc % 5 == 0) { char m[120]; wsprintfA(m, "rms=%d thr=%d floor=%d speech=%d silent=%d n=%d", rms, thr, floorv, speech, silentMs, (int)n); VLog(m, NULL, 0); }
+            if (g_vcCmd) {                                                                  // команда: конец после первой паузы после речи; тишина 8 с - отмена
+                if ((speech ? silentMs >= 700 : (idle += 100) >= 8000) || n + 1700 >= cap) { InterlockedExchange(&stopF, 1); InterlockedExchange(&g_voiceSt, 2); }
+                else if (!speech && n > 4800) { memmove(pcm, pcm + n - 4800, 9600); n = 4800; }
+                return;
+            }
+            if (!speech && n > 4800) { memmove(pcm, pcm + n - 4800, 9600); n = 4800; }          // начало без речи: оставляем 0,3 с
+            else if (speech && ((silentMs >= g_vcPause && n >= 24000) || n + 1700 >= cap)) {   // пауза или слишком длинный кусок: отправляем
+                SIZE_T e = n; if (silentMs > 300) e -= (SIZE_T)(silentMs - 300) * 16; if (e > n) e = n;
+                { char m[80]; wsprintfA(m, "cut e=%d silent=%d", (int)e, silentMs); VLog(m, NULL, 0); }
+                Push(pcm, e, 0); n = 0; speech = FALSE; silentMs = 0;
+            }
+        };
+        while (!stopF) {
+            Sleep(20); UINT32 pk = 0;
+            while (SUCCEEDED(RecNs::aclip->GetNextPacketSize(&pk)) && pk) {
+                BYTE *b = NULL; UINT32 fr = 0; DWORD fl = 0;
+                if (FAILED(RecNs::aclip->GetBuffer(&b, &fr, &fl, NULL, NULL))) break;
+                const short *s = (const short *)b; BOOL sil = (fl & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
+                for (UINT32 i = 0; i < fr; i++) {
+                    acc += sil ? 0 : (s[2 * i] + s[2 * i + 1]) / 2;
+                    if (++cnt < 3) continue;
+                    feed((short)(acc / 3)); acc = 0; cnt = 0;                               // 48 кГц стерео -> 16 кГц моно
+                }
+                RecNs::aclip->ReleaseBuffer(fr);
+            }
+        }
+        RecNs::aclient->Stop();
+        if (RecNs::aclip) { RecNs::aclip->Release(); RecNs::aclip = NULL; } if (RecNs::aclient) { RecNs::aclient->Release(); RecNs::aclient = NULL; }
+        Push(pcm, ((g_vcStream || g_vcCmd) && !speech) ? 0 : n, 1);                                      // остаток и сигнал «конец»
+    } else {
+        if (RecNs::aclip) { RecNs::aclip->Release(); RecNs::aclip = NULL; } if (RecNs::aclient) { RecNs::aclient->Release(); RecNs::aclient = NULL; }
+        Push(NULL, 0, 2);
+    }
+    Free(pcm); CoUninitialize(); return 0;
+}
+static void Toggle(BOOL cmd) {
+    if (g_voiceSt == 1) { InterlockedExchange(&stopF, 1); InterlockedExchange(&g_voiceSt, 2); Toast(Tr(L_VOICE_WORK)); return; }
+    if (g_voiceSt || RecNs::recording || RecNs::aclient) { Toast(Tr(L_VOICE_BUSY)); return; }
+    if (!Ready()) {
+        wchar_t t[600]; wsprintfW(t, Tr(L_VOICE_ASK), g_vcModel);
+        if (MessageBoxW(NULL, t, Tr(L_TRAY_VOICE), MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST) != IDYES) return;
+        InterlockedExchange(&g_voiceSt, 3);
+        HANDLE h = CreateThread(NULL, 0, DlThread, NULL, 0, NULL);
+        if (h) CloseHandle(h); else InterlockedExchange(&g_voiceSt, 0);
+        return;
+    }
+    if (g_vcLang[0] && lstrcmpiW(g_vcLang, L"layout")) lstrcpynW(lang, g_vcLang, 8);          // язык: из ini, иначе по раскладке окна с курсором
+    else {
+        HWND f = GetForegroundWindow(); HKL k = GetKeyboardLayout(f ? GetWindowThreadProcessId(f, NULL) : 0);
+        if (!GetLocaleInfoW(LOWORD((UINT_PTR)k), LOCALE_SISO639LANGNAME, lang, 8) || !lang[0]) lstrcpyW(lang, L"auto");
+    }
+    InterlockedExchange(&stopF, 0); InterlockedExchange(&g_voiceSt, 1); InterlockedExchange(&g_vcCmd, cmd);
+    if (cmd) CmdLoad();
+    if (!qInit) { InitializeCriticalSection(&qcs); qInit = TRUE; }
+    qh = qt = 0;
+    HANDLE hr = CreateThread(NULL, 0, RecogThread, NULL, 0, NULL), h = hr ? CreateThread(NULL, 0, VoiceThread, NULL, 0, NULL) : NULL;
+    if (!h) { if (hr) { Push(NULL, 0, 1); CloseHandle(hr); } else InterlockedExchange(&g_voiceSt, 0); Toast(Tr(L_VOICE_ERR)); return; }
+    CloseHandle(h); CloseHandle(hr); Toast(Tr(cmd ? L_VOICE_CMDREC : L_VOICE_REC));
+}
+}   // namespace VoiceNs
+static void VoiceToggle(void) { VoiceNs::Toggle(FALSE); }
+static void VoiceCmdToggle(void) { VoiceNs::Toggle(TRUE); }
+static void VoiceCmd(const wchar_t *t) { VoiceNs::RunCmdText(t); }
+static void VoiceCmdInit(void) { VoiceNs::CmdLoad(); }
 
 /* ---------- стабильная громкость: пик звука выше порога - громкость системы снижается, потом медленно возвращается ---------- */
 namespace VolNs {
@@ -7183,6 +7742,7 @@ static void TrayMenuAt(POINT pt, int again) {
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AddHk(m, MF_STRING, 7, RecNs::recording && !RecNs::aud ? Tr(L_TRAY_RECSTOP) : Tr(L_TRAY_REC), A_RECORD);
     AddHk(m, MF_STRING | (RecNs::recording && RecNs::aud ? MF_CHECKED : 0), 70, Tr(L_TRAY_AUD), A_AUDIO);
+    AddHk(m, MF_STRING | (g_voiceSt == 1 ? MF_CHECKED : 0), 71, Tr(L_TRAY_VOICE), A_VOICE);
     AppendMenuW(m, MF_POPUP, (UINT_PTR)RecNs::Menu(), Tr(L_TRAY_RECSET));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_POPUP | (g_vOn ? MF_CHECKED : 0), (UINT_PTR)VolNs::Menu(), Tr(L_TRAY_VOL));
@@ -7239,6 +7799,7 @@ static void TrayMenuAt(POINT pt, int again) {
     case 6: Sleep(150); PickerOpen(); break;
     case 7: Sleep(150); RecOpen(); break;
     case 70: Sleep(150); RecAudioOpen(); break;
+    case 71: Sleep(150); VoiceToggle(); break;
     case 10: SetHistory(!g_histOn); break;
     case 9: g_selCopy = !g_selCopy; IniSet(L"AutoCopy", L"Enabled", g_selCopy ? L"1" : L"0"); break;
     case 11: AutoSet(!AutoGet()); break;
@@ -7248,7 +7809,7 @@ static void TrayMenuAt(POINT pt, int again) {
     case 13: ShellExecuteW(NULL, L"open", g_memDir, NULL, NULL, SW_SHOWNORMAL); break;
     case 14: Reload(); break;
     case 18: {
-        wchar_t t[1200]; wsprintfW(t, Tr(L_ABOUT_TXT), L"1.3"); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_BODY)); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_AUTH)); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_ASK));
+        wchar_t t[1200]; wsprintfW(t, Tr(L_ABOUT_TXT), L"1.4"); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_BODY)); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_AUTH)); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_ASK));
         MSGBOXPARAMSW mp; memset(&mp, 0, sizeof mp);                                  // со значком программы (ресурс 1)
         mp.cbSize = sizeof mp; mp.hwndOwner = g_hwnd; mp.hInstance = GetModuleHandleW(NULL); mp.lpszText = t; mp.lpszCaption = Tr(L_TRAY_ABOUT);
         mp.dwStyle = MB_YESNO | MB_USERICON | MB_SETFOREGROUND | MB_TOPMOST; mp.lpszIcon = MAKEINTRESOURCEW(1);
@@ -7277,6 +7838,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     case WM_APP_KEY: PopupKey((UINT)w, (UINT)(l >> 16) & 0xFF, (WCHAR)(l & 0xFFFF)); return 0;
     case WM_APP_CLOSE: PopupClose(); return 0;
+    case WM_APP_VCMD: { wchar_t *t = (wchar_t *)l; if (t) { VoiceCmd(t); Free(t); } return 0; }
     case WM_APP_PCLICK: PopupChoose((int)w); return 0;
     case WM_APP_PTAB: PopupTab((int)w); return 0;
     case WM_APP_PIMG: PopupImg((int)w); return 0;
