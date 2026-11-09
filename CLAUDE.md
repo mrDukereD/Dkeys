@@ -103,3 +103,11 @@
 Три формата: `Хоткей=скрипт [арг] [@ папка]`, `Название=[Хоткей]скрипт ...`, `Название=скрипт`. Парсится в `CfgCb` (`g_scrIni`, `ScrEnt`), хоткей регистрируется как `Bind` act=A_PY с `lau=1`; строки идут первыми во вкладке «Скрипты» (`BindRows`). Название из ini важнее комментария/докстринга в скрипте. Путь без каталога ищется в `scripts\`.
 
 Повторы в «Запуске» и «Скриптах» убираются (`DedupRows`): ключ - полный путь запускаемого файла + аргументы; остаётся первая строка в порядке [Scripts]/[Launcher] ini → хоткеи → файлы папок scripts/runs. Метки T/1-9/0 пересчитываются после удаления.
+
+Действие `duplicate` (A_DUP → `DupToggle` → `DupNs::Cmd(700)`) - вкл/выкл дублирования звука; в ini по умолчанию `Win+Shift+D`, подпись хоткея есть в пункте меню трея.
+
+
+
+## Запись действий (macro / records)
+
+Действие `macro` (Win+Shift+M; `MacroNs`, форма как у `RecNs`, класс `DKMac`) и `records` (Win+Shift+N, вкладка `PM_RECORDS`, папка `records\`). Хуки `LLKbd`/`LLMouse` зовут `MacroKey`/`MacroMouse` (события с `DKMARK` игнорируются). Результат - `records\rec_*.py`: вверху настройки `SPEED` (-10..10, без 0), `REPEAT`, `CLICK_BY_BUTTON`, `UI_TIMEOUT`, затем линейная `macro()` из `wait/key/click/move`, ниже движок (ctypes `SendInput`, `uiautomation` для клика по кнопке; ставится через pip при первой записи). Курсор пишется, если стоит дольше `[Macro] HoverMs`. Запущенная запись идёт скрытым процессом (`g_playProc`), повтор `macro` её останавливает. Ctrl+Enter в списках - `OpenEditor`: `[General] Editor=`, иначе Notepad++ (реестр App Paths/Program Files), иначе Блокнот; так же открывается ini из меню трея. Лог движка: `%TEMP%\dkeys_macro.log`.
