@@ -107,7 +107,7 @@ static HWND g_hwnd, g_hwndPop, g_hwndToast, g_popFg; static int g_popGrace;
 static HWND g_hwndClip;   // владелец буфера обмена: окно потока хука, который всегда качает сообщения
 static wchar_t g_dir[MAX_PATH], g_ini[MAX_PATH], g_memDir[MAX_PATH], g_pyDir[MAX_PATH], g_runDir[MAX_PATH], g_recDir[MAX_PATH], g_exe[MAX_PATH];
 static volatile LONG g_modBits, g_popup, g_paused, g_modal;
-static volatile LONG g_voiceSt; static wchar_t g_vcModel[40] = L"small", g_vcLang[8]; static int g_vcThr, g_vcPause = 600, g_vcMaxChunk = 15, g_vcSil = 300; static BOOL g_vcStream, g_vcLive = TRUE, g_vcDebug; static wchar_t g_vcPrompt[200], g_vcCmdModel[40], g_cmdPrompt[360]; static volatile LONG g_vcCmd; static BOOL g_cmdGo, g_cmdDirty = TRUE;   // голосовые команды: модель, подсказка, режим команды, словарь устарел   // голосовой набор: состояние (0 пусто, 1 запись, 2 распознавание, 3 скачивание), модель, язык, потоки
+static volatile LONG g_voiceSt; static wchar_t g_vcModel[40] = L"small", g_vcLang[8]; static int g_vcThr, g_vcPause = 600, g_vcMaxChunk = 15, g_vcSil = 300; static BOOL g_vcStream, g_vcLive = TRUE, g_vcDebug; static wchar_t g_vcPrompt[200], g_vcCmdModel[40], g_cmdPrompt[360]; static volatile LONG g_vcCmd; static BOOL g_cmdGo, g_remote, g_cmdDirty = TRUE;   // голосовые команды: модель, подсказка, режим команды, словарь устарел   // голосовой набор: состояние (0 пусто, 1 запись, 2 распознавание, 3 скачивание), модель, язык, потоки
 static BOOL g_selCopy; static wchar_t g_selIgn[2048]; static POINT g_selDn, g_selUpP; static DWORD g_selUpT;   // автокопирование выделенного мышью
 static volatile LONG g_caps;
 static DWORD g_hookTid;
@@ -260,7 +260,7 @@ X(L_TRAY_RELOAD, "tray.reload", L"Перечитать настройки") \
 X(L_TRAY_EXIT, "tray.exit", L"Выход") \
 X(L_TRAY_ABOUT, "tray.about", L"О программе") \
 X(L_ABOUT_TXT, "about.title", L"DKeys %s — твои самые горячие клавиши!") \
-X(L_ABOUT_BODY, "about.body5", L"Помнит всё, что ты копировал (а выделенное мышкой может копировать само), и не осуждает. Набрал «ghbdtn» вместо «привет» — починит. Умеет печатать под диктовку и слушаться голосовых команд. А главное — на хоткей можно повесить что угодно: запуск программы или скрипта, рисование прямо на экране, захват цвета пикселя, запись видео и звука, запись и повтор своих действий мышью и клавиатурой, веб-камеру, секундомер и таймер, укрощение громких звуков и дублирование звука на второе устройство. А ещё всё это умеет срабатывать само — по расписанию, в нужный день и час.") \
+X(L_ABOUT_BODY, "about.body6", L"Помнит всё, что ты копировал (а выделенное мышкой может копировать само), и не осуждает. Набрал «ghbdtn» вместо «привет» — починит. Умеет печатать под диктовку, слушаться голосовых команд и приказов извне — хоть от ИИ-агента. А главное — на хоткей можно повесить что угодно: запуск программы или скрипта, рисование прямо на экране, захват цвета пикселя, запись видео и звука, запись и повтор своих действий мышью и клавиатурой, веб-камеру, секундомер и таймер, укрощение громких звуков и дублирование звука на второе устройство. А ещё всё это умеет срабатывать само — по расписанию, в нужный день и час.") \
 X(L_ABOUT_AUTH, "about.authors", L"Придумал DukereD, написал Claude. Ни одна клавиша не пострадала.") \
 X(L_ABOUT_ASK, "about.ask", L"Открыть страницу проекта на GitHub?") \
 X(L_TRAY_TIPADM, "tray.tip_admin", L"DKeys (администратор)") \
@@ -809,6 +809,12 @@ CommandModel=
 Debug=0
 Prompt=
 
+[Remote]
+; Управление извне: DKeys.exe do "действие" передаёт действие уже запущенному DKeys (например, из скрипта, планировщика или ИИ-агента).
+; Действие записывается так же, как справа от = в хоткеях и в langs\<язык>.commands.ini: timer 3h, record, script 2, run notepad.exe...
+; Enabled=1 включает приём. ВНИМАНИЕ: DKeys работает от администратора, и любая программа вашей учётной записи сможет запускать через него что угодно (run, py...). Включайте, только если это нужно.
+Enabled=0
+
 [AutoCopy]
 ; Автокопирование: текст, выделенный мышью (протяжка или двойной/тройной клик над текстом), сразу копируется в обычный буфер.
 ; Enabled - 1 вкл (переключается и из меню в трее). Ignore - программы (имена exe), в которых не копировать: игры, консоли и т.п.
@@ -1248,6 +1254,8 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
         else if (!lstrcmpiW(k, L"CommandModel")) { int o = 0; for (int i = 0; v[i] && o < 39; i++) if ((v[i] >= L'a' && v[i] <= L'z') || (v[i] >= L'A' && v[i] <= L'Z') || (v[i] >= L'0' && v[i] <= L'9') || v[i] == L'.' || v[i] == L'-' || v[i] == L'_') g_vcCmdModel[o++] = v[i]; g_vcCmdModel[o] = 0; }
         else if (!lstrcmpiW(k, L"Prompt")) { int o = 0; for (int i = 0; v[i] && o < 199; i++) if (v[i] != L'"') g_vcPrompt[o++] = v[i]; g_vcPrompt[o] = 0; }
         else if (!lstrcmpiW(k, L"Threads")) { g_vcThr = ToInt(v); if (g_vcThr < 0 || g_vcThr > 64) g_vcThr = 0; }
+    } else if (!lstrcmpiW(s, L"Remote")) {
+        if (!lstrcmpiW(k, L"Enabled")) g_remote = ToInt(v) != 0;
     } else if (!lstrcmpiW(s, L"AutoCopy")) {
         if (!lstrcmpiW(k, L"Enabled")) g_selCopy = ToInt(v) != 0;
         else if (!lstrcmpiW(k, L"Ignore")) { int n = lstrlenW(g_selIgn); if (n && n < 2047) g_selIgn[n++] = L','; lstrcpynW(g_selIgn + n, v, 2048 - n); }
@@ -1334,7 +1342,7 @@ static void LoadConfig(void) {
     for (int i = 0; i < g_nscrIni; i++) { Free(g_scrIni[i].title); Free(g_scrIni[i].arg); Free(g_scrIni[i].dir); Free(g_scrIni[i].hk); }
     Free(g_scrIni); g_scrIni = NULL; g_nscrIni = 0;
     g_bnew = NULL; g_nbnew = g_bnewCap = 0;
-    SchClear(); g_selCopy = FALSE; g_selIgn[0] = 0; lstrcpyW(g_vcModel, L"small"); g_vcLang[0] = 0; g_vcThr = 0; g_vcPause = 600; g_vcMaxChunk = 15; g_vcSil = 300; g_vcStream = FALSE; g_vcLive = TRUE; g_vcDebug = FALSE; g_vcPrompt[0] = 0; g_vcCmdModel[0] = 0; g_cmdDirty = TRUE;
+    SchClear(); g_remote = FALSE; g_selCopy = FALSE; g_selIgn[0] = 0; lstrcpyW(g_vcModel, L"small"); g_vcLang[0] = 0; g_vcThr = 0; g_vcPause = 600; g_vcMaxChunk = 15; g_vcSil = 300; g_vcStream = FALSE; g_vcLive = TRUE; g_vcDebug = FALSE; g_vcPrompt[0] = 0; g_vcCmdModel[0] = 0; g_cmdDirty = TRUE;
     IniParse(t, CfgCb);
     Free(t);
     SchFinish();
@@ -1345,6 +1353,7 @@ static void LoadConfig(void) {
     FreeBinds(old, oldn);
     g_bnew = NULL;
     LoadLang();
+    if (g_hwnd) ChangeWindowMessageFilterEx(g_hwnd, WM_COPYDATA, g_remote ? MSGFLT_ALLOW : MSGFLT_RESET, NULL);   // от админа сообщения других программ иначе не доходят
     VoiceCmdInit();                                                                         // создать/перечитать langs\<язык>.commands.ini
 }
 
@@ -7809,7 +7818,7 @@ static void TrayMenuAt(POINT pt, int again) {
     case 13: ShellExecuteW(NULL, L"open", g_memDir, NULL, NULL, SW_SHOWNORMAL); break;
     case 14: Reload(); break;
     case 18: {
-        wchar_t t[1200]; wsprintfW(t, Tr(L_ABOUT_TXT), L"1.4"); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_BODY)); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_AUTH)); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_ASK));
+        wchar_t t[1200]; wsprintfW(t, Tr(L_ABOUT_TXT), L"1.5"); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_BODY)); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_AUTH)); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_ASK));
         MSGBOXPARAMSW mp; memset(&mp, 0, sizeof mp);                                  // со значком программы (ресурс 1)
         mp.cbSize = sizeof mp; mp.hwndOwner = g_hwnd; mp.hInstance = GetModuleHandleW(NULL); mp.lpszText = t; mp.lpszCaption = Tr(L_TRAY_ABOUT);
         mp.dwStyle = MB_YESNO | MB_USERICON | MB_SETFOREGROUND | MB_TOPMOST; mp.lpszIcon = MAKEINTRESOURCEW(1);
@@ -7830,6 +7839,12 @@ static void TrayMenuAt(POINT pt, int again) {
 /* ---------- main window ---------- */
 static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
+    case WM_COPYDATA: {                                                                // DKeys.exe do "действие"
+        COPYDATASTRUCT *cd = (COPYDATASTRUCT *)l;
+        if (!g_remote || !cd || cd->dwData != 0x444B || !cd->lpData || cd->cbData < 2 || cd->cbData > 2000) return FALSE;
+        wchar_t *t = (wchar_t *)Alloc(cd->cbData + 2); memcpy(t, cd->lpData, cd->cbData & ~1u);
+        PostMessageW(g_hwnd, WM_APP_SPEC, 0, (LPARAM)t); return TRUE;
+    }
     case WM_APP_HOT: {
         if (g_modal || (int)w >= g_nbind) return 0;
         Bind b = g_bind[w];
@@ -7931,6 +7946,19 @@ static void MakeScripts(void) {                                                 
 static int Run(void) {
     g_heap = GetProcessHeap();
     g_inst = GetModuleHandleW(NULL);
+    {                                                                               // DKeys.exe do "действие": передать запущенному DKeys и выйти (код 0 - принято, 2 - не запущен, 3 - не принято/выключено в [Remote])
+        const wchar_t *c = GetCommandLineW();
+        if (*c == L'"') { c++; while (*c && *c != L'"') c++; if (*c) c++; } else while (*c && *c != L' ') c++;
+        while (*c == L' ') c++;
+        if ((c[0] | 32) == L'd' && (c[1] | 32) == L'o' && (c[2] == L' ' || !c[2])) {
+            c += 2; while (*c == L' ') c++;
+            int n = lstrlenW(c); wchar_t *a = (wchar_t *)Alloc((n + 2) * sizeof(wchar_t)); lstrcpyW(a, c);
+            if (n >= 2 && a[0] == L'"' && a[n - 1] == L'"') { a[n - 1] = 0; MoveMemory(a, a + 1, n * sizeof(wchar_t)); }
+            HWND tw = FindWindowW(L"DKMain", L"DKeys"); int rc = 2;
+            if (tw && *a) { COPYDATASTRUCT cd; cd.dwData = 0x444B; cd.cbData = (lstrlenW(a) + 1) * sizeof(wchar_t); cd.lpData = a; rc = SendMessageW(tw, WM_COPYDATA, 0, (LPARAM)&cd) ? 0 : 3; }
+            return rc;
+        }
+    }
     BOOL wait = ContainsI(GetCommandLineW(), L"/wait");
     HANDLE mx = NULL;
     for (int i = 0; i < 50; i++) {
@@ -7959,6 +7987,7 @@ static int Run(void) {
     if (!g_hwnd) return 1;
     InitFormats();
     g_msgTaskbar = RegisterWindowMessageW(L"TaskbarCreated");
+    ChangeWindowMessageFilterEx(g_hwnd, WM_COPYDATA, g_remote ? MSGFLT_ALLOW : MSGFLT_RESET, NULL);
     ChangeWindowMessageFilterEx(g_hwnd, g_msgTaskbar, MSGFLT_ALLOW, NULL);   // от админа иначе не получим сообщение от explorer
     g_icon = (HICON)LoadImageW(g_inst, MAKEINTRESOURCEW(1), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR);
     TrayAdd();

@@ -2,6 +2,12 @@
 
 Подробное описание и все хоткеи — в [README](README.md). Готовые exe — на странице [Releases](https://github.com/mrDukereD/Dkeys/releases).
 
+## v1.5
+
+*2026-11-09* · [скачать](https://github.com/mrDukereD/Dkeys/releases/tag/v1.5)
+
+- **Управление извне** (секция `[Remote]`, по умолчанию выключено): `DKeys.exe do "действие"` передаёт любое действие запущенному DKeys — из скрипта, планировщика или ИИ-агента, который переводит команду в свободной форме в формат DKeys; код выхода показывает результат
+
 ## v1.4
 
 *2026-11-09* · [скачать](https://github.com/mrDukereD/Dkeys/releases/tag/v1.4)
