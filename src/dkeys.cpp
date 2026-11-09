@@ -6574,12 +6574,15 @@ static void TrayMenuAt(POINT pt, int again) {
     AddHk(m, MF_STRING, 3, Tr(L_TRAY_LAUNCH), A_LAUNCH);
     AddHk(m, MF_STRING, 8, Tr(L_TRAY_SCR), A_SCRIPTS);
     AddHk(m, MF_STRING, 19, Tr(L_TRAY_RECS), A_RECORDS);
+    AddHk(m, MF_STRING | (MacroNs::rec ? MF_CHECKED : 0), 20, Tr(L_TRAY_MACRO), A_MACRO);
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AddHk(m, MF_STRING, 4, Tr(L_TRAY_CAM), A_WEBCAM);
     AddHk(m, MF_STRING, 5, Tr(L_TRAY_DRAW), A_DRAW);
-    AddHk(m, MF_STRING | (MacroNs::rec ? MF_CHECKED : 0), 20, Tr(L_TRAY_MACRO), A_MACRO);
     AddHk(m, MF_STRING, 6, Tr(L_TRAY_PICK), A_PICKER);
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AddHk(m, MF_STRING, 7, RecNs::recording ? Tr(L_TRAY_RECSTOP) : Tr(L_TRAY_REC), A_RECORD);
     AppendMenuW(m, MF_POPUP, (UINT_PTR)RecNs::Menu(), Tr(L_TRAY_RECSET));
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_POPUP, (UINT_PTR)VolNs::Menu(), Tr(L_TRAY_VOL));
     AppendMenuW(m, MF_POPUP, (UINT_PTR)DupNs::Menu(), Tr(L_TRAY_DUP));
     AppendMenuW(m, MF_POPUP, (UINT_PTR)TmMenu(), Tr(L_TRAY_TIMER));
