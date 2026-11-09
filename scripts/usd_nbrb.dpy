@@ -1,0 +1,16 @@
+# Курс доллара НБРБ
+# .dpy: вставляет в место курсора официальный курс USD к белорусскому рублю, например 2.9921.
+# Источник: API НБРБ, запасной - страница myfin.by/bank/kursy_valjut_nbrb.
+import json, re, urllib.request
+
+def get(url):
+    r = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    return urllib.request.urlopen(r, timeout=8).read().decode("utf-8")
+
+try:
+    rate = json.loads(get("https://api.nbrb.by/exrates/rates/USD?parammode=2"))["Cur_OfficialRate"]
+    print(rate)
+except Exception:
+    html = get("https://myfin.by/bank/kursy_valjut_nbrb")
+    m = re.search(r'kursy_valjut_nbrb/usd[^>]*>[^<]*</a></td><td>([\d.,]+)</td>', html)
+    print(m.group(1))
