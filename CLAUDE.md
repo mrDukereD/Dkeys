@@ -114,4 +114,4 @@
 
 ## Скрипты .dpy
 
-Файл `*.dpy` в `scripts\` (вкладка «Скрипты», `[Scripts]`, `py`): `RunPy` -> `RunDpy` -> поток `DpyThread`: python запускается скрыто (`CREATE_NO_WINDOW`, stdout в трубу, `PYTHONIOENCODING=utf-8`, лимит 15 с и 1 МБ), вывод без хвостовых переводов строки в UTF-8 -> `WM_APP_DPY` -> `PasteText` в главном потоке. Код возврата не 0 - тост `L_DPY_ERR`. Выделение не захватывается (нет задержки на Ctrl+C), `DKEYS_SEL` не передаётся.
+Файл `*.dpy` в `scripts\` (вкладка «Скрипты», `[Scripts]`, `py`): `RunPy` -> `RunDpy` -> поток `DpyThread`: python запускается скрыто (`CREATE_NO_WINDOW`, stdout в трубу, `PYTHONIOENCODING=utf-8`, лимит 15 с и 1 МБ), вывод без хвостовых переводов строки в UTF-8 -> `WM_APP_DPY` -> `PasteText` в главном потоке. Код возврата не 0 - тост `L_DPY_ERR`. Выделение не захватывается (нет задержки на Ctrl+C), `DKEYS_SEL` не передаётся. Если папка `scripts` создана при старте впервые (`MakeScripts`), туда пишутся примеры `datetime.dpy` и `usd_nbrb.dpy` (тексты зашиты в `kEx1`/`kEx2`); существующую папку не трогаем.
