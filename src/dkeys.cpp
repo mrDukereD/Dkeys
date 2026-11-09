@@ -70,7 +70,7 @@ void *memmove(void *d, const void *s, size_t n) {
 
 #define DKMARK ((ULONG_PTR)0x444B4559)
 enum { DM_CTRL = 1, DM_ALT = 2, DM_SHIFT = 4, DM_WIN = 8 };
-enum { A_NONE, A_COPY, A_PASTE, A_BUFFER, A_HIST, A_LAUNCH, A_RUN, A_ADMIN, A_PY, A_PYRUN, A_TOPMOST, A_TOTRAY, A_LAYOUT, A_PAUSE, A_WEBCAM, A_STOPWATCH, A_TIMER, A_DRAW, A_PICKER, A_RECORD, A_SCRIPTS, A_VOL, A_VOLSET, A_DUP, A_MACRO, A_RECORDS, A_AUDIO, A_VOICE, A_SCRIPTN, A_VOICECMD };
+enum { A_NONE, A_COPY, A_PASTE, A_BUFFER, A_HIST, A_LAUNCH, A_RUN, A_ADMIN, A_PY, A_PYRUN, A_TOPMOST, A_TOTRAY, A_LAYOUT, A_PAUSE, A_WEBCAM, A_STOPWATCH, A_TIMER, A_DRAW, A_PICKER, A_RECORD, A_SCRIPTS, A_VOL, A_VOLSET, A_DUP, A_MACRO, A_RECORDS, A_AUDIO, A_VOICE, A_SCRIPTN, A_VOICECMD, A_EXIT };
 enum { PM_BUF, PM_HIST, PM_LAUNCH, PM_SCRIPTS, PM_RECORDS };
 enum {
     WM_APP_HOT = WM_APP + 1, WM_APP_KEY, WM_APP_CLOSE, WM_APP_PCLICK, WM_APP_PTAB, WM_APP_PIMG, WM_APP_MACRO, WM_APP_DPY, WM_APP_SPEC, WM_TRAY, WM_APP_RENDERED, WM_APP_VCMD,
@@ -700,6 +700,7 @@ Language=ru
 ;     records                   меню записей (папка records)
 ;     audio (или dictaphone)    диктофон: запись звука с микрофона в .m4a; те же кнопка и управление, что у записи экрана (микрофон, папка, качество - в «Настройки записи»)
 ;     voice (или dictation), voicecmd (голосовая команда)     голосовой набор: 1-е нажатие - запись с микрофона, 2-е - распознавание (whisper.cpp, без интернета), текст вставляется в место курсора; язык - по раскладке (секция [Voice])
+;     exit                          закрыть DKeys (например, DKeys.exe do exit перед заменой exe)
 ; Win+цифры буферов перекрывают запуск закреплённых программ на панели задач.
 ; В меню буфера: Del - удалить, F2 - править, Ins - новая запись, Ctrl+Вверх/Вниз - переставить,
 ; Влево/Вправо или Win+цифра - другой буфер, Ctrl+цифра - скопировать запись в буфер, Tab - история/запуск.
@@ -1092,7 +1093,7 @@ static BOOL ParseAction(const wchar_t *v, Bind *b) {
         {L"copy", A_COPY, 1}, {L"paste", A_PASTE, 3}, {L"buffer", A_BUFFER, 4}, {L"slots", A_BUFFER, 4}, {L"layout", A_LAYOUT, 0}, {L"history", A_HIST, 0}, {L"launcher", A_LAUNCH, 0}, {L"scripts", A_SCRIPTS, 0},
         {L"run", A_RUN, 2}, {L"admin", A_ADMIN, 2}, {L"py", A_PY, 2}, {L"pyrun", A_PYRUN, 0}, {L"topmost", A_TOPMOST, 0},
         {L"totray", A_TOTRAY, 0}, {L"pause", A_PAUSE, 0}, {L"webcam", A_WEBCAM, 0}, {L"stopwatch", A_STOPWATCH, 0}, {L"timer", A_TIMER, 5}, {L"script", A_SCRIPTN, 6}, {L"draw", A_DRAW, 0}, {L"record", A_RECORD, 0}, {L"colorpicker", A_PICKER, 0}, {L"picker", A_PICKER, 0},
-        {L"volume", A_VOL, 0}, {L"volumeset", A_VOLSET, 0}, {L"duplicate", A_DUP, 0}, {L"macro", A_MACRO, 0}, {L"records", A_RECORDS, 0}, {L"audio", A_AUDIO, 0}, {L"dictaphone", A_AUDIO, 0}, {L"voicecmd", A_VOICECMD, 0}, {L"voice", A_VOICE, 0}, {L"dictation", A_VOICE, 0},
+        {L"volume", A_VOL, 0}, {L"volumeset", A_VOLSET, 0}, {L"duplicate", A_DUP, 0}, {L"macro", A_MACRO, 0}, {L"records", A_RECORDS, 0}, {L"audio", A_AUDIO, 0}, {L"dictaphone", A_AUDIO, 0}, {L"voicecmd", A_VOICECMD, 0}, {L"exit", A_EXIT, 0}, {L"voice", A_VOICE, 0}, {L"dictation", A_VOICE, 0},
     };
     for (int i = 0; i < (int)(sizeof T / sizeof T[0]); i++) {
         if (lstrcmpiW(name, T[i].n)) continue;
@@ -2813,6 +2814,7 @@ static void ExecBind(const Bind *b) {
     case A_AUDIO: RecAudioOpen(); break;
     case A_VOICE: VoiceToggle(); break;
     case A_VOICECMD: VoiceCmdToggle(); break;
+    case A_EXIT: DestroyWindow(g_hwnd); break;
     case A_SCRIPTN: RunScriptN(b->n); break;
     case A_PAUSE: InterlockedExchange(&g_paused, !g_paused); Toast(g_paused ? Tr(L_T_PAUSED) : Tr(L_T_WORKING)); break;
     }
