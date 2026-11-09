@@ -70,7 +70,7 @@ void *memmove(void *d, const void *s, size_t n) {
 
 #define DKMARK ((ULONG_PTR)0x444B4559)
 enum { DM_CTRL = 1, DM_ALT = 2, DM_SHIFT = 4, DM_WIN = 8 };
-enum { A_NONE, A_COPY, A_PASTE, A_BUFFER, A_HIST, A_LAUNCH, A_RUN, A_ADMIN, A_PY, A_PYRUN, A_TOPMOST, A_TOTRAY, A_LAYOUT, A_PAUSE, A_WEBCAM, A_STOPWATCH, A_TIMER, A_DRAW, A_PICKER, A_RECORD, A_SCRIPTS, A_VOL, A_VOLSET, A_DUP, A_MACRO, A_RECORDS };
+enum { A_NONE, A_COPY, A_PASTE, A_BUFFER, A_HIST, A_LAUNCH, A_RUN, A_ADMIN, A_PY, A_PYRUN, A_TOPMOST, A_TOTRAY, A_LAYOUT, A_PAUSE, A_WEBCAM, A_STOPWATCH, A_TIMER, A_DRAW, A_PICKER, A_RECORD, A_SCRIPTS, A_VOL, A_VOLSET, A_DUP, A_MACRO, A_RECORDS, A_AUDIO };
 enum { PM_BUF, PM_HIST, PM_LAUNCH, PM_SCRIPTS, PM_RECORDS };
 enum {
     WM_APP_HOT = WM_APP + 1, WM_APP_KEY, WM_APP_CLOSE, WM_APP_PCLICK, WM_APP_PTAB, WM_APP_PIMG, WM_APP_MACRO, WM_APP_DPY, WM_APP_SPEC, WM_TRAY, WM_APP_RENDERED,
@@ -95,7 +95,7 @@ static IUnknown *CamObj(int k);
 static void TmToggle(int mode);
 static void DrawOpen(void);
 static void PickerOpen(void);
-static void RecOpen(void);
+static void RecOpen(void), RecAudioOpen(void);
 static BOOL RegClass(const wchar_t *name, WNDPROC proc, UINT style);
 struct BB { BYTE *p; DWORD n, cap; };
 
@@ -113,6 +113,7 @@ static BOOL g_elev;
 static HICON g_icon, g_iconRec; static BOOL g_recDot;
 static int g_mouseSlow = 4;   // [General] MouseSlow: во сколько раз замедлять мышь при зажатом Alt в пипетке (0/1 - выкл)
 static volatile LONG g_pickActive;
+static int g_rAk = 128;                                                              // [Record] AudioKbps: качество диктофона
 static int g_mHover = 300, g_mPos[2] = {-99999, -99999};              // запись действий: порог остановки курсора (мс), позиция кнопки
 static BOOL g_rNoTb = TRUE, g_rCur = TRUE; static int g_rFps = 30, g_rPos[2] = {-99999, -99999}, g_rScr;   // g_rScr: 0 - монитор с кнопкой, -1 - весь рабочий стол, N - монитор N
 static BOOL g_rDummy;
@@ -202,6 +203,9 @@ X(L_REC_MICDEF, "rec.mic_default", L"По умолчанию") \
 X(L_REC_MICOFF, "rec.mic_off", L"Без звука") \
 X(L_REC_DIR, "rec.open_dir", L"Папка с видео") \
 X(L_REC_SAVED, "rec.saved", L"Видео сохранено: %s") \
+X(L_REC_AUDSAVED, "rec.audio_saved", L"Звук сохранён: %s") \
+X(L_REC_AUDKB, "rec.audio_kbps", L"Диктофон: %d кбит/с") \
+X(L_TRAY_AUD, "tray.dictaphone", L"Диктофон") \
 X(L_REC_FAIL, "rec.fail", L"Не удалось начать запись") \
 X(L_REC_OV, "rec.ov", L"Оверлей ввода (клавиши, мышь)") \
 X(L_REC_OV_OFF, "rec.ov_off", L"Выключен") \
@@ -236,7 +240,7 @@ X(L_TRAY_RELOAD, "tray.reload", L"Перечитать настройки") \
 X(L_TRAY_EXIT, "tray.exit", L"Выход") \
 X(L_TRAY_ABOUT, "tray.about", L"О программе") \
 X(L_ABOUT_TXT, "about.title", L"DKeys %s — твои самые горячие клавиши!") \
-X(L_ABOUT_BODY, "about.body2", L"Помнит всё, что ты копировал, и не осуждает. Набрал «ghbdtn» вместо «привет» — починит. А главное — на хоткей можно повесить что угодно: запуск программы или скрипта, рисование прямо на экране, захват цвета пикселя, запись видео, запись и повтор своих действий мышью и клавиатурой, веб-камеру, секундомер и таймер, укрощение громких звуков и дублирование звука на второе устройство. А ещё всё это умеет срабатывать само — по расписанию, в нужный день и час.") \
+X(L_ABOUT_BODY, "about.body3", L"Помнит всё, что ты копировал, и не осуждает. Набрал «ghbdtn» вместо «привет» — починит. А главное — на хоткей можно повесить что угодно: запуск программы или скрипта, рисование прямо на экране, захват цвета пикселя, запись видео и звука, запись и повтор своих действий мышью и клавиатурой, веб-камеру, секундомер и таймер, укрощение громких звуков и дублирование звука на второе устройство. А ещё всё это умеет срабатывать само — по расписанию, в нужный день и час.") \
 X(L_ABOUT_AUTH, "about.authors", L"Придумал DukereD, написал Claude. Ни одна клавиша не пострадала.") \
 X(L_ABOUT_ASK, "about.ask", L"Открыть страницу проекта на GitHub?") \
 X(L_TRAY_TIPADM, "tray.tip_admin", L"DKeys (администратор)") \
@@ -674,6 +678,7 @@ Language=ru
 ;                               результат - скрипт records\rec_*.py (настройки скорости, повторов и клика по кнопке - в начале скрипта). Пока скрипт воспроизводится, это же
 ;                               действие его останавливает. Секция [Macro]: HoverMs - через сколько мс неподвижности записывать положение курсора
 ;     records                   меню записей (папка records)
+;     audio (или dictaphone)    диктофон: запись звука с микрофона в .m4a; те же кнопка и управление, что у записи экрана (микрофон, папка, качество - в «Настройки записи»)
 ; Win+цифры буферов перекрывают запуск закреплённых программ на панели задач.
 ; В меню буфера: Del - удалить, F2 - править, Ins - новая запись, Ctrl+Вверх/Вниз - переставить,
 ; Влево/Вправо или Win+цифра - другой буфер, Ctrl+цифра - скопировать запись в буфер, Tab - история/запуск.
@@ -704,6 +709,7 @@ Win+Shift+A=volumeset
 Win+Shift+D=duplicate
 Win+Shift+M=macro
 Win+Shift+N=records
+Ctrl+Win+S=audio
 Ctrl+Tilde=layout
 Win+C=run calc.exe
 Win+O=topmost
@@ -1017,7 +1023,7 @@ static BOOL ParseAction(const wchar_t *v, Bind *b) {
         {L"copy", A_COPY, 1}, {L"paste", A_PASTE, 3}, {L"buffer", A_BUFFER, 4}, {L"slots", A_BUFFER, 4}, {L"layout", A_LAYOUT, 0}, {L"history", A_HIST, 0}, {L"launcher", A_LAUNCH, 0}, {L"scripts", A_SCRIPTS, 0},
         {L"run", A_RUN, 2}, {L"admin", A_ADMIN, 2}, {L"py", A_PY, 2}, {L"pyrun", A_PYRUN, 0}, {L"topmost", A_TOPMOST, 0},
         {L"totray", A_TOTRAY, 0}, {L"pause", A_PAUSE, 0}, {L"webcam", A_WEBCAM, 0}, {L"stopwatch", A_STOPWATCH, 0}, {L"timer", A_TIMER, 0}, {L"draw", A_DRAW, 0}, {L"record", A_RECORD, 0}, {L"colorpicker", A_PICKER, 0}, {L"picker", A_PICKER, 0},
-        {L"volume", A_VOL, 0}, {L"volumeset", A_VOLSET, 0}, {L"duplicate", A_DUP, 0}, {L"macro", A_MACRO, 0}, {L"records", A_RECORDS, 0},
+        {L"volume", A_VOL, 0}, {L"volumeset", A_VOLSET, 0}, {L"duplicate", A_DUP, 0}, {L"macro", A_MACRO, 0}, {L"records", A_RECORDS, 0}, {L"audio", A_AUDIO, 0}, {L"dictaphone", A_AUDIO, 0},
     };
     for (int i = 0; i < (int)(sizeof T / sizeof T[0]); i++) {
         if (lstrcmpiW(name, T[i].n)) continue;
@@ -1132,6 +1138,7 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
         else if (!lstrcmpiW(k, L"Screen")) g_rScr = !lstrcmpiW(v, L"all") ? -1 : ToInt(v) > 0 && ToInt(v) <= 8 ? ToInt(v) : 0;
         else if (!lstrcmpiW(k, L"Mic")) lstrcpynW(g_rMic, v, 80);
         else if (!lstrcmpiW(k, L"Dir")) lstrcpynW(g_rDir, v, MAX_PATH);
+        else if (!lstrcmpiW(k, L"AudioKbps")) { g_rAk = ToInt(v); if (g_rAk != 96 && g_rAk != 192) g_rAk = 128; }
         else if (!lstrcmpiW(k, L"Fps")) { g_rFps = ToInt(v); if (g_rFps != 15 && g_rFps != 60) g_rFps = 30; }
         else if (!lstrcmpiW(k, L"Pos")) { const wchar_t *q = v; g_rPos[0] = ToInt(q); while (*q && *q != L',') q++; g_rPos[1] = *q ? ToInt(q + 1) : -99999; }
     } else if (!lstrcmpiW(s, L"Overlay")) {
@@ -2704,6 +2711,7 @@ static void ExecBind(const Bind *b) {
     case A_DUP: DupToggle(); break;
     case A_MACRO: MacroToggle(b->mods); break;
     case A_RECORDS: OpenPopup(PM_RECORDS, 0); break;
+    case A_AUDIO: RecAudioOpen(); break;
     case A_PAUSE: InterlockedExchange(&g_paused, !g_paused); Toast(g_paused ? Tr(L_T_PAUSED) : Tr(L_T_WORKING)); break;
     }
 }
@@ -5506,6 +5514,28 @@ static void PickerOpen(void) { PickNs::Open(); }
 
 /* ---------- запись экрана: монитор -> H.264 mp4 (Media Foundation), кнопка-кружок скрыта из кадра ---------- */
 static void OvCfgSave(OvCfg *c) { wchar_t v[48]; wsprintfW(v, L"%d,%d,%d,%d", c->mode, c->x, c->y, c->sc); IniSet(L"Overlay", c->stem, v); }
+static void BtnGlyph(HDC dc, int S, int kind) {                                     // значок на кнопке записи: 0 видеокамера, 1 курсор мыши, 2 звук (динамик)
+    int g = S * 34 / 100, cx = S / 2, cy = S / 2;
+    HBRUSH wb = CreateSolidBrush(RGB(255, 255, 255)), rb = CreateSolidBrush(RGB(255, 59, 48));
+    HPEN wp = CreatePen(PS_SOLID, S / 24 + 1, RGB(255, 255, 255));
+    HGDIOBJ op = SelectObject(dc, GetStockObject(NULL_PEN)), ob = SelectObject(dc, wb);
+    if (kind == 0) {
+        int x0 = cx - g / 2;
+        RoundRect(dc, x0, cy - g * 30 / 100, x0 + g * 66 / 100, cy + g * 30 / 100 + 1, g / 6, g / 6);
+        POINT pt[3] = {{x0 + g * 72 / 100, cy}, {cx + g / 2, cy - g * 26 / 100}, {cx + g / 2, cy + g * 26 / 100}};
+        Polygon(dc, pt, 3);
+    } else if (kind == 1) {                                                           // курсор мыши (стрелка)
+        static const POINT a[7] = {{0, 0}, {0, 16}, {4, 12}, {7, 19}, {9, 18}, {6, 11}, {11, 11}};
+        POINT pt[7]; for (int i = 0; i < 7; i++) { pt[i].x = cx - g * 29 / 100 + a[i].x * g / 19; pt[i].y = cy - g / 2 + a[i].y * g / 19; }
+        Polygon(dc, pt, 7);
+    } else {                                                                          // динамик
+        int ox = cx + g / 10;
+        RoundRect(dc, ox - g * 60 / 100, cy - g * 20 / 100, ox - g * 30 / 100, cy + g * 20 / 100 + 1, g * 10 / 100, g * 10 / 100);
+        POINT pt[4] = {{ox - g * 18 / 100, cy - g * 20 / 100}, {ox + g * 20 / 100, cy - g * 50 / 100}, {ox + g * 20 / 100, cy + g * 50 / 100}, {ox - g * 18 / 100, cy + g * 20 / 100}};
+        Polygon(dc, pt, 4);
+    }
+    SelectObject(dc, op); SelectObject(dc, ob); DeleteObject(wb); DeleteObject(rb); DeleteObject(wp);
+}
 namespace RecNs {
 using namespace Gdiplus;
 using namespace Gdiplus::DllExports;
@@ -5668,8 +5698,8 @@ static void WriteBuf(IMFSinkWriter *wr, int stream, const void *data, DWORD byte
     mb->Release();
 }
 // Микрофон (WASAPI, общий режим, 16 бит 48 кГц стерео с автопреобразованием). Имя пустое - по умолчанию, "-" - без звука.
-static BOOL AudioInit(void) {
-    if (g_rMic[0] == L'-' && !g_rMic[1]) return FALSE;
+static BOOL AudioInit(BOOL force = FALSE) {                                              // force (диктофон): микрофон нужен всегда, «без звука» не учитывается
+    if (!force && g_rMic[0] == L'-' && !g_rMic[1]) return FALSE;
     BOOL ok = FALSE; IMMDeviceEnumerator *en = NULL; IMMDevice *dev = NULL;
     if (FAILED(CoCreateInstance(CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, IID_IMMDeviceEnumerator, (void **)&en))) return FALSE;
     if (g_rMic[0]) {
@@ -5857,10 +5887,59 @@ static void CalcCr(RECT *r) {                                // что буде�
     else if (g_rScr > 0) { HMONITOR hm[8]; int n = Mons(hm); if (g_rScr <= n) { MONITORINFO m2; m2.cbSize = sizeof m2; if (GetMonitorInfoW(hm[g_rScr - 1], &m2)) *r = g_rNoTb ? m2.rcWork : m2.rcMonitor; } }
     if (areaOn) *r = area;                                    // выбранная область важнее настроек монитора
 }
+static BOOL aud, csOk;                                                                  // aud: кнопка работает как диктофон (запись звука в .m4a)
+static DWORD WINAPI AudRec(LPVOID) {
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    BOOL mf = SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_LITE)), started = FALSE;
+    swr = NULL; aStream = -1;
+    if (mf && AudioInit(TRUE)) {
+        IMFAttributes *at = NULL; MFCreateAttributes(&at, 1);
+        if (at) at->SetGUID(MF_TRANSCODE_CONTAINERTYPE, MFTranscodeContainerType_MPEG4);
+        if (SUCCEEDED(MFCreateSinkWriterFromURL(path, NULL, at, &swr))) {
+            IMFMediaType *ao = NULL, *ai = NULL; DWORD sa = 0;
+            if (SUCCEEDED(MFCreateMediaType(&ao)) && SUCCEEDED(MFCreateMediaType(&ai))) {
+                ao->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio); ao->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_AAC);
+                ao->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16); ao->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, 48000); ao->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, 2);
+                ao->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, g_rAk * 125); ao->SetUINT32(MF_MT_AAC_PAYLOAD_TYPE, 0);
+                ai->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio); ai->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_PCM);
+                ai->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16); ai->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, 48000); ai->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, 2);
+                ai->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, 4); ai->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 192000);
+                if (SUCCEEDED(swr->AddStream(ao, &sa)) && SUCCEEDED(swr->SetInputMediaType(sa, ai, NULL))) aStream = (int)sa;
+            }
+            if (ao) ao->Release(); if (ai) ai->Release();
+            started = aStream >= 0 && SUCCEEDED(swr->BeginWriting());
+        }
+        if (at) at->Release();
+    }
+    if (started) { QueryPerformanceFrequency(&fq); QueryPerformanceCounter(&t0); pauseAcc = 0; paused = 0; }
+    okF = started; SetEvent(ev);
+    if (started) AudioWorker(NULL);                                                     // пишет, пока не поднят stopF
+    if (swr) { if (started) swr->Finalize(); swr->Release(); swr = NULL; }
+    if (aclip) { aclip->Release(); aclip = NULL; } if (aclient) { aclient->Release(); aclient = NULL; }
+    if (mf) MFShutdown();
+    CoUninitialize(); return 0;
+}
+static void StartAud(void) {
+    if (!csOk) { InitializeCriticalSection(&cs); csOk = TRUE; }
+    wchar_t d[MAX_PATH]; Dir(d); CreateDirectoryW(d, NULL);
+    SYSTEMTIME st; GetLocalTime(&st);
+    wsprintfW(fname, L"Audio_%04d-%02d-%02d_%02d-%02d-%02d.m4a", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    lstrcpynW(path, d, MAX_PATH); Cat(path, MAX_PATH, L"\\"); Cat(path, MAX_PATH, fname);
+    stopF = 0; okF = 0; ev = CreateEventW(NULL, TRUE, FALSE, NULL);
+    th = CreateThread(NULL, 0, AudRec, NULL, 0, NULL);
+    if (th) WaitForSingleObject(ev, 8000);
+    CloseHandle(ev); ev = NULL;
+    if (!th || !okF) {
+        if (th) { stopF = 1; WaitForSingleObject(th, 5000); CloseHandle(th); th = NULL; }
+        DeleteFileW(path); Toast(Tr(L_REC_FAIL)); return;
+    }
+    recording = TRUE; Repaint();
+}
 static void Start(void) {
     if (recording || !hw || ovBusy()) return;
+    if (aud) { StartAud(); return; }
     CalcCr(&cr); ScanOv();
-    static BOOL csInit; if (!csInit) { InitializeCriticalSection(&cs); csInit = TRUE; }
+    if (!csOk) { InitializeCriticalSection(&cs); csOk = TRUE; }
     paused = 0;
     cr.right -= (cr.right - cr.left) & 1; cr.bottom -= (cr.bottom - cr.top) & 1;     // H.264: чётные размеры
     wchar_t d[MAX_PATH]; Dir(d); CreateDirectoryW(d, NULL);
@@ -5887,7 +5966,7 @@ static void Stop(void) {
     if (!recording) return;
     if (paused) { pauseAcc += Now() - pauseStart; paused = 0; }
     stopF = 1; WaitForSingleObject(th, 20000); CloseHandle(th); th = NULL; recording = FALSE; Repaint();
-    wchar_t m[160]; wsprintfW(m, Tr(L_REC_SAVED), fname); Toast(m);
+    wchar_t m[160]; wsprintfW(m, Tr(aud ? L_REC_AUDSAVED : L_REC_SAVED), fname); Toast(m);
 }
 /* --- выбор области записи: затемнение монитора, рамка мышью, Shift - пропорции экрана --- */
 static LRESULT CALLBACK SelProc(HWND h, UINT m, WPARAM w, LPARAM l) {
@@ -6123,10 +6202,10 @@ static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         Ellipse(dc, 2, 2, S - 2, S - 2);
         SelectObject(dc, GetStockObject(NULL_PEN)); SelectObject(dc, red);
         if (recording && paused) { RoundRect(dc, S * 32 / 100, S * 30 / 100, S * 45 / 100, S * 70 / 100 + 1, 3, 3); RoundRect(dc, S * 55 / 100, S * 30 / 100, S * 68 / 100 + 1, S * 70 / 100 + 1, 3, 3); }
-        else if (recording) RoundRect(dc, S * 31 / 100, S * 31 / 100, S * 69 / 100 + 1, S * 69 / 100 + 1, S / 10, S / 10);
-        else Ellipse(dc, S * 27 / 100, S * 27 / 100, S * 73 / 100 + 1, S * 73 / 100 + 1);
+        else if (recording) { RoundRect(dc, S * 28 / 100, S * 28 / 100, S * 72 / 100 + 1, S * 72 / 100 + 1, S / 10, S / 10); BtnGlyph(dc, S, aud ? 2 : 0); }
+        else { Ellipse(dc, S * 24 / 100, S * 24 / 100, S * 76 / 100 + 1, S * 76 / 100 + 1); BtnGlyph(dc, S, aud ? 2 : 0); }
         SelectObject(dc, op); SelectObject(dc, ob); DeleteObject(pw); DeleteObject(red);
-        if (areaOn && !recording) { HPEN pa = CreatePen(PS_SOLID, 1, RGB(255, 255, 255)); HGDIOBJ o1 = SelectObject(dc, pa), o2 = SelectObject(dc, GetStockObject(NULL_BRUSH)); Rectangle(dc, S * 62 / 100, S * 62 / 100, S * 86 / 100, S * 82 / 100); SelectObject(dc, o1); SelectObject(dc, o2); DeleteObject(pa); }
+        if (areaOn && !recording && !aud) { HPEN pa = CreatePen(PS_SOLID, 1, RGB(255, 255, 255)); HGDIOBJ o1 = SelectObject(dc, pa), o2 = SelectObject(dc, GetStockObject(NULL_BRUSH)); Rectangle(dc, S * 62 / 100, S * 62 / 100, S * 86 / 100, S * 82 / 100); SelectObject(dc, o1); SelectObject(dc, o2); DeleteObject(pa); }
         EndPaint(h, &ps); return 0;
     }
     case WM_LBUTTONDOWN: { GetCursorPos(&dn); RECT r; GetWindowRect(h, &r); wp.x = r.left; wp.y = r.top; moved = FALSE; SetCapture(h); return 0; }
@@ -6141,17 +6220,18 @@ static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (GetCapture() == h) {
             ReleaseCapture();
             if (moved) SavePos(); else if (recording) { BOOL c = (w & MK_CONTROL) != 0; if (paused ? c : !c) Stop(); else Pause(); }
-            else if (w & MK_SHIFT) SelectArea(); else Start();
+            else if ((w & MK_SHIFT) && !aud) SelectArea(); else Start();
         }
         return 0;
     case WM_RBUTTONUP: if (!recording) DestroyWindow(h); return 0;
-    case WM_DESTROY: Stop(); SavePos(); hw = NULL; ShowFree(); return 0;
+    case WM_DESTROY: Stop(); aud = FALSE; SavePos(); hw = NULL; ShowFree(); return 0;
     }
     return DefWindowProcW(h, m, w, l);
 }
-static void Open(void) {
+static void OpenMode(BOOL a) {                                    // a: диктофон; повторный вызов - старт, потом стоп; другой режим - переключает кнопку
     if (recording) { Stop(); return; }
-    if (hw) { Start(); return; }
+    if (hw) { if (aud != a) { aud = a; Repaint(); if (a) ShowFree(); else ShowSync(); } else Start(); return; }
+    aud = a;
     POINT pt; GetCursorPos(&pt);
     MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoW(MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST), &mi);
     int S = MulDiv(48, GetDpiForSystem(), 96), x = mi.rcMonitor.right - S - S / 2, y = mi.rcMonitor.top + S / 2;
@@ -6163,8 +6243,10 @@ static void Open(void) {
     SetWindowRgn(hw, CreateEllipticRgn(0, 0, S + 1, S + 1), TRUE);
     SetWindowDisplayAffinity(hw, 0x11);                      // WDA_EXCLUDEFROMCAPTURE: кнопка не попадает в видео
     ShowWindow(hw, SW_SHOWNOACTIVATE);
-    ShowSync();
+    if (!aud) ShowSync();
 }
+static void Open(void) { OpenMode(FALSE); }
+static void OpenAudio(void) { OpenMode(TRUE); }
 static wchar_t micList[16][80];
 static HMENU MicMenu(void) {
     HMENU m = CreatePopupMenu(); BOOL off = g_rMic[0] == L'-' && !g_rMic[1], def = !g_rMic[0]; int nm = 0;
@@ -6236,6 +6318,9 @@ static HMENU Menu(void) {
     static const int f[3] = {15, 30, 60};
     for (int i = 0; i < 3; i++) { wsprintfW(t, Tr(L_REC_FPS), f[i]); AppendMenuW(m, MF_STRING | (g_rFps == f[i] ? MF_CHECKED : 0), 22 + i, t); }
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    static const int ak[3] = {96, 128, 192};
+    for (int i = 0; i < 3; i++) { wsprintfW(t, Tr(L_REC_AUDKB), ak[i]); AppendMenuW(m, MF_STRING | (g_rAk == ak[i] ? MF_CHECKED : 0), 64 + i, t); }
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING, 25, Tr(L_REC_DIR));
     return m;
 }
@@ -6243,6 +6328,7 @@ static void Cmd(int c) {
     wchar_t v[8];
     if (c == 20) { g_rNoTb = !g_rNoTb; IniSet(L"Record", L"NoTaskbar", g_rNoTb ? L"1" : L"0"); }
     else if (c == 21) { g_rCur = !g_rCur; IniSet(L"Record", L"Cursor", g_rCur ? L"1" : L"0"); }
+    else if (c >= 64 && c <= 66) { g_rAk = c == 64 ? 96 : c == 65 ? 128 : 192; wsprintfW(v, L"%d", g_rAk); IniSet(L"Record", L"AudioKbps", v); }
     else if (c >= 22 && c <= 24) { g_rFps = c == 22 ? 15 : c == 23 ? 30 : 60; wsprintfW(v, L"%d", g_rFps); IniSet(L"Record", L"Fps", v); }
     else if (c == 26 || c == 27 || (c >= 50 && c < 58)) {
         g_rScr = c == 26 ? -1 : c == 27 ? 0 : c - 49; wsprintfW(v, L"%d", g_rScr); IniSet(L"Record", L"Screen", c == 26 ? L"all" : v);
@@ -6609,8 +6695,8 @@ static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         Ellipse(dc, 2, 2, S - 2, S - 2);
         SelectObject(dc, GetStockObject(NULL_PEN)); SelectObject(dc, red);
         if (rec && paused) { RoundRect(dc, S * 32 / 100, S * 30 / 100, S * 45 / 100, S * 70 / 100 + 1, 3, 3); RoundRect(dc, S * 55 / 100, S * 30 / 100, S * 68 / 100 + 1, S * 70 / 100 + 1, 3, 3); }
-        else if (rec) RoundRect(dc, S * 31 / 100, S * 31 / 100, S * 69 / 100 + 1, S * 69 / 100 + 1, S / 10, S / 10);
-        else Ellipse(dc, S * 27 / 100, S * 27 / 100, S * 73 / 100 + 1, S * 73 / 100 + 1);
+        else if (rec) { RoundRect(dc, S * 28 / 100, S * 28 / 100, S * 72 / 100 + 1, S * 72 / 100 + 1, S / 10, S / 10); BtnGlyph(dc, S, 1); }
+        else { Ellipse(dc, S * 24 / 100, S * 24 / 100, S * 76 / 100 + 1, S * 76 / 100 + 1); BtnGlyph(dc, S, 1); }
         SelectObject(dc, op); SelectObject(dc, ob); DeleteObject(pw); DeleteObject(red);
         EndPaint(h, &ps); return 0;
     }
@@ -6657,6 +6743,7 @@ static void MacroToggle(DWORD mods) {                                           
     Open();
 }
 static void RecOpen(void) { RecNs::Open(); }
+static void RecAudioOpen(void) { RecNs::OpenAudio(); }
 static void RecShowSync(void) { RecNs::ShowSync(); }
 
 /* ---------- стабильная громкость: пик звука выше порога - громкость системы снижается, потом медленно возвращается ---------- */
@@ -7027,7 +7114,7 @@ static void NavRun(void) {                                      // клавиш�
     }
 }
 static BOOL KeepMenu(int c) {                                   // настройки: меню остаётся открытым после выбора
-    return (c >= 899 && c < 964) || (c >= 20 && c < 58 && c != 25) || (c >= 700 && c < 760) || c == 60 || c == 62 || (c >= 600 && c < 700 && c != 601) || (c >= 300 && c < 500 && (c - 300) % 8 < 4) || (c >= TM_ID + 12 && c < TM_ID + 40);
+    return (c >= 899 && c < 964) || (c >= 64 && c < 67) || (c >= 21 && c < 58 && c != 25) || (c >= 700 && c < 760) || c == 60 || c == 62 || (c >= 600 && c < 700 && c != 601) || (c >= 300 && c < 500 && (c - 300) % 8 < 4) || (c >= TM_ID + 12 && c < TM_ID + 40);
 }
 static void TrayMenuAt(POINT pt, int again);
 static void TrayMenu(void) { POINT pt; GetCursorPos(&pt); TrayMenuAt(pt, 0); }
@@ -7044,7 +7131,8 @@ static void TrayMenuAt(POINT pt, int again) {
     AddHk(m, MF_STRING, 5, Tr(L_TRAY_DRAW), A_DRAW);
     AddHk(m, MF_STRING, 6, Tr(L_TRAY_PICK), A_PICKER);
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
-    AddHk(m, MF_STRING, 7, RecNs::recording ? Tr(L_TRAY_RECSTOP) : Tr(L_TRAY_REC), A_RECORD);
+    AddHk(m, MF_STRING, 7, RecNs::recording && !RecNs::aud ? Tr(L_TRAY_RECSTOP) : Tr(L_TRAY_REC), A_RECORD);
+    AddHk(m, MF_STRING | (RecNs::recording && RecNs::aud ? MF_CHECKED : 0), 70, Tr(L_TRAY_AUD), A_AUDIO);
     AppendMenuW(m, MF_POPUP, (UINT_PTR)RecNs::Menu(), Tr(L_TRAY_RECSET));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_POPUP, (UINT_PTR)VolNs::Menu(), Tr(L_TRAY_VOL));
@@ -7099,6 +7187,7 @@ static void TrayMenuAt(POINT pt, int again) {
     case 5: Sleep(150); DrawOpen(); break;      // пауза: меню успевает исчезнуть с экрана
     case 6: Sleep(150); PickerOpen(); break;
     case 7: Sleep(150); RecOpen(); break;
+    case 70: Sleep(150); RecAudioOpen(); break;
     case 10: SetHistory(!g_histOn); break;
     case 11: AutoSet(!AutoGet()); break;
     case 15: InterlockedExchange(&g_paused, !g_paused); break;
