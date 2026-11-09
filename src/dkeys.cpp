@@ -142,6 +142,8 @@ static int g_bufMax = 10, g_curBuf = 1;
 static int g_layoutWord, g_layoutSwitch = 1;
 static wchar_t **g_hist; static int g_nhist, g_histCap;
 static KV *g_launch; static int g_nlaunch;
+struct ScrEnt { wchar_t *title, *arg, *dir, *hk; };                                       // строка секции [Scripts]: title может быть NULL, hk - имя хоткея или ""
+static ScrEnt *g_scrIni; static int g_nscrIni;
 
 static Bind *g_bind; static int g_nbind;
 static Bind *g_bnew; static int g_nbnew, g_bnewCap;
@@ -675,6 +677,12 @@ Win+Shift+C=colorpicker
 Win+Shift+R=record
 )INI";
 static const char *kIni2 = u8R"INI(
+[Scripts]
+; Скрипты (вкладка "Скрипты" и хоткеи). Форматы строки:
+;   Win+W=скрипт [аргументы] [@ рабочая папка]            хоткей, название - из первой строки скрипта
+;   Название=[Win+T]скрипт [аргументы] [@ рабочая папка]  своё название и хоткей
+;   Название=скрипт                                       без хоткея, только в меню
+; Название из ini важнее строки в скрипте. Если пути нет - скрипт ищется в папке scripts. Расширения: py, bat, cmd, ps1
 [Launcher]
 ; Меню быстрого запуска (действие launcher): Название=команда (те же команды, что в run / admin).
 ; Перед командой можно указать глобальный хоткей в квадратных скобках: Калькулятор=[Win+C]calc.exe (хоткей показывается справа в меню)
@@ -1056,6 +1064,20 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
             const wchar_t *q = v;
             for (int i = 0; i < 4; i++) { g_cfgWin[i] = ToInt(q); while (*q && *q != L',') q++; if (*q) q++; }
         }
+    } else if (!lstrcmpiW(s, L"Scripts")) {                                               // Хоткей=скрипт | Название=[Хоткей]скрипт | Название=скрипт; скрипт [арг] [@ папка]
+        Bind b; memset(&b, 0, sizeof b); const wchar_t *cmd = v; const wchar_t *title = NULL;
+        if (!ParseHotkey(k, &b.mods, &b.key)) { title = k; cmd = LauncherSplit(v, &b.mods, &b.key); }
+        while (*cmd == L' ') cmd++;
+        if (!*cmd) return;
+        b.act = A_PY; SplitDir(cmd, &b);
+        g_scrIni = (ScrEnt *)Realloc(g_scrIni, (g_nscrIni + 1) * sizeof(ScrEnt));
+        ScrEnt *e = &g_scrIni[g_nscrIni++];
+        wchar_t hk[48] = L""; if (b.key) HkName(b.mods, b.key, hk);
+        e->title = title && *title ? Dup(title) : NULL; e->arg = Dup(b.arg); e->dir = b.dir ? Dup(b.dir) : NULL; e->hk = Dup(hk);
+        if (!b.key) { Free(b.arg); Free(b.dir); return; }
+        b.lau = 1;
+        if (g_nbnew >= g_bnewCap) { g_bnewCap = g_bnewCap ? g_bnewCap * 2 : 64; g_bnew = (Bind *)Realloc(g_bnew, g_bnewCap * sizeof(Bind)); }
+        g_bnew[g_nbnew++] = b;
     } else if (!lstrcmpiW(s, L"Launcher")) {
         g_launch = (KV *)Realloc(g_launch, (g_nlaunch + 1) * sizeof(KV));
         g_launch[g_nlaunch].k = Dup(k); g_launch[g_nlaunch].v = Dup(v); g_nlaunch++;
@@ -1110,6 +1132,8 @@ static void LoadConfig(void) {
     wchar_t *t = FromUtf8((char *)raw, sz); Free(raw);
     for (int i = 0; i < g_nlaunch; i++) { Free(g_launch[i].k); Free(g_launch[i].v); }
     Free(g_launch); g_launch = NULL; g_nlaunch = 0;
+    for (int i = 0; i < g_nscrIni; i++) { Free(g_scrIni[i].title); Free(g_scrIni[i].arg); Free(g_scrIni[i].dir); Free(g_scrIni[i].hk); }
+    Free(g_scrIni); g_scrIni = NULL; g_nscrIni = 0;
     g_bnew = NULL; g_nbnew = g_bnewCap = 0;
     IniParse(t, CfgCb);
     Free(t);
@@ -1743,6 +1767,18 @@ static BOOL IsScriptCmd(const wchar_t *s) {                                     
 static BOOL FindTarget(const wchar_t *cmd, const wchar_t *dir, BOOL script, wchar_t *out);
 static int BindRows(BOOL scripts, Row *out, int max) {                               // хоткеи ini run/admin/py -> строки (скрипты: py, run py|python|powershell; остальное - запуск)
     int n = 0;
+    if (scripts) for (int i = 0; i < g_nscrIni && n < max; i++) {                      // секция [Scripts]: первыми, в порядке ini; название из ini важнее, чем строка в самом скрипте
+        const ScrEnt *e = &g_scrIni[i];
+        Row *r = &out[n++]; memset(r, 0, sizeof *r);
+        r->act = A_PY; r->ref = -1; r->label = Dup(L""); r->hk = Dup(e->hk); r->text = Dup(e->arg); r->dir = e->dir ? Dup(e->dir) : NULL;
+        wchar_t sp[MAX_PATH], nm[100]; nm[0] = 0;
+        if (e->title) lstrcpynW(nm, e->title, 100);
+        else if (FindTarget(e->arg, NULL, FALSE, sp) && (EndsI(sp, L".py") || EndsI(sp, L".pyw") || EndsI(sp, L".bat") || EndsI(sp, L".cmd") || EndsI(sp, L".ps1"))) {
+            DWORD sz = 0; BYTE *raw = ReadAll(sp, &sz);
+            if (raw) { if (sz > 6000) sz = 6000; wchar_t *txt = FromUtf8((char *)raw, sz); ScrName(txt, nm, 100, EndsI(sp, L".bat") || EndsI(sp, L".cmd")); Free(txt); Free(raw); }
+        }
+        r->title = Dup(nm[0] ? nm : e->arg);
+    }
     AcquireSRWLockShared(&g_bindLock);
     for (int i = 0; i < g_nbind && n < max; i++) {
         const Bind *b = &g_bind[i];
@@ -1753,7 +1789,7 @@ static int BindRows(BOOL scripts, Row *out, int max) {                          
         r->act = b->act; r->ref = -1; r->label = Dup(L""); r->hk = Dup(hk); r->text = Dup(b->arg); r->dir = b->dir ? Dup(b->dir) : NULL;
         r->title = Dup(b->act == A_ADMIN ? L"admin " : L""); { int l = lstrlenW(r->title); wchar_t *t = (wchar_t *)Alloc((l + lstrlenW(b->arg) + 1) * sizeof(wchar_t)); lstrcpyW(t, r->title); lstrcatW(t, b->arg); Free(r->title); r->title = t; }
         wchar_t sp[MAX_PATH];                                                         // скрипт: заголовок - из первой строки-комментария файла, как у файлов папки scripts
-        if (scripts && FindTarget(b->arg, b->dir, b->act != A_PY && IsScriptCmd(b->arg), sp) && (EndsI(sp, L".py") || EndsI(sp, L".pyw") || EndsI(sp, L".bat") || EndsI(sp, L".cmd") || EndsI(sp, L".ps1"))) {
+        if (scripts && FindTarget(b->arg, b->act == A_PY ? NULL : b->dir, b->act != A_PY && IsScriptCmd(b->arg), sp) && (EndsI(sp, L".py") || EndsI(sp, L".pyw") || EndsI(sp, L".bat") || EndsI(sp, L".cmd") || EndsI(sp, L".ps1"))) {
             DWORD sz = 0; BYTE *raw = ReadAll(sp, &sz);
             if (raw) {
                 if (sz > 6000) sz = 6000;
@@ -1766,6 +1802,48 @@ static int BindRows(BOOL scripts, Row *out, int max) {                          
     }
     ReleaseSRWLockShared(&g_bindLock);
     return n;
+}
+static void SplitCmd(wchar_t *s, wchar_t **file, wchar_t **par);
+static wchar_t *CmdKey(const wchar_t *cmd, const wchar_t *dir, BOOL script) {          // ключ для поиска дублей: полный путь запускаемого файла + аргументы, в нижнем регистре
+    wchar_t *s = Dup(cmd), *file, *par; SplitCmd(s, &file, &par);
+    wchar_t *args = par;
+    if (script) { wchar_t *q = par; while (*q) { wchar_t *f2, *p2; SplitCmd(q, &f2, &p2); if (*f2 && *f2 != L'-') { args = p2; break; } q = p2; } }
+    wchar_t path[MAX_PATH]; path[0] = 0;
+    if (!FindTarget(cmd, dir, script, path)) ExpandEnvironmentStringsW(file, path, MAX_PATH);
+    wchar_t *k = (wchar_t *)Alloc((lstrlenW(path) + lstrlenW(args) + 2) * sizeof(wchar_t));
+    lstrcpyW(k, path); lstrcatW(k, L"|"); lstrcatW(k, args);
+    int l = lstrlenW(k); while (l > 0 && k[l - 1] == L' ') k[--l] = 0;
+    CharLowerW(k); Free(s); return k;
+}
+static void DedupRows(void) {                                                         // убираем повторы: остаётся первая строка (ini и хоткеи идут раньше файлов папок)
+    if (g_pmode != PM_LAUNCH && g_pmode != PM_SCRIPTS) return;
+    wchar_t **keys = (wchar_t **)Alloc(sizeof(wchar_t *) * (g_nrows ? g_nrows : 1)); int m = 0;
+    for (int i = 0; i < g_nrows; i++) {
+        Row *r = &g_rows[i]; wchar_t *k;
+        if (r->act) k = CmdKey(r->text, r->act == A_PY ? NULL : r->dir, r->act != A_PY && IsScriptCmd(r->text));
+        else if (g_pmode == PM_SCRIPTS || r->ref >= g_nlaunch) {
+            wchar_t p[MAX_PATH]; if (g_pmode == PM_SCRIPTS) { lstrcpynW(p, g_pyDir, MAX_PATH); Cat(p, MAX_PATH, g_scrNames[r->ref]); } else lstrcpynW(p, r->text, MAX_PATH);
+            k = (wchar_t *)Alloc((lstrlenW(p) + 2) * sizeof(wchar_t)); lstrcpyW(k, p); lstrcatW(k, L"|"); CharLowerW(k);
+        } else {
+            Bind b; memset(&b, 0, sizeof b);
+            if (ParseAction(r->text, &b) && b.arg) k = CmdKey(b.arg, b.dir, FALSE); else k = Dup(r->text);
+            Free(b.arg); Free(b.dir);
+        }
+        BOOL dup = FALSE; for (int j = 0; j < m && !dup; j++) dup = !lstrcmpW(keys[j], k);
+        if (dup) { Free(k); Free(r->label); Free(r->title); Free(r->text); Free(r->hk); Free(r->dir); continue; }
+        keys[m] = k; g_rows[m] = *r; m++;
+    }
+    for (int j = 0; j < m; j++) Free(keys[j]);
+    Free(keys); g_nrows = m;
+    if (g_pmode == PM_SCRIPTS) {                                                      // метки T/1-9/0 заново: после удаления повторов в нумерации не должно быть дыр
+        int k = 0;
+        for (int i = 0; i < g_nrows; i++) {
+            Row *r = &g_rows[i]; if (r->act) continue;
+            BOOL tmp = !lstrcmpiW(g_scrNames[r->ref], L"tmp.py");
+            wchar_t lb[2] = {(wchar_t)(tmp ? L'T' : k < 9 ? L'1' + k : k == 9 ? L'0' : 0), 0}; if (!tmp) k++;
+            Free(r->label); r->label = Dup(lb);
+        }
+    }
 }
 static void ScrRow(Row *r, const wchar_t *file, const wchar_t *label) {
     wchar_t path[MAX_PATH]; lstrcpynW(path, g_pyDir, MAX_PATH); Cat(path, MAX_PATH, file);
@@ -1813,6 +1891,7 @@ static void BuildRows(void) {
     for (int i = 0; i < nr; i++) Free(rf[i]);
     Free(rf);
     g_nrows = n;
+    DedupRows();
     Refilter();
 }
 
@@ -2118,9 +2197,23 @@ static void SplitCmd(wchar_t *s, wchar_t **file, wchar_t **par) {
     while (*s == L' ') s++;
     *par = s;
 }
+static void RunPy(const wchar_t *arg, const wchar_t *dir, BOOL hold);
+static BOOL HasSep(const wchar_t *s) { for (; *s; s++) if (*s == L'\\' || *s == L'/' || *s == L':') return TRUE; return FALSE; }
 static void RunShell(const wchar_t *spec, const wchar_t *dir, BOOL admin) {
     wchar_t *s = Dup(spec), *file, *par;
     SplitCmd(s, &file, &par);
+    wchar_t rp[MAX_PATH];                                                             // имя без пути, которого нет рядом: ищем в папке runs
+    if (!HasSep(file) && lstrlenW(file) + lstrlenW(g_runDir) < MAX_PATH - 1) {
+        lstrcpyW(rp, g_runDir); lstrcatW(rp, file);
+        if (GetFileAttributesW(rp) != INVALID_FILE_ATTRIBUTES) {
+            if (EndsI(rp, L".ps1")) {                                                 // ps1 - через PowerShell, как во вкладке запуска
+                wchar_t *q = (wchar_t *)Alloc((lstrlenW(rp) + lstrlenW(par) + 6) * sizeof(wchar_t));
+                wsprintfW(q, L"\"%s\" %s", rp, par); RunPy(q, dir, TRUE); Free(q); Free(s); return;
+            }
+            file = rp;
+            if (!dir || !*dir) dir = g_runDir;
+        }
+    }
     SHELLEXECUTEINFOW e; memset(&e, 0, sizeof e);
     e.cbSize = sizeof e; e.fMask = SEE_MASK_DOENVSUBST | SEE_MASK_FLAG_NO_UI;
     e.lpVerb = admin ? L"runas" : NULL; e.lpFile = file; e.lpParameters = *par ? par : NULL;
@@ -2436,8 +2529,8 @@ static BOOL FindTarget(const wchar_t *cmd, const wchar_t *dir, BOOL script, wcha
     wchar_t t[MAX_PATH];
     if (isAbs) { lstrcpynW(out, ex, MAX_PATH); ok = GetFileAttributesW(out) != INVALID_FILE_ATTRIBUTES; }
     else {
-        const wchar_t *bases[2] = {dir && *dir ? dir : NULL, g_pyDir};
-        for (int i = 0; i < 2 && !ok; i++) if (bases[i]) { lstrcpynW(t, bases[i], MAX_PATH); { int l = lstrlenW(t); if (l && t[l - 1] != L'\\') Cat(t, MAX_PATH, L"\\"); } Cat(t, MAX_PATH, ex); if (GetFileAttributesW(t) != INVALID_FILE_ATTRIBUTES) { lstrcpynW(out, t, MAX_PATH); ok = TRUE; } }
+        const wchar_t *bases[3] = {dir && *dir ? dir : NULL, g_pyDir, g_runDir};
+        for (int i = 0; i < 3 && !ok; i++) if (bases[i]) { lstrcpynW(t, bases[i], MAX_PATH); { int l = lstrlenW(t); if (l && t[l - 1] != L'\\') Cat(t, MAX_PATH, L"\\"); } Cat(t, MAX_PATH, ex); if (GetFileAttributesW(t) != INVALID_FILE_ATTRIBUTES) { lstrcpynW(out, t, MAX_PATH); ok = TRUE; } }
         if (!ok) { wchar_t *fp; if (SearchPathW(NULL, ex, L".exe", MAX_PATH, t, &fp)) { lstrcpynW(out, t, MAX_PATH); ok = TRUE; } }
     }
     Free(s);
@@ -2448,7 +2541,7 @@ static void PopupReveal(void) {                                                 
     if (g_nvis <= 0 || (g_pmode != PM_LAUNCH && g_pmode != PM_SCRIPTS)) return;
     Row *r = &g_rows[g_vis[g_sel]];
     wchar_t path[MAX_PATH]; path[0] = 0; BOOL ok = FALSE;
-    if (r->act) ok = FindTarget(r->text, r->dir, r->act != A_PY && IsScriptCmd(r->text), path);
+    if (r->act) ok = FindTarget(r->text, r->act == A_PY ? NULL : r->dir, r->act != A_PY && IsScriptCmd(r->text), path);
     else if (g_pmode == PM_SCRIPTS) { lstrcpynW(path, g_pyDir, MAX_PATH); Cat(path, MAX_PATH, g_scrNames[r->ref]); ok = TRUE; }
     else if (r->ref >= g_nlaunch) { lstrcpynW(path, r->text, MAX_PATH); ok = TRUE; }
     else {
