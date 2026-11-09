@@ -82,9 +82,9 @@ enum {
 #define TID_NAV 6
 #define VISROWS g_vr
 
-struct Bind { UINT mods, key; int act, n, n2; wchar_t *arg, *dir; };
+struct Bind { UINT mods, key; int act, n, n2; wchar_t *arg, *dir; int lau; };      // lau: хоткей задан строкой меню запуска [Launcher]
 struct KV { wchar_t *k, *v; };
-struct Row { wchar_t *label, *title, *text; int ref; };
+struct Row { wchar_t *label, *title, *text, *hk, *dir; int ref, act; };      // act != 0: строка из хоткея ini (run/admin/py), hk - его имя
 struct Snap { UINT fmt[64]; HGLOBAL h[64]; int n; };
 struct Buf { wchar_t *p; int n, cap; };
 static void CamOpen(void);
@@ -224,11 +224,11 @@ X(L_TRAY_TIPADM, "tray.tip_admin", L"DKeys (администратор)") \
 X(L_TAB_HIST, "popup.tab_history", L"История") \
 X(L_TAB_LAUNCH, "popup.tab_launch", L"Запуск") \
 X(L_TAB_SCR, "popup.tab_scripts", L"Скрипты") \
-X(L_INFO_SCR, "popup.info_scripts", L"T - tmp.py, 1-9 - остальные, Enter - запустить   Tab - режим   Esc - закрыть") \
+X(L_INFO_SCR, "popup.info_scripts2", L"T - tmp.py, 1-9 - остальные, Enter - запустить   Shift+Enter - папка   Tab - режим   Esc - закрыть") \
 X(L_EMPTY_SCR, "popup.scripts_empty3", L"В папке scripts нет скриптов (*.py, *.bat, *.ps1)") \
 X(L_TRAY_SCR, "tray.scripts", L"Скрипты…") \
 X(L_SEARCH, "popup.search", L"Введите для поиска…") \
-X(L_INFO_LAUNCH, "popup.info_launch", L"Enter - запустить   Tab - режим   Esc - закрыть") \
+X(L_INFO_LAUNCH, "popup.info_launch2", L"Enter - запустить   Shift+Enter - папка   Tab - режим   Esc - закрыть") \
 X(L_INFO_BUF, "popup.info_buffer2", L"%d симв.   цифра/Enter - вставить   Ctrl+цифра - картинка   Del - удалить   F2 - правка   Ins - новая") \
 X(L_INFO_HIST, "popup.info_history", L"%d симв.   Enter - вставить   Del - удалить   F2 - правка   Ctrl+1..9 - в буфер") \
 X(L_EMPTY_NF, "popup.not_found", L"Ничего не найдено") \
@@ -240,7 +240,8 @@ X(L_ED_BUF, "dialog.buffer_entry", L"Буфер %d: запись %d") \
 X(L_ED_HIST, "dialog.history_entry", L"Запись истории") \
 X(L_T_RUNFAIL, "toast.run_failed", L"Не удалось запустить: %.120s") \
 X(L_T_PYFAIL, "toast.python_failed", L"Не удалось запустить Python (%.80s)") \
-X(L_T_NOSEL, "toast.no_selection", L"Нет выделенного текста") \
+X(L_T_NOFILE, "toast.no_file", L"Файл не найден") \
+X(L_T_NOSEL,"toast.no_selection", L"Нет выделенного текста") \
 X(L_T_NOSEL2, "toast.no_selection_img", L"Нет выделенного текста и картинки в буфере обмена") \
 X(L_T_TOIMG, "toast.to_buffer_img", L"→ буфер %d   (картинка)") \
 X(L_T_NOIMG, "toast.no_image", L"В буфере %d нет картинки %d") \
@@ -675,7 +676,8 @@ Win+Shift+R=record
 )INI";
 static const char *kIni2 = u8R"INI(
 [Launcher]
-; Меню быстрого запуска (действие launcher): Название=команда (те же команды, что в run / admin)
+; Меню быстрого запуска (действие launcher): Название=команда (те же команды, что в run / admin).
+; Перед командой можно указать глобальный хоткей в квадратных скобках: Калькулятор=[Win+C]calc.exe (хоткей показывается справа в меню)
 Калькулятор=calc.exe
 Блокнот=notepad.exe
 Диспетчер задач=taskmgr.exe
@@ -949,6 +951,19 @@ static COLORREF HexRgb(const wchar_t *s) {
     }
     return RGB((v >> 16) & 255, (v >> 8) & 255, v & 255);
 }
+// Строка меню запуска: Название=[Хоткей]команда. Возвращает команду; хоткей (если разобран) - в mods/key, иначе key = 0.
+static const wchar_t *LauncherSplit(const wchar_t *v, UINT *mods, UINT *key) {
+    *mods = *key = 0;
+    while (*v == L' ') v++;
+    if (*v != L'[') return v;
+    const wchar_t *e = v + 1; while (*e && *e != L']') e++;
+    if (!*e) return v;
+    wchar_t hk[48]; int l = (int)(e - v - 1); if (l > 47) l = 47;
+    memcpy(hk, v + 1, l * sizeof(wchar_t)); hk[l] = 0;
+    if (!ParseHotkey(hk, mods, key)) { *mods = *key = 0; }
+    v = e + 1; while (*v == L' ') v++;
+    return v;
+}
 static void CrKey(const wchar_t *nm, wchar_t *k) { int i = 0; for (; nm[i] && i < 59; i++) k[i] = nm[i] == L']' ? L'_' : nm[i]; k[i] = 0; }
 static CamRec *CrGet(const wchar_t *nm, BOOL create) {
     wchar_t k[64]; CrKey(nm, k);
@@ -1044,6 +1059,13 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
     } else if (!lstrcmpiW(s, L"Launcher")) {
         g_launch = (KV *)Realloc(g_launch, (g_nlaunch + 1) * sizeof(KV));
         g_launch[g_nlaunch].k = Dup(k); g_launch[g_nlaunch].v = Dup(v); g_nlaunch++;
+        Bind b; memset(&b, 0, sizeof b);                                              // [Хоткей] перед командой - регистрируем как обычный хоткей
+        const wchar_t *cmd = LauncherSplit(v, &b.mods, &b.key);
+        if (!b.key) return;
+        if (!ParseAction(cmd, &b)) { Free(b.arg); Free(b.dir); return; }
+        b.lau = 1;
+        if (g_nbnew >= g_bnewCap) { g_bnewCap = g_bnewCap ? g_bnewCap * 2 : 64; g_bnew = (Bind *)Realloc(g_bnew, g_bnewCap * sizeof(Bind)); }
+        g_bnew[g_nbnew++] = b;
     }
 }
 
@@ -1615,7 +1637,7 @@ static wchar_t *Collapse(const wchar_t *s) {
     o[j] = 0; return o;
 }
 static void FreeRows(void) {
-    for (int i = 0; i < g_nrows; i++) { Free(g_rows[i].label); Free(g_rows[i].title); Free(g_rows[i].text); }
+    for (int i = 0; i < g_nrows; i++) { Free(g_rows[i].label); Free(g_rows[i].title); Free(g_rows[i].text); Free(g_rows[i].hk); Free(g_rows[i].dir); }
     Free(g_rows); Free(g_vis);
     for (int i = 0; i < g_nscr; i++) Free(g_scrNames[i]);
     Free(g_scrNames); g_scrNames = NULL; g_nscr = 0;
@@ -1646,6 +1668,18 @@ static void ScrName(const wchar_t *t, wchar_t *out, int cap, BOOL bat) {      //
             else if (e - s >= 4 && (s[0] | 32) == L'r' && (s[1] | 32) == L'e' && (s[2] | 32) == L'm' && s[3] == L' ') s += 4;
             else return;
         } else {
+            if (e - s >= 3 && (s[0] == L'"' || s[0] == L'\'') && s[1] == s[0] && s[2] == s[0]) {     // docstring модуля: первая фраза как имя
+                s += 3;
+                while (s < e && (*s == L' ' || *s == L'\t')) s++;
+                if (s >= e) continue;                                             // """ на отдельной строке - текст на следующей
+                const wchar_t *x = s; while (x + 1 < e && !(x[0] == L'.' && x[1] == L' ')) x++;
+                if (x + 1 >= e) x = e;
+                while (x > s && (x[-1] == L'\r' || x[-1] == L' ' || x[-1] == L'.' || x[-1] == L'"' || x[-1] == L'\'')) x--;
+                int n = (int)(x - s); if (n <= 0) continue;
+                if (n >= cap) n = cap - 1;
+                memcpy(out, s, n * sizeof(wchar_t)); out[n] = 0;
+                return;
+            }
             if (*s != L'#') return;
             s++;
             if (s < e && *s == L'!') continue;
@@ -1695,6 +1729,44 @@ static wchar_t **RunList(int *cnt) {                                            
     for (int i = 1; i < n; i++) { wchar_t *x = a[i]; int j = i - 1; while (j >= 0 && lstrcmpiW(a[j], x) > 0) { a[j + 1] = a[j]; j--; } a[j + 1] = x; }
     *cnt = n; return a;
 }
+static BOOL IsScriptCmd(const wchar_t *s) {                                          // команда запускает py / python / powershell
+    while (*s == L' ' || *s == L'"') s++;
+    const wchar_t *e = s; while (*e && *e != L' ' && *e != L'"') e++;
+    const wchar_t *b = s; for (const wchar_t *q = s; q < e; q++) if (*q == L'\\' || *q == L'/') b = q + 1;
+    wchar_t nm[24]; int l = (int)(e - b); if (l > 23) return FALSE;
+    memcpy(nm, b, l * sizeof(wchar_t)); nm[l] = 0;
+    if (l > 4 && !lstrcmpiW(nm + l - 4, L".exe")) nm[l - 4] = 0;
+    static const wchar_t *K[] = {L"py", L"pyw", L"python", L"pythonw", L"python3", L"powershell", L"pwsh"};
+    for (int i = 0; i < (int)(sizeof K / sizeof K[0]); i++) if (!lstrcmpiW(nm, K[i])) return TRUE;
+    return FALSE;
+}
+static BOOL FindTarget(const wchar_t *cmd, const wchar_t *dir, BOOL script, wchar_t *out);
+static int BindRows(BOOL scripts, Row *out, int max) {                               // хоткеи ini run/admin/py -> строки (скрипты: py, run py|python|powershell; остальное - запуск)
+    int n = 0;
+    AcquireSRWLockShared(&g_bindLock);
+    for (int i = 0; i < g_nbind && n < max; i++) {
+        const Bind *b = &g_bind[i];
+        if ((b->act != A_RUN && b->act != A_ADMIN && b->act != A_PY) || !b->arg || !*b->arg || b->lau) continue;
+        if (scripts != (b->act == A_PY || IsScriptCmd(b->arg))) continue;
+        Row *r = &out[n++]; memset(r, 0, sizeof *r);
+        wchar_t hk[48]; HkName(b->mods, b->key, hk);
+        r->act = b->act; r->ref = -1; r->label = Dup(L""); r->hk = Dup(hk); r->text = Dup(b->arg); r->dir = b->dir ? Dup(b->dir) : NULL;
+        r->title = Dup(b->act == A_ADMIN ? L"admin " : L""); { int l = lstrlenW(r->title); wchar_t *t = (wchar_t *)Alloc((l + lstrlenW(b->arg) + 1) * sizeof(wchar_t)); lstrcpyW(t, r->title); lstrcatW(t, b->arg); Free(r->title); r->title = t; }
+        wchar_t sp[MAX_PATH];                                                         // скрипт: заголовок - из первой строки-комментария файла, как у файлов папки scripts
+        if (scripts && FindTarget(b->arg, b->dir, b->act != A_PY && IsScriptCmd(b->arg), sp) && (EndsI(sp, L".py") || EndsI(sp, L".pyw") || EndsI(sp, L".bat") || EndsI(sp, L".cmd") || EndsI(sp, L".ps1"))) {
+            DWORD sz = 0; BYTE *raw = ReadAll(sp, &sz);
+            if (raw) {
+                if (sz > 6000) sz = 6000;
+                wchar_t *txt = FromUtf8((char *)raw, sz); wchar_t nm[100];
+                ScrName(txt, nm, 100, EndsI(sp, L".bat") || EndsI(sp, L".cmd"));
+                if (nm[0]) { Free(r->title); r->title = Dup(b->act == A_ADMIN ? L"admin " : L""); wchar_t *t = (wchar_t *)Alloc((lstrlenW(r->title) + lstrlenW(nm) + 1) * sizeof(wchar_t)); lstrcpyW(t, r->title); lstrcatW(t, nm); Free(r->title); r->title = t; }
+                Free(txt); Free(raw);
+            }
+        }
+    }
+    ReleaseSRWLockShared(&g_bindLock);
+    return n;
+}
 static void ScrRow(Row *r, const wchar_t *file, const wchar_t *label) {
     wchar_t path[MAX_PATH]; lstrcpynW(path, g_pyDir, MAX_PATH); Cat(path, MAX_PATH, file);
     DWORD sz = 0; BYTE *raw = ReadAll(path, &sz);
@@ -1710,10 +1782,13 @@ static void BuildRows(void) {
     if (g_pmode == PM_SCRIPTS) { sf = ScrList(&ns); g_scrNames = sf; g_nscr = ns; }
     wchar_t **rf = NULL; int nr = 0;
     if (g_pmode == PM_LAUNCH) rf = RunList(&nr);                                       // запуск: строки из ini, затем файлы папки runs
-    int n = g_pmode == PM_BUF ? g_bufN[g_curBuf] : g_pmode == PM_HIST ? g_nhist : g_pmode == PM_SCRIPTS ? ns : g_nlaunch + nr;
+    Row br[64]; int nb = (g_pmode == PM_LAUNCH || g_pmode == PM_SCRIPTS) ? BindRows(g_pmode == PM_SCRIPTS, br, 64) : 0;     // сначала программы из хоткеев ini
+    int n = g_pmode == PM_BUF ? g_bufN[g_curBuf] : g_pmode == PM_HIST ? g_nhist : g_pmode == PM_SCRIPTS ? nb + ns : nb + g_nlaunch + nr;
     g_rows = (Row *)Alloc(sizeof(Row) * (n ? n : 1)); g_vis = (int *)Alloc(sizeof(int) * (n ? n : 1));
     for (int i = 0; i < n; i++) {
         Row *r = &g_rows[i];
+        if (i < nb) { *r = br[i]; continue; }
+        int i0 = i; i -= nb;                                                          // дальше i - индекс внутри обычного списка
         r->ref = i;
         if (g_pmode == PM_BUF) {
             wchar_t l[2] = {(wchar_t)(i < 9 ? L'1' + i : L'0'), 0};
@@ -1725,12 +1800,15 @@ static void BuildRows(void) {
             wchar_t lb[2] = {(wchar_t)(tmp ? L'T' : k < 9 ? L'1' + k : k == 9 ? L'0' : 0), 0};     // T - tmp.py, остальные по цифрам 1-9,0
             ScrRow(r, sf[i], lb);
         } else if (i < g_nlaunch) {
-            r->label = Dup(L""); r->title = Dup(g_launch[i].k); r->text = Dup(g_launch[i].v);
+            UINT lm, lk; const wchar_t *lc = LauncherSplit(g_launch[i].v, &lm, &lk);
+            r->label = Dup(L""); r->title = Dup(g_launch[i].k); r->text = Dup(lc);
+            if (lk) { wchar_t hk[48]; HkName(lm, lk, hk); r->hk = Dup(hk); }
         } else {
             const wchar_t *fn = rf[i - g_nlaunch]; r->label = Dup(L"");
             r->title = Dup(fn); { int l = lstrlenW(r->title); if (EndsI(r->title, L".lnk") || EndsI(r->title, L".exe")) r->title[l - 4] = 0; }
             wchar_t path[MAX_PATH]; lstrcpynW(path, g_runDir, MAX_PATH); Cat(path, MAX_PATH, fn); r->text = Dup(path);
         }
+        i = i0;
     }
     for (int i = 0; i < nr; i++) Free(rf[i]);
     Free(rf);
@@ -1787,6 +1865,12 @@ static void PopupPaint(HWND h) {
             SelectObject(dc, g_fnt);
         }
         RECT tr = rr; tr.left += g_pad + lw; tr.right -= g_pad + Sc(6);
+        if (r->hk && *r->hk) {
+            SIZE hs; GetTextExtentPoint32W(dc, r->hk, lstrlenW(r->hk), &hs);
+            RECT hr2 = tr; hr2.left = tr.right - hs.cx; SetTextColor(dc, P.dim);
+            DrawTextW(dc, r->hk, -1, &hr2, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            tr.right -= hs.cx + Sc(14);
+        }
         SetTextColor(dc, P.fg);
         DrawTextW(dc, r->title, -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
     }
@@ -2331,14 +2415,51 @@ static void RunFile(const wchar_t *path) {                                      
 static void PopupChoose(int vi) {
     if (vi < 0 || vi >= g_nvis) return;
     Row *r = &g_rows[g_vis[vi]];
-    int mode = g_pmode; BOOL isRun = mode == PM_LAUNCH && r->ref >= g_nlaunch;
-    wchar_t *text = Dup(mode == PM_SCRIPTS ? g_scrNames[r->ref] : r->text);
+    int mode = g_pmode; BOOL isRun = mode == PM_LAUNCH && !r->act && r->ref >= g_nlaunch;
+    wchar_t *text = Dup(mode == PM_SCRIPTS && !r->act ? g_scrNames[r->ref] : r->text);
+    int bact = r->act; wchar_t *bdir = r->dir ? Dup(r->dir) : NULL;
     PopupClose();
+    if (bact) { Bind b; memset(&b, 0, sizeof b); b.act = bact; b.arg = text; b.dir = bdir; ExecBind(&b); Free(bdir); Free(text); return; }
     if (isRun) RunFile(text);
     else if (mode == PM_LAUNCH) ExecSpec(text);
     else if (mode == PM_SCRIPTS) { wchar_t *q = (wchar_t *)Alloc((lstrlenW(text) + 3) * sizeof(wchar_t)); wsprintfW(q, L"\"%s\"", text); RunPy(q, NULL, TRUE); Free(q); }
     else PasteText(text);
     Free(text);
+}
+static BOOL FindTarget(const wchar_t *cmd, const wchar_t *dir, BOOL script, wchar_t *out) {   // файл, который запускает команда (для Shift+Enter)
+    wchar_t *s = Dup(cmd), *file, *par; SplitCmd(s, &file, &par);
+    if (script) {                                                                     // python x.py / powershell -File x.ps1: берём сам скрипт, а не интерпретатор
+        wchar_t *q = par; while (*q) { wchar_t *f2, *p2; SplitCmd(q, &f2, &p2); if (*f2 && *f2 != L'-') { file = f2; break; } q = p2; }
+    }
+    wchar_t ex[MAX_PATH]; ExpandEnvironmentStringsW(file, ex, MAX_PATH);
+    BOOL ok = FALSE, isAbs = (ex[1] == L':' || ex[0] == L'\\');
+    wchar_t t[MAX_PATH];
+    if (isAbs) { lstrcpynW(out, ex, MAX_PATH); ok = GetFileAttributesW(out) != INVALID_FILE_ATTRIBUTES; }
+    else {
+        const wchar_t *bases[2] = {dir && *dir ? dir : NULL, g_pyDir};
+        for (int i = 0; i < 2 && !ok; i++) if (bases[i]) { lstrcpynW(t, bases[i], MAX_PATH); { int l = lstrlenW(t); if (l && t[l - 1] != L'\\') Cat(t, MAX_PATH, L"\\"); } Cat(t, MAX_PATH, ex); if (GetFileAttributesW(t) != INVALID_FILE_ATTRIBUTES) { lstrcpynW(out, t, MAX_PATH); ok = TRUE; } }
+        if (!ok) { wchar_t *fp; if (SearchPathW(NULL, ex, L".exe", MAX_PATH, t, &fp)) { lstrcpynW(out, t, MAX_PATH); ok = TRUE; } }
+    }
+    Free(s);
+    if (!ok && script) return FindTarget(cmd, dir, FALSE, out);                       // скрипта нет - показываем сам интерпретатор
+    return ok;
+}
+static void PopupReveal(void) {                                                       // Shift+Enter: показать файл программы/скрипта в проводнике
+    if (g_nvis <= 0 || (g_pmode != PM_LAUNCH && g_pmode != PM_SCRIPTS)) return;
+    Row *r = &g_rows[g_vis[g_sel]];
+    wchar_t path[MAX_PATH]; path[0] = 0; BOOL ok = FALSE;
+    if (r->act) ok = FindTarget(r->text, r->dir, r->act != A_PY && IsScriptCmd(r->text), path);
+    else if (g_pmode == PM_SCRIPTS) { lstrcpynW(path, g_pyDir, MAX_PATH); Cat(path, MAX_PATH, g_scrNames[r->ref]); ok = TRUE; }
+    else if (r->ref >= g_nlaunch) { lstrcpynW(path, r->text, MAX_PATH); ok = TRUE; }
+    else {
+        Bind b; memset(&b, 0, sizeof b);
+        if (ParseAction(r->text, &b) && b.arg && (b.act == A_RUN || b.act == A_ADMIN || b.act == A_PY)) ok = FindTarget(b.arg, b.dir, b.act == A_PY || IsScriptCmd(b.arg), path);
+        Free(b.arg); Free(b.dir);
+    }
+    PopupClose();
+    if (!ok) { Toast(Tr(L_T_NOFILE)); return; }
+    wchar_t a[MAX_PATH + 16]; wsprintfW(a, L"/select,\"%s\"", path);
+    ShellExecuteW(NULL, NULL, L"explorer.exe", a, NULL, SW_SHOWNORMAL);
 }
 static void PopupReselect(int keep) {
     BuildRows();
@@ -2407,7 +2528,7 @@ static void PopupKey(UINT key, UINT mods, WCHAR ch) {
     BOOL buf = g_pmode == PM_BUF, plain = !(mods & (DM_CTRL | DM_ALT | DM_WIN));
     switch (key) {
     case VK_ESCAPE: PopupClose(); return;
-    case VK_RETURN: PopupChoose(g_sel); return;
+    case VK_RETURN: if ((mods & DM_SHIFT) && (g_pmode == PM_LAUNCH || g_pmode == PM_SCRIPTS)) PopupReveal(); else PopupChoose(g_sel); return;
     case VK_UP:
         if ((mods & DM_CTRL) && buf && !g_nfilt && g_sel > 0) { BufMove(g_curBuf, g_sel, -1); PopupReselect(g_sel - 1); return; }
         if (g_sel > 0) g_sel--; PopupEnsureVisible(); PopupRedraw(); return;
