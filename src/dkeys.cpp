@@ -4748,8 +4748,11 @@ static void TmPaint(void) {
         SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255, 255, 255));
         RECT r = {0, 0, w, h}; DrawTextW(dc, txt, n, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         GdiFlush();
-        int bgA = g_tmBlinkOff ? 0 : g_tmAlpha * 255 / 100; if (bgA < 1) bgA = 1; // alpha 0 пропускал бы клики сквозь окно
-        int fr = GetRValue(g_tmFg), fg = GetGValue(g_tmFg), fb = GetBValue(g_tmFg), br = GetRValue(g_tmBg), bg = GetGValue(g_tmBg), bb = GetBValue(g_tmBg);
+        int bgA = g_tmAlpha * 255 / 100; if (bgA < 1) bgA = 1;
+        int fr = GetRValue(g_tmFg), fg = GetGValue(g_tmFg), fb = GetBValue(g_tmFg);
+        int br = g_tmBlinkLeft && !g_tmBlinkOff ? 57 : GetRValue(g_tmBg);
+        int bg = g_tmBlinkLeft && !g_tmBlinkOff ? 255 : GetGValue(g_tmBg);
+        int bb = g_tmBlinkLeft && !g_tmBlinkOff ? 20 : GetBValue(g_tmBg);
         for (int i = 0; i < w * h; i++) {
             int cov = (px[i] >> 8) & 255, A = bgA + (255 - bgA) * cov / 255;
             int R = (br * (255 - cov) + fr * cov) / 255, G = (bg * (255 - cov) + fg * cov) / 255, B = (bb * (255 - cov) + fb * cov) / 255;
@@ -4766,7 +4769,7 @@ static void TmPaint(void) {
 static void TmFinish(void) {
     g_tmAcc = g_tmTarget; g_tmRun = FALSE;
     TmDeadlineClear();
-    g_tmBlinkOff = FALSE; g_tmBlinkLeft = 6; g_tmBlinkRound = 1;
+    g_tmBlinkOff = FALSE; g_tmBlinkLeft = 10; g_tmBlinkRound = 1;
     g_tmBlinkNext = GetTickCount64(); g_tmBlinkAgainAt = g_tmBlinkNext + 5000;
     TmPaint();
     MessageBeep(MB_ICONEXCLAMATION);
@@ -4785,17 +4788,18 @@ static void TmBlinkTick(void) {
         g_tmBlinkOff = !g_tmBlinkOff;
         g_tmBlinkLeft--;
         g_tmBlinkNext = now + 250;
-        if (!g_tmBlinkLeft && g_tmBlinkRound == 2) {
-            g_tmBlinkRound = 0; g_tmBlinkOff = FALSE; g_tmBlinkAgainAt = 0;
+        if (!g_tmBlinkLeft) {
+            if (g_tmBlinkRound == 2) { g_tmBlinkRound = 0; g_tmBlinkAgainAt = 0; }
+            g_tmBlinkOff = TRUE;
         }
         TmPaint();
     } else if (g_tmBlinkRound == 1 && now >= g_tmBlinkAgainAt) {
-        g_tmBlinkRound = 2; g_tmBlinkLeft = 6; g_tmBlinkOff = FALSE; g_tmBlinkNext = now;
+        g_tmBlinkRound = 2; g_tmBlinkLeft = 10; g_tmBlinkOff = TRUE; g_tmBlinkNext = now;
     }
 }
 static void TmBlinkCancel(void) {
-    BOOL redraw = g_tmBlinkOff;
-    g_tmBlinkOff = FALSE; g_tmBlinkLeft = g_tmBlinkRound = 0;
+    BOOL redraw = g_tmBlinkLeft && !g_tmBlinkOff;
+    g_tmBlinkOff = TRUE; g_tmBlinkLeft = g_tmBlinkRound = 0;
     g_tmBlinkNext = g_tmBlinkAgainAt = 0;
     if (redraw) TmPaint();
 }
