@@ -149,7 +149,7 @@ static BOOL g_dLive; static int g_dCol, g_dWid = 1; static wchar_t g_dSaveDir[MA
 static COLORREF g_tmFg = RGB(255, 255, 255), g_tmBg = RGB(0, 0, 0);               // [Timer] в ini
 static int g_tmFav[10], g_tmNFav;                                                  // избранное: секунды
 static int g_tmAlpha = 60, g_tmSize = 48;                                          // прозрачность фона %, высота шрифта
-struct TmState { HWND hwnd; int mode, end, pos[2]; BOOL run; ULONGLONG start, acc, target, deadline; wchar_t last[16]; };
+struct TmState { HWND hwnd; int mode, end, pos[2], blinkLeft, blinkRound; BOOL run, blinkOff; ULONGLONG start, acc, target, deadline, blinkNext, blinkAgainAt; wchar_t last[16]; };
 static TmState g_tmState[5]; static int g_tmCurrent, g_tmMenuSlot;
 #define g_hwndTm (g_tmState[g_tmCurrent].hwnd)
 #define g_tmMode (g_tmState[g_tmCurrent].mode)
@@ -160,6 +160,11 @@ static TmState g_tmState[5]; static int g_tmCurrent, g_tmMenuSlot;
 #define g_tmAcc (g_tmState[g_tmCurrent].acc)
 #define g_tmTarget (g_tmState[g_tmCurrent].target)
 #define g_tmDeadline (g_tmState[g_tmCurrent].deadline)
+#define g_tmBlinkLeft (g_tmState[g_tmCurrent].blinkLeft)
+#define g_tmBlinkRound (g_tmState[g_tmCurrent].blinkRound)
+#define g_tmBlinkOff (g_tmState[g_tmCurrent].blinkOff)
+#define g_tmBlinkNext (g_tmState[g_tmCurrent].blinkNext)
+#define g_tmBlinkAgainAt (g_tmState[g_tmCurrent].blinkAgainAt)
 #define g_tmLast (g_tmState[g_tmCurrent].last)
 struct CamRec { wchar_t name[64]; int on, interval, limitMB, quality, minFree, hFrom, hTo, motion, dark, stamp; wchar_t dir[MAX_PATH]; };      // регистратор камеры: секция [Cam:имя]
 static CamRec g_cr[16]; static int g_ncr;
@@ -1216,6 +1221,7 @@ static void CfgDefaults(void) {
     g_tmFg = RGB(255, 255, 255); g_tmBg = RGB(0, 0, 0); g_tmAlpha = 60; g_tmSize = 48; g_tmNFav = 0;
     for (int i = 0; i < 5; i++) {
         g_tmState[i].end = 0; g_tmState[i].pos[0] = g_tmState[i].pos[1] = 80 + i * 40; g_tmState[i].deadline = 0;
+        g_tmState[i].blinkLeft = g_tmState[i].blinkRound = 0; g_tmState[i].blinkOff = FALSE; g_tmState[i].blinkNext = g_tmState[i].blinkAgainAt = 0;
     }
     g_tmCurrent = g_tmMenuSlot = 0;
     g_mHover = 300; g_mPos[0] = g_mPos[1] = -99999;
@@ -4742,7 +4748,7 @@ static void TmPaint(void) {
         SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255, 255, 255));
         RECT r = {0, 0, w, h}; DrawTextW(dc, txt, n, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         GdiFlush();
-        int bgA = g_tmAlpha * 255 / 100; if (bgA < 1) bgA = 1;        // alpha 0 пропускал бы клики сквозь окно
+        int bgA = g_tmBlinkOff ? 0 : g_tmAlpha * 255 / 100; if (bgA < 1) bgA = 1; // alpha 0 пропускал бы клики сквозь окно
         int fr = GetRValue(g_tmFg), fg = GetGValue(g_tmFg), fb = GetBValue(g_tmFg), br = GetRValue(g_tmBg), bg = GetGValue(g_tmBg), bb = GetBValue(g_tmBg);
         for (int i = 0; i < w * h; i++) {
             int cov = (px[i] >> 8) & 255, A = bgA + (255 - bgA) * cov / 255;
@@ -4760,6 +4766,8 @@ static void TmPaint(void) {
 static void TmFinish(void) {
     g_tmAcc = g_tmTarget; g_tmRun = FALSE;
     TmDeadlineClear();
+    g_tmBlinkOff = FALSE; g_tmBlinkLeft = 6; g_tmBlinkRound = 1;
+    g_tmBlinkNext = GetTickCount64(); g_tmBlinkAgainAt = g_tmBlinkNext + 5000;
     TmPaint();
     MessageBeep(MB_ICONEXCLAMATION);
     Toast(Tr(L_TM_DONE));
@@ -4769,6 +4777,27 @@ static void TmFinish(void) {
         RunHidden(cmd);
         g_shutPend = TRUE;
     }
+}
+static void TmBlinkTick(void) {
+    ULONGLONG now = GetTickCount64();
+    if (g_tmBlinkLeft) {
+        if (now < g_tmBlinkNext) return;
+        g_tmBlinkOff = !g_tmBlinkOff;
+        g_tmBlinkLeft--;
+        g_tmBlinkNext = now + 250;
+        if (!g_tmBlinkLeft && g_tmBlinkRound == 2) {
+            g_tmBlinkRound = 0; g_tmBlinkOff = FALSE; g_tmBlinkAgainAt = 0;
+        }
+        TmPaint();
+    } else if (g_tmBlinkRound == 1 && now >= g_tmBlinkAgainAt) {
+        g_tmBlinkRound = 2; g_tmBlinkLeft = 6; g_tmBlinkOff = FALSE; g_tmBlinkNext = now;
+    }
+}
+static void TmBlinkCancel(void) {
+    BOOL redraw = g_tmBlinkOff;
+    g_tmBlinkOff = FALSE; g_tmBlinkLeft = g_tmBlinkRound = 0;
+    g_tmBlinkNext = g_tmBlinkAgainAt = 0;
+    if (redraw) TmPaint();
 }
 static LRESULT CALLBACK TmProc(HWND h, UINT m, WPARAM w, LPARAM l);
 static void TmMenuPopup(void);
@@ -4784,10 +4813,11 @@ static void TmEnsure(int mode) {
     TmPaint();
     ShowWindow(g_hwndTm, SW_SHOWNA);
 }
-static void TmClose(void) { g_tmMode = 0; g_tmRun = FALSE; TmDeadlineClear(); if (g_hwndTm) DestroyWindow(g_hwndTm); }
+static void TmClose(void) { TmBlinkCancel(); g_tmMode = 0; g_tmRun = FALSE; TmDeadlineClear(); if (g_hwndTm) DestroyWindow(g_hwndTm); }
 static void TmToggle(int mode) {
     TmEnsure(mode); if (!g_hwndTm) return;
     if (mode == 2 && g_tmTarget == 0) { Toast(Tr(L_TM_NEEDTIME)); return; }
+    TmBlinkCancel();
     if (g_tmRun) { g_tmAcc = TmElapsed(); g_tmRun = FALSE; if (mode == 2) TmDeadlineClear(); }
     else {
         ULONGLONG elapsed = TmElapsed();
@@ -4802,6 +4832,7 @@ static void TmToggle(int mode) {
 static void TmStartSelectedFor(int sec) {
     if (sec <= 0) return;
     TmEnsure(2); if (!g_hwndTm) return;
+    TmBlinkCancel();
     g_tmTarget = (ULONGLONG)sec * 1000; g_tmAcc = 0; g_tmStart = GetTickCount64(); g_tmRun = TRUE;
     TmDeadlineSet(sec);
     TmPaint();
@@ -4809,7 +4840,7 @@ static void TmStartSelectedFor(int sec) {
 static void TmStartFor(int sec) {
     int saved = g_tmCurrent; g_tmCurrent = 0; TmStartSelectedFor(sec); g_tmCurrent = saved;
 }
-static void TmReset(int mode) { TmEnsure(mode); g_tmAcc = 0; g_tmRun = FALSE; if (mode == 2) TmDeadlineClear(); TmPaint(); }
+static void TmReset(int mode) { TmEnsure(mode); TmBlinkCancel(); g_tmAcc = 0; g_tmRun = FALSE; if (mode == 2) TmDeadlineClear(); TmPaint(); }
 static void TmResumeSaved(void) {
     int saved = g_tmCurrent;
     for (g_tmCurrent = 0; g_tmCurrent < 5; g_tmCurrent++) {
@@ -4943,6 +4974,7 @@ static LRESULT CALLBACK TmProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_EXITSIZEMOVE: { RECT r; GetWindowRect(h, &r); g_tmPos[0] = r.left; g_tmPos[1] = r.top; TmSave(); g_tmCurrent = old; return 0; }
     case WM_TIMER: {
         if (g_tmMode == 2 && g_tmRun && TmElapsed() >= g_tmTarget) { TmFinish(); g_tmCurrent = old; return 0; }
+        TmBlinkTick();
         wchar_t t[16]; TmText(t); if (lstrcmpW(t, g_tmLast)) TmPaint();
         g_tmCurrent = old; return 0;
     }
