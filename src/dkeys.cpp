@@ -377,7 +377,7 @@ X(L_CR_STAMP, "camrec.stamp", L"Дата и время на кадре") \
 X(L_CR_OPEN, "camrec.open", L"Открыть папку") \
 X(L_CR_BROWSE, "camrec.browse", L"Папка для кадров") \
 X(L_TM_DONE, "timer.done", L"Таймер: время вышло") \
-X(L_TM_NEEDTIME, "timer.need_time", L"Задайте время: меню - Время таймера") \
+X(L_TM_NEEDTIME, "timer.need_time2", L"Задайте время: меню - Ввести время или Избранное") \
 X(L_TM_INPUT, "timer.input_title", L"Таймер: минуты, м:с или ч:м:с") \
 X(L_TM_BYTIME, "timer.by_time", L"По времени") \
 X(L_TM_BADTIME, "timer.bad_time", L"Введите время в формате ч:м или ч:м:с (часы 0-23)") \
@@ -392,7 +392,7 @@ X(L_TM_TRESET, "timer.t_reset", L"Таймер: сбросить") \
 X(L_TM_ENTER, "timer.enter_time", L"Ввести время…") \
 X(L_TM_FAVADD, "timer.fav_add", L"Добавить текущее в избранное") \
 X(L_TM_FAVDEL, "timer.fav_remove", L"Убрать из избранного") \
-X(L_TM_TIME, "timer.time", L"Время таймера") \
+X(L_TM_TIME, "timer.favorites", L"Избранное") \
 X(L_TM_SLOT, "timer.slot", L"Таймер %d") \
 X(L_TM_E0, "timer.end_signal", L"Только сигнал") \
 X(L_TM_E1, "timer.end_off", L"Выключить компьютер") \
@@ -4766,13 +4766,50 @@ static void TmPaint(void) {
     SelectObject(dc, of); DeleteObject(f); if (bmp) DeleteObject(bmp);
     DeleteDC(dc); ReleaseDC(NULL, sdc);
 }
+#pragma comment(lib, "winmm.lib")
+static int TmSin(int deg) {                              // sin*1000, целые числа (приближение Бхаскары)
+    int sg = 1; deg %= 360;
+    if (deg >= 180) { deg -= 180; sg = -1; }
+    int p = deg * (180 - deg);
+    return sg * (4000 * p / (40500 - p));
+}
+static DWORD WINAPI TmAlarm(void *) {                    // будильник: серии по 4 коротких писка, 3 раза
+    const int rate = 22050, beep = rate * 80 / 1000, gap = rate * 70 / 1000, pause = rate * 450 / 1000;
+    const int n = 3 * (4 * (beep + gap) + pause);
+    BYTE *w = (BYTE *)VirtualAlloc(NULL, 44 + n * 2, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!w) { Beep(1760, 100); Sleep(80); Beep(1760, 100); Sleep(80); Beep(1760, 100); return 0; }
+    DWORD h[11] = {0x46464952, (DWORD)(36 + n * 2), 0x45564157, 0x20746D66, 16, 0x00010001, (DWORD)rate, (DWORD)(rate * 2), 0x00100002, 0x61746164, (DWORD)(n * 2)};
+    memcpy(w, h, 44);
+    short *s = (short *)(w + 44);
+    int pos = 0;
+    for (int r = 0; r < 3; r++) {
+        for (int b = 0; b < 4; b++) {
+            for (int i = 0; i < beep; i++) {
+                int deg = (int)((ULONGLONG)i * 1760 * 360 / rate % 360), deg2 = (int)((ULONGLONG)i * 3520 * 360 / rate % 360);
+                int v = (TmSin(deg) * 3 + TmSin(deg2)) / 4;            // основной тон + октава
+                int env = 1000;                                        // плавные края 6 мс против щелчков
+                if (i < 130) env = i * 1000 / 130; else if (beep - i < 130) env = (beep - i) * 1000 / 130;
+                s[pos + i] = (short)(v * env / 1000 * 24);             // ±24000
+            }
+            pos += beep + gap;
+        }
+        pos += pause;
+    }
+    PlaySoundW((LPCWSTR)w, NULL, 4 | 2);                 // SND_MEMORY | SND_NODEFAULT, синхронно
+    VirtualFree(w, 0, MEM_RELEASE);
+    return 0;
+}
+static void TmAlarmPlay(void) {
+    HANDLE sound = CreateThread(NULL, 0, TmAlarm, NULL, 0, NULL);
+    if (sound) CloseHandle(sound); else TmAlarm(NULL);
+}
 static void TmFinish(void) {
     g_tmAcc = g_tmTarget; g_tmRun = FALSE;
     TmDeadlineClear();
     g_tmBlinkOff = FALSE; g_tmBlinkLeft = 10; g_tmBlinkRound = 1;
     g_tmBlinkNext = GetTickCount64(); g_tmBlinkAgainAt = g_tmBlinkNext + 5000;
     TmPaint();
-    MessageBeep(MB_ICONEXCLAMATION);
+    TmAlarmPlay();
     Toast(Tr(L_TM_DONE));
     if (g_tmEnd) {
         wchar_t note[80], cmd[160]; int o = 0; for (const wchar_t *q = Tr(L_TM_SHUTMSG); *q && o < 79; q++) if (*q != L'"') note[o++] = *q; note[o] = 0;
@@ -4795,6 +4832,7 @@ static void TmBlinkTick(void) {
         TmPaint();
     } else if (g_tmBlinkRound == 1 && now >= g_tmBlinkAgainAt) {
         g_tmBlinkRound = 2; g_tmBlinkLeft = 10; g_tmBlinkOff = TRUE; g_tmBlinkNext = now;
+        TmAlarmPlay();
     }
 }
 static void TmBlinkCancel(void) {
@@ -4929,20 +4967,19 @@ static HMENU TmMenu(int slot) {
     AddHk(m, MF_STRING, TM_ID + 1, g_tmMode == 1 && g_tmRun ? Tr(L_TM_SWPAUSE) : Tr(L_TM_SWSTART), A_STOPWATCH);
     AppendMenuW(m, MF_STRING, TM_ID + 2, Tr(L_TM_SWRESET));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
-    AddHk(m, MF_STRING, TM_ID + 3, g_tmMode == 2 && g_tmRun ? Tr(L_TM_TPAUSE) : Tr(L_TM_TSTART), A_TIMER);
-    AppendMenuW(m, MF_STRING, TM_ID + 4, Tr(L_TM_TRESET));
+    AppendMenuW(m, MF_STRING, TM_ID + 5, Tr(L_TM_ENTER));
     HMENU rm = CreatePopupMenu();
-    AppendMenuW(add, MF_STRING, TM_ID + 5, Tr(L_TM_ENTER));
-    if (g_tmNFav) AppendMenuW(add, MF_SEPARATOR, 0, NULL);
     for (int i = 0; i < g_tmNFav; i++) {
         wchar_t t[16]; TmFmt(g_tmFav[i], t);
         AppendMenuW(add, MF_STRING, TM_ID + 50 + i, t); AppendMenuW(rm, MF_STRING, TM_ID + 60 + i, t);
     }
-    AppendMenuW(add, MF_SEPARATOR, 0, NULL);
+    if (g_tmNFav) AppendMenuW(add, MF_SEPARATOR, 0, NULL);
     int cur = (int)(g_tmTarget / 1000), ci = 0; while (ci < g_tmNFav && g_tmFav[ci] != cur) ci++;
     AppendMenuW(add, MF_STRING | (cur > 0 && ci == g_tmNFav && g_tmNFav < 10 ? 0 : MF_GRAYED), TM_ID + 6, Tr(L_TM_FAVADD));
     if (g_tmNFav) AppendMenuW(add, MF_POPUP, (UINT_PTR)rm, Tr(L_TM_FAVDEL)); else DestroyMenu(rm);
     AppendMenuW(m, MF_POPUP, (UINT_PTR)add, Tr(L_TM_TIME));
+    AddHk(m, MF_STRING, TM_ID + 3, g_tmMode == 2 && g_tmRun ? Tr(L_TM_TPAUSE) : Tr(L_TM_TSTART), A_TIMER);
+    AppendMenuW(m, MF_STRING, TM_ID + 4, Tr(L_TM_TRESET));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(view, MF_STRING, TM_ID + 15, Tr(L_TM_FG));
     AppendMenuW(view, MF_STRING, TM_ID + 16, Tr(L_TM_BG));
