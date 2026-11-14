@@ -2496,9 +2496,16 @@ static void PopupEnsureVisible(void) {
 /* ---------- edit dialog ---------- */
 static HWND g_edDlg, g_edEdit, g_edCheck, g_edRadioA[5], g_edRadioB[3]; static int g_edDone; static wchar_t *g_edText; static BOOL *g_edCheckOut; static int *g_edRadioAOut, *g_edRadioBOut; static int g_edRadioAN, g_edRadioBN; static const int *g_edRadioAMap;
 static BOOL g_edLine;     // однострочный режим: маленькое окно, Enter = OK
+static void (*g_edCheckFn)(BOOL checked, wchar_t *text);   // вызывается при переключении галочки: может заменить текст в поле (буфер 32 символа)
 static LRESULT CALLBACK EdProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
     case WM_COMMAND:
+        if (LOWORD(w) == 4 && HIWORD(w) == BN_CLICKED && g_edCheckFn && g_edCheck) {
+            wchar_t t[32]; GetWindowTextW(g_edEdit, t, 32);
+            g_edCheckFn(SendMessageW(g_edCheck, BM_GETCHECK, 0, 0) == BST_CHECKED, t);
+            SetWindowTextW(g_edEdit, t); SendMessageW(g_edEdit, EM_SETSEL, 0, -1); SetFocus(g_edEdit);
+            return 0;
+        }
         if (g_edRadioAMap && g_edRadioBOut && LOWORD(w) >= 10 && LOWORD(w) < 10 + g_edRadioAN) {
             int i = LOWORD(w) - 10, value = g_edRadioAMap[i];
             if (value >= 0 && value < g_edRadioBN) {
@@ -4914,6 +4921,17 @@ static BOOL TmAnyActive(void) {
     for (int i = 0; i < 5; i++) if (g_tmState[i].mode) return TRUE;
     return FALSE;
 }
+static void TmCheckConv(BOOL byTime, wchar_t *t) {       // галочка «По времени»: длительность <-> время суток
+    if (byTime) {                                          // длительность -> во сколько сработает
+        int d = ParseTime(t); if (d <= 0) return;
+        SYSTEMTIME now; GetLocalTime(&now);
+        int c = (now.wHour * 3600 + now.wMinute * 60 + now.wSecond + d) % 86400;
+        if (c % 60) wsprintfW(t, L"%d:%02d:%02d", c / 3600, c / 60 % 60, c % 60); else wsprintfW(t, L"%d:%02d", c / 3600, c / 60 % 60);
+    } else {                                               // время суток -> сколько осталось
+        int c; if (!ParseClockTime(t, &c)) return;
+        TmFmt(TmSecondsUntil(c), t);
+    }
+}
 static void TmCommand(int id) {
     int saved = g_tmCurrent, held = TmHeldSlot();
     g_tmCurrent = held >= 0 ? held : g_tmMenuSlot;
@@ -4924,16 +4942,19 @@ static void TmCommand(int id) {
     else if (k == 4) TmReset(2);
     else if (k == 5) {                                   // ввести время и сразу запустить
         wchar_t cur[16] = L"";
-        if (g_tmTarget) TmFmt((int)(g_tmTarget / 1000), cur);
+        if (g_tmTarget) {                                // у идущего/на паузе таймера - сколько осталось
+            ULONGLONG left = g_tmMode == 2 ? (TmElapsed() < g_tmTarget ? g_tmTarget - TmElapsed() : 0) : 0;
+            TmFmt((int)((left ? left + 999 : g_tmTarget) / 1000), cur);
+        }
         BOOL byTime = FALSE;
         int slot = g_tmCurrent, endAction = g_tmEnd;
         int slotEndActions[5]; for (int i = 0; i < 5; i++) slotEndActions[i] = g_tmState[i].end;
         wchar_t slotText[5][24]; const wchar_t *slotLabels[5];
         for (int i = 0; i < 5; i++) { wsprintfW(slotText[i], Tr(L_TM_SLOT), i + 1); slotLabels[i] = slotText[i]; }
         const wchar_t *endLabels[3] = {Tr(L_TM_E0), Tr(L_TM_E1), Tr(L_TM_E2)};
-        g_edLine = TRUE;
+        g_edLine = TRUE; g_edCheckFn = TmCheckConv;
         wchar_t *s = EditDialog(Tr(L_TM_INPUT), cur, &byTime, Tr(L_TM_BYTIME), &slot, slotLabels, 5, &endAction, endLabels, 3, slotEndActions);
-        g_edLine = FALSE;
+        g_edLine = FALSE; g_edCheckFn = NULL;
         if (s) {
             g_tmCurrent = slot >= 0 && slot < 5 ? slot : 0;
             g_tmEnd = endAction; TmSave();
