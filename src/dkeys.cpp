@@ -394,10 +394,11 @@ X(L_TM_ENTER, "timer.enter_time", L"Ввести время…") \
 X(L_TM_FAVADD, "timer.fav_add", L"Добавить текущее в избранное") \
 X(L_TM_FAVDEL, "timer.fav_remove", L"Убрать из избранного") \
 X(L_TM_TIME, "timer.favorites", L"Избранное") \
-X(L_TM_SLOT, "timer.slot", L"Таймер %d") \
-X(L_TM_E0, "timer.end_signal", L"Только сигнал") \
-X(L_TM_E1, "timer.end_off", L"Выключить компьютер") \
-X(L_TM_E2, "timer.end_reboot", L"Перезагрузить компьютер") \
+X(L_TM_SLOT, "timer.slot_num", L"%d") \
+X(L_TM_E0, "timer.end_signal2", L"писк") \
+X(L_TM_E1, "timer.end_off2", L"выключить") \
+X(L_TM_E2, "timer.end_reboot2", L"перезагрузка") \
+X(L_TM_FAVCHK, "timer.fav_check", L"в избранное") \
 X(L_TM_END, "timer.end_action", L"По окончании таймера") \
 X(L_TM_FG, "timer.color_font", L"Цвет цифр…") \
 X(L_TM_BG, "timer.color_bg", L"Цвет фона…") \
@@ -2484,6 +2485,7 @@ static void PopupEnsureVisible(void) {
 }
 
 /* ---------- edit dialog ---------- */
+static HWND g_edCheck2; static BOOL *g_edCheck2Out; static const wchar_t *g_edCheck2Text; static BOOL g_edBig;   // вторая галочка (id 5) и крупный вид окна времени таймера
 static HWND g_edDlg, g_edEdit, g_edCheck, g_edRadioA[5], g_edRadioB[3]; static int g_edDone; static wchar_t *g_edText; static BOOL *g_edCheckOut; static int *g_edRadioAOut, *g_edRadioBOut; static int g_edRadioAN, g_edRadioBN; static const int *g_edRadioAMap;
 static BOOL g_edLine;     // однострочный режим: маленькое окно, Enter = OK
 static void (*g_edCheckFn)(BOOL checked, wchar_t *text);   // вызывается при переключении галочки: может заменить текст в поле (буфер 32 символа)
@@ -2509,6 +2511,7 @@ static LRESULT CALLBACK EdProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             g_edText = (wchar_t *)Alloc((n + 1) * sizeof(wchar_t));
             GetWindowTextW(g_edEdit, g_edText, n + 1);
             if (g_edCheckOut && g_edCheck) *g_edCheckOut = SendMessageW(g_edCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            if (g_edCheck2Out && g_edCheck2) *g_edCheck2Out = SendMessageW(g_edCheck2, BM_GETCHECK, 0, 0) == BST_CHECKED;
             if (g_edRadioAOut) for (int i = 0; i < g_edRadioAN; i++) if (SendMessageW(g_edRadioA[i], BM_GETCHECK, 0, 0) == BST_CHECKED) *g_edRadioAOut = i;
             if (g_edRadioBOut) for (int i = 0; i < g_edRadioBN; i++) if (SendMessageW(g_edRadioB[i], BM_GETCHECK, 0, 0) == BST_CHECKED) *g_edRadioBOut = i;
             g_edDone = 1;
@@ -2516,6 +2519,21 @@ static LRESULT CALLBACK EdProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     case WM_SIZE: {
         int W = LOWORD(l), H = HIWORD(l), d = GetDpiForWindow(h), b = MulDiv(34, d, 96), p = MulDiv(8, d, 96);
+        if (g_edBig) {                                     // крупное поле слева, две галочки справа, ряды переключателей, кнопки по центру
+            int rh = MulDiv(24, d, 96), eh = MulDiv(52, d, 96), ew = MulDiv(190, d, 96);          // поле по размеру восьми знаков (чч:мм:сс)
+            int rowA = 2 * p + eh, rowB = rowA + rh + p / 2, btnY = rowB + rh + p;
+            int bw = MulDiv(120, d, 96), rw = MulDiv(36, d, 96), cw = MulDiv(130, d, 96), colw = MulDiv(112, d, 96);
+            MoveWindow(g_edEdit, p, p, ew - p, eh, TRUE);
+            int cx = (W - 2 * cw - p) / 2;                         // две галочки в ряд по центру
+            MoveWindow(g_edCheck, cx, rowB, cw, rh, TRUE);
+            if (g_edCheck2) MoveWindow(g_edCheck2, cx + cw + p, rowB, cw, rh, TRUE);
+            for (int i = 0; i < g_edRadioAN; i++) MoveWindow(g_edRadioA[i], 2 * p + i * rw, rowA, rw, rh, TRUE), ShowWindow(g_edRadioA[i], SW_SHOW);
+            static const int kOrd[3] = {1, 2, 0};                  // справа столбиком: выключить, перезагрузка, сигнал
+            for (int i = 0; i < g_edRadioBN && i < 3; i++) MoveWindow(g_edRadioB[kOrd[i]], W - p - colw, p + i * (rh + p / 2), colw, rh, TRUE), ShowWindow(g_edRadioB[kOrd[i]], SW_SHOW);
+            MoveWindow(GetDlgItem(h, IDOK), W / 2 - bw - p, btnY, bw, b, TRUE);
+            MoveWindow(GetDlgItem(h, IDCANCEL), W / 2 + p, btnY, bw, b, TRUE);
+            return 0;
+        }
         int ch = g_edCheck ? MulDiv(24, d, 96) : 0;
         int rh = MulDiv(24, d, 96), rows = (g_edRadioAN > 0) + (g_edRadioBN > 0);
         MoveWindow(g_edEdit, p, p, W - 2 * p, H - b - 2 * p - ch - rows * rh, TRUE);
@@ -2545,7 +2563,7 @@ static wchar_t *EditDialog(const wchar_t *title, const wchar_t *text, BOOL *chec
     POINT pt; GetCursorPos(&pt);
     MONITORINFO mi; mi.cbSize = sizeof mi;
     GetMonitorInfoW(MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST), &mi);
-    g_edDone = 0; g_edText = NULL; g_edCheck = NULL; g_edCheckOut = check; g_edRadioAOut = radioA; g_edRadioBOut = radioB; g_edRadioAN = radioAN; g_edRadioBN = radioBN; g_edRadioAMap = radioAMap;
+    g_edDone = 0; g_edText = NULL; g_edCheck = NULL; g_edCheck2 = NULL; g_edCheckOut = check; g_edRadioAOut = radioA; g_edRadioBOut = radioB; g_edRadioAN = radioAN; g_edRadioBN = radioBN; g_edRadioAMap = radioAMap;
     memset(g_edRadioA, 0, sizeof g_edRadioA); memset(g_edRadioB, 0, sizeof g_edRadioB);
     g_edDlg = CreateWindowExW(WS_EX_TOPMOST | WS_EX_DLGMODALFRAME, L"DKEdit", title, WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME,
                               0, 0, 100, 100, NULL, NULL, g_inst, NULL);
@@ -2553,22 +2571,31 @@ static wchar_t *EditDialog(const wchar_t *title, const wchar_t *text, BOOL *chec
     HFONT f = CreateFontW(-MulDiv(10, d, 72), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
     g_edEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | (g_edLine ? ES_AUTOHSCROLL : (WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN)),
                                0, 0, 10, 10, g_edDlg, (HMENU)3, g_inst, NULL);
-    HWND ok = CreateWindowExW(0, L"BUTTON", g_edLine ? L"OK  (Enter)" : L"OK  (Ctrl+Enter)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 10, 10, g_edDlg, (HMENU)IDOK, g_inst, NULL);
+    HWND ok = CreateWindowExW(0, L"BUTTON", g_edBig ? L"OK" : g_edLine ? L"OK  (Enter)" : L"OK  (Ctrl+Enter)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 10, 10, g_edDlg, (HMENU)IDOK, g_inst, NULL);
     HWND cn = CreateWindowExW(0, L"BUTTON", Tr(L_CANCEL), WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 10, 10, g_edDlg, (HMENU)IDCANCEL, g_inst, NULL);
     if (checkText) g_edCheck = CreateWindowExW(0, L"BUTTON", checkText, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, 0, 0, 10, 10, g_edDlg, (HMENU)4, g_inst, NULL);
     if (g_edCheck) SendMessageW(g_edCheck, BM_SETCHECK, check && *check ? BST_CHECKED : BST_UNCHECKED, 0);
+    if (g_edCheck2Text) g_edCheck2 = CreateWindowExW(0, L"BUTTON", g_edCheck2Text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, 0, 0, 10, 10, g_edDlg, (HMENU)5, g_inst, NULL);
+    if (g_edCheck2) SendMessageW(g_edCheck2, BM_SETCHECK, g_edCheck2Out && *g_edCheck2Out ? BST_CHECKED : BST_UNCHECKED, 0);
+    HFONT fe = g_edBig ? CreateFontW(-MulDiv(26, d, 72), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI") : NULL;
     for (int i = 0; i < radioAN && i < 5; i++) g_edRadioA[i] = CreateWindowExW(0, L"BUTTON", radioAText[i], WS_CHILD | WS_TABSTOP | BS_AUTORADIOBUTTON | (i == 0 ? WS_GROUP : 0), 0, 0, 10, 10, g_edDlg, (HMENU)(INT_PTR)(10 + i), g_inst, NULL);
     for (int i = 0; i < radioBN && i < 3; i++) g_edRadioB[i] = CreateWindowExW(0, L"BUTTON", radioBText[i], WS_CHILD | WS_TABSTOP | BS_AUTORADIOBUTTON | (i == 0 ? WS_GROUP : 0), 0, 0, 10, 10, g_edDlg, (HMENU)(INT_PTR)(20 + i), g_inst, NULL);
     if (radioAN && radioA) CheckRadioButton(g_edDlg, 10, 10 + radioAN - 1, 10 + (*radioA >= 0 && *radioA < radioAN ? *radioA : 0));
     if (radioBN && radioB) CheckRadioButton(g_edDlg, 20, 20 + radioBN - 1, 20 + (*radioB >= 0 && *radioB < radioBN ? *radioB : 0));
-    SendMessageW(g_edEdit, WM_SETFONT, (WPARAM)f, TRUE); SendMessageW(ok, WM_SETFONT, (WPARAM)f, TRUE); SendMessageW(cn, WM_SETFONT, (WPARAM)f, TRUE);
+    SendMessageW(g_edEdit, WM_SETFONT, (WPARAM)(fe ? fe : f), TRUE); SendMessageW(ok, WM_SETFONT, (WPARAM)f, TRUE); SendMessageW(cn, WM_SETFONT, (WPARAM)f, TRUE);
     if (g_edCheck) SendMessageW(g_edCheck, WM_SETFONT, (WPARAM)f, TRUE);
+    if (g_edCheck2) SendMessageW(g_edCheck2, WM_SETFONT, (WPARAM)f, TRUE);
     for (int i = 0; i < radioAN && i < 5; i++) if (g_edRadioA[i]) SendMessageW(g_edRadioA[i], WM_SETFONT, (WPARAM)f, TRUE);
     for (int i = 0; i < radioBN && i < 3; i++) if (g_edRadioB[i]) SendMessageW(g_edRadioB[i], WM_SETFONT, (WPARAM)f, TRUE);
     SendMessageW(g_edEdit, EM_SETLIMITTEXT, 4000000, 0);
     SetWindowTextW(g_edEdit, text);
     int extraRows = (radioAN > 0) + (radioBN > 0) + (checkText != NULL);
     int W = MulDiv(radioAN ? 560 : g_edLine ? 380 : 640, d, 96), H = MulDiv((g_edLine ? 150 : 420) + extraRows * 26, d, 96);
+    if (g_edBig) {                                         // клиентская область 380x170 (при 96 dpi), рамка сверху
+        RECT r = {0, 0, MulDiv(380, d, 96), MulDiv(170, d, 96)};
+        AdjustWindowRectExForDpi(&r, WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME, FALSE, WS_EX_TOPMOST | WS_EX_DLGMODALFRAME, d);
+        W = r.right - r.left; H = r.bottom - r.top;
+    }
     SetWindowPos(g_edDlg, HWND_TOPMOST, (mi.rcWork.left + mi.rcWork.right - W) / 2, (mi.rcWork.top + mi.rcWork.bottom - H) / 2, W, H, SWP_SHOWWINDOW);
     ForceFg(g_edDlg); SetFocus(g_edEdit);
     if (g_edLine) SendMessageW(g_edEdit, EM_SETSEL, 0, -1);
@@ -2577,13 +2604,16 @@ static wchar_t *EditDialog(const wchar_t *title, const wchar_t *text, BOOL *chec
     while (!g_edDone && GetMessageW(&msg, NULL, 0, 0) > 0) {
         if (msg.message == WM_KEYDOWN) {
             if (msg.wParam == VK_ESCAPE) { g_edDone = 2; break; }
-            if (msg.wParam == VK_RETURN && (g_edLine || (GetKeyState(VK_CONTROL) & 0x8000))) { SendMessageW(g_edDlg, WM_COMMAND, IDOK, 0); continue; }
+            if (msg.wParam == VK_RETURN && (g_edLine || (GetKeyState(VK_CONTROL) & 0x8000))) {
+                if (g_edCheck2 && (GetKeyState(VK_SHIFT) & 0x8000)) SendMessageW(g_edCheck2, BM_SETCHECK, BST_CHECKED, 0);   // Shift+Enter: ещё и в избранное
+                SendMessageW(g_edDlg, WM_COMMAND, IDOK, 0); continue;
+            }
         }
         TranslateMessage(&msg); DispatchMessageW(&msg);
     }
     InterlockedExchange(&g_modal, 0);
-    DestroyWindow(g_edDlg); DeleteObject(f);
-    g_edDlg = NULL; g_edCheck = NULL; g_edCheckOut = NULL; g_edRadioAOut = g_edRadioBOut = NULL; g_edRadioAMap = NULL; g_edRadioAN = g_edRadioBN = 0;
+    DestroyWindow(g_edDlg); DeleteObject(f); if (fe) DeleteObject(fe);
+    g_edDlg = NULL; g_edCheck = NULL; g_edCheck2 = NULL; g_edCheckOut = NULL; g_edRadioAOut = g_edRadioBOut = NULL; g_edRadioAMap = NULL; g_edRadioAN = g_edRadioBN = 0;
     if (g_edDone != 1) { Free(g_edText); g_edText = NULL; }
     return g_edText;
 }
@@ -4970,17 +5000,22 @@ static void TmCommand(int id) {
         wchar_t slotText[5][24]; const wchar_t *slotLabels[5];
         for (int i = 0; i < 5; i++) { wsprintfW(slotText[i], Tr(L_TM_SLOT), i + 1); slotLabels[i] = slotText[i]; }
         const wchar_t *endLabels[3] = {Tr(L_TM_E0), Tr(L_TM_E1), Tr(L_TM_E2)};
-        g_edLine = TRUE; g_edCheckFn = TmCheckConv;
+        BOOL fav = FALSE;
+        g_edLine = TRUE; g_edBig = TRUE; g_edCheckFn = TmCheckConv; g_edCheck2Text = Tr(L_TM_FAVCHK); g_edCheck2Out = &fav;
         wchar_t *s = EditDialog(Tr(L_TM_INPUT), cur, &byTime, Tr(L_TM_BYTIME), &slot, slotLabels, 5, &endAction, endLabels, 3, slotEndActions);
-        g_edLine = FALSE; g_edCheckFn = NULL;
+        g_edLine = FALSE; g_edBig = FALSE; g_edCheckFn = NULL; g_edCheck2Text = NULL; g_edCheck2Out = NULL;
         if (s) {
             g_tmCurrent = slot >= 0 && slot < 5 ? slot : 0;
             g_tmEnd = endAction; TmSave();
-            int t;
+            int t, sec = 0;
             if (byTime) {
-                if (ParseClockTime(s, &t)) TmStartSelectedFor(TmSecondsUntil(t));
+                if (ParseClockTime(s, &t)) sec = TmSecondsUntil(t);
                 else Toast(Tr(L_TM_BADTIME));
-            } else if ((t = ParseTime(s)) > 0) TmStartSelectedFor(t);
+            } else sec = ParseTime(s);
+            if (sec > 0) {
+                TmStartSelectedFor(sec);
+                if (fav) { int i = 0; while (i < g_tmNFav && g_tmFav[i] != sec) i++; if (i == g_tmNFav && g_tmNFav < 10) { g_tmFav[g_tmNFav++] = sec; TmSave(); } }
+            }
             Free(s);
         }
     }
