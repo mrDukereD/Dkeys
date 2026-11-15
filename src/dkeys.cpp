@@ -79,7 +79,7 @@ X(A_RUN, "run", AK_CMD) X(A_ADMIN, "admin", AK_CMD) X(A_PY, "py", AK_CMD) X(A_PY
 X(A_TOTRAY, "totray", AK_NONE) X(A_LAYOUT, "layout", AK_NONE) X(A_PAUSE, "pause", AK_NONE) X(A_WEBCAM, "webcam", AK_NONE) X(A_STOPWATCH, "stopwatch", AK_NONE) \
 X(A_TIMER, "timer", AK_DUR) X(A_DRAW, "draw", AK_NONE) X(A_PICKER, "picker", AK_NONE) X(A_RECORD, "record", AK_NONE) X(A_SCRIPTS, "scripts", AK_NONE) \
 X(A_VOL, "volume", AK_NONE) X(A_VOLSET, "volumeset", AK_NONE) X(A_DUP, "duplicate", AK_NONE) X(A_MACRO, "macro", AK_NONE) X(A_RECORDS, "records", AK_NONE) \
-X(A_AUDIO, "audio", AK_NONE) X(A_VOICE, "voice", AK_NONE) X(A_SCRIPTN, "script", AK_SCRN) X(A_VOICECMD, "voicecmd", AK_NONE) X(A_EXIT, "exit", AK_NONE)
+X(A_AUDIO, "audio", AK_NONE) X(A_VOICE, "voice", AK_NONE) X(A_SCRIPTN, "script", AK_SCRN) X(A_VOICECMD, "voicecmd", AK_NONE) X(A_TRAYMENU, "traymenu", AK_NONE) X(A_EXIT, "exit", AK_NONE)
 #define ACT_ID(id, nm, k) id,
 enum { A_NONE, ACTION_LIST(ACT_ID) A_COUNT };
 #undef ACT_ID
@@ -528,6 +528,7 @@ static void WriteText(const wchar_t *path, const wchar_t *text) {
     WriteAtomic(path, u, n); Free(u);
 }
 static void MemPath(wchar_t *out, const wchar_t *name) { lstrcpynW(out, g_memDir, MAX_PATH); Cat(out, MAX_PATH, name); }
+#include "calendar.h"                                   // ядро календаря (события, ICS, повторы, часовые пояса); testsun.cmd
 
 static BOOL IsDark(void) {
     DWORD v = 1, sz = 4;
@@ -771,6 +772,7 @@ Win+Shift+N=records
 Ctrl+Win+S=audio
 Win+G=voice
 Win+Z=voicecmd
+Win+Q=traymenu
 Ctrl+Tilde=layout
 Win+C=run calc.exe
 Win+O=topmost
@@ -3022,6 +3024,8 @@ static void RunScriptN(int n) {                                                 
     for (int i = 0; i < cnt; i++) Free(a[i]);
     Free(a);
 }
+static void TrayMenu(void);
+static UINT g_trayAlign;                                  // 0 - меню от курсора (клик по значку), иначе выравнивание по центру курсора (хоткей)
 static void ExecBind(const Bind *b) {
     Log(L"ExecBind act=%d n=%d", b->act, b->n);
     if (b->act != A_LAYOUT) InterlockedExchange(&g_lastValid, 0);
@@ -3053,6 +3057,7 @@ static void ExecBind(const Bind *b) {
     case A_AUDIO: RecAudioOpen(); break;
     case A_VOICE: VoiceToggle(); break;
     case A_VOICECMD: VoiceCmdToggle(); break;
+    case A_TRAYMENU: g_trayAlign = TPM_CENTERALIGN | TPM_VCENTERALIGN; TrayMenu(); break;
     case A_EXIT: DestroyWindow(g_hwnd); break;
     case A_SCRIPTN: RunScriptN(b->n); break;
     case A_PAUSE: InterlockedExchange(&g_paused, !g_paused); Toast(g_paused ? Tr(L_T_PAUSED) : Tr(L_T_WORKING)); break;
@@ -8250,7 +8255,7 @@ static void TrayMenuAt(POINT pt, int again) {
     g_navN = 0;
     if (again && FindPath(m, again, 0) && g_navN) SetTimer(g_hwnd, TID_NAV, 40, NULL);
     g_menuOpen = TRUE;
-    int c = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, g_hwnd, NULL);
+    int c = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON | g_trayAlign, pt.x, pt.y, 0, g_hwnd, NULL);
     g_menuOpen = FALSE;
     KillTimer(g_hwnd, TID_NAV);
     PostMessageW(g_hwnd, WM_NULL, 0, 0);
@@ -8336,7 +8341,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_APP_MACRO: { wchar_t *t = (wchar_t *)l; if (t) { Toast(t); Free(t); } return 0; }
     case WM_TRAY:
         if (l == WM_LBUTTONUP) { if (g_hwndPop) PopupClose(); else PopupOpen(PM_BUF); }
-        else if (l == WM_RBUTTONUP) TrayMenu();
+        else if (l == WM_RBUTTONUP) { g_trayAlign = 0; TrayMenu(); }
         return 0;
     case WM_TIMER:
         if (w == TID_RESTORE) OnRestoreTimer();
