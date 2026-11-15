@@ -324,6 +324,7 @@ X(L_EMPTY_BUF, "popup.buffer_empty2", L"Буфер %d пуст. Ctrl+Num%d ко�
 X(L_EMPTY_HIST, "popup.history_empty", L"История пуста") \
 X(L_CANCEL, "dialog.cancel", L"Отмена") \
 X(L_ED_NEW, "dialog.buffer_new", L"Буфер %d: новая запись") \
+X(L_BUF_FULL, "dialog.buffer_full", L"Буфер %d заполнен. Номер записи для замены (1-%d)") \
 X(L_ED_BUF, "dialog.buffer_entry", L"Буфер %d: запись %d") \
 X(L_ED_HIST, "dialog.history_entry", L"Запись истории") \
 X(L_T_RUNFAIL, "toast.run_failed", L"Не удалось запустить: %.120s") \
@@ -1644,13 +1645,13 @@ static void MkThumb(int n, int i) {                                             
     if (st) st->Release();
     Free(raw);
 }
-static BOOL Insert(int n, const BYTE *png, DWORD len) {                               // новая картинка в ячейку 1 буфера n, остальные сдвигаются, 10-я теряется
+static int FirstFree(int n) { for (int i = 1; i <= 10; i++) if (!Has(n, i)) return i; return 0; }   // первая пустая ячейка буфера n (0 - все заняты)
+static BOOL Put(int n, int slot, const BYTE *png, DWORD len) {                        // картинка в ячейку slot буфера n (старая заменяется), остальные не двигаются
     ULONG_PTR tok; if (!Start(&tok)) return FALSE;
-    wchar_t a[MAX_PATH], b[MAX_PATH];
-    Path(n, 10, FALSE, a); DeleteFileW(a); Path(n, 10, TRUE, a); DeleteFileW(a);
-    for (int i = 9; i >= 1; i--) for (int t = 0; t < 2; t++) { Path(n, i, t, a); Path(n, i + 1, t, b); MoveFileExW(a, b, MOVEFILE_REPLACE_EXISTING); }
-    Path(n, 1, FALSE, a); BOOL ok = WriteAtomic(a, png, len);
-    if (ok) MkThumb(n, 1);
+    wchar_t a[MAX_PATH];
+    Path(n, slot, TRUE, a); DeleteFileW(a);
+    Path(n, slot, FALSE, a); BOOL ok = WriteAtomic(a, png, len);
+    if (ok) MkThumb(n, slot);
     GdiplusShutdown(tok);
     return ok;
 }
@@ -1861,17 +1862,6 @@ static int ItemFind(wchar_t **a, int n, const wchar_t *p, const wchar_t *t) {
     for (int i = 0; i < n; i++) if (a[i] == p && !lstrcmpW(a[i], t)) return i;
     for (int i = 0; i < n; i++) if (!lstrcmpW(a[i], t)) return i;
     return -1;
-}
-static void BufInsert(int n, wchar_t *t) {
-    wchar_t **b = g_buf[n];
-    for (int i = 0; i < g_bufN[n]; i++) {
-        if (lstrcmpW(b[i], t)) continue;
-        wchar_t *x = b[i]; memmove(b + 1, b, i * sizeof(wchar_t *)); b[0] = x;
-        Free(t); BufSave(n); return;
-    }
-    if (g_bufN[n] >= g_bufMax) { Free(b[--g_bufN[n]]); b[g_bufN[n]] = NULL; }
-    memmove(b + 1, b, g_bufN[n] * sizeof(wchar_t *)); b[0] = t; g_bufN[n]++;
-    BufSave(n);
 }
 static void BufRemove(int n, int i) {
     wchar_t **b = g_buf[n];
@@ -2598,6 +2588,26 @@ static wchar_t *EditDialog(const wchar_t *title, const wchar_t *text, BOOL *chec
     return g_edText;
 }
 
+// Буферы - долговременные ячейки: новое идёт в конец (нумерация не сдвигается); когда места нет, спрашиваем номер ячейки для замены (по умолчанию 1).
+static int AskSlot(int n, int max) {                                                   // 0..max-1 или -1, если отменено
+    wchar_t title[96]; wsprintfW(title, Tr(L_BUF_FULL), n, max);
+    g_edLine = TRUE; wchar_t *s = EditDialog(title, L"1"); g_edLine = FALSE;
+    int v = s ? ToInt(s) : 0; Free(s);
+    return v >= 1 && v <= max ? v - 1 : -1;
+}
+static BOOL BufInsert(int n, wchar_t *t) {                                             // владение t переходит буферу; FALSE - не добавлено (отмена)
+    wchar_t **b = g_buf[n];
+    for (int i = 0; i < g_bufN[n]; i++) if (!lstrcmpW(b[i], t)) { Free(t); return TRUE; }   // такая запись уже есть - остаётся на своём месте
+    if (g_bufN[n] >= g_bufMax) {
+        int i = AskSlot(n, g_bufMax);
+        if (i < 0) { Free(t); return FALSE; }
+        if (g_bufN[n] >= g_bufMax) { Free(b[i]); b[i] = t; BufSave(n); return TRUE; }      // пока шёл диалог, место могло освободиться - тогда ниже
+    }
+    b[g_bufN[n]++] = t;
+    BufSave(n);
+    return TRUE;
+}
+
 /* ---------- actions ---------- */
 static void SplitCmd(wchar_t *s, wchar_t **file, wchar_t **par) {
     while (*s == L' ') s++;
@@ -2952,13 +2962,15 @@ static void CopyToBuf(int n) {
     if (!t || !*t) {
         Free(t);
         if (!img) { Toast(Tr(L_T_NOSEL2)); return; }
-        BOOL ok = ImgNs::Insert(n, img, il); Free(img);
+        int slot = ImgNs::FirstFree(n);
+        if (!slot) { int i = AskSlot(n, 10); if (i < 0) { Free(img); return; } slot = i + 1; }
+        BOOL ok = ImgNs::Put(n, slot, img, il); Free(img);
         if (ok) { g_curBuf = n; wchar_t m[64]; wsprintfW(m, Tr(L_T_TOIMG), n); Toast(m); }
         return;
     }
     Free(img);
     int len = lstrlenW(t);
-    BufInsert(n, t);
+    if (!BufInsert(n, t)) return;
     g_curBuf = n;
     wchar_t m[96]; wsprintfW(m, Tr(L_T_TOBUF), n, len);
     Toast(m);
@@ -3565,7 +3577,13 @@ static void PopupKey(UINT key, UINT mods, WCHAR ch) {
     if ((mods & DM_WIN) && dig >= 1) { PopupSetMode(PM_BUF, dig); return; }
     if ((mods & DM_CTRL) && buf && dig >= 0) { PopupImg(dig ? dig : 10); return; }        // в окне буфера Ctrl+цифра - вставка картинки
     if ((mods & DM_CTRL) && dig >= 1 && g_pmode != PM_LAUNCH && g_pmode != PM_SCRIPTS && g_pmode != PM_RECORDS && g_nvis > 0) {
-        BufInsert(dig, Dup(g_rows[g_vis[g_sel]].text));
+        wchar_t *nt = Dup(g_rows[g_vis[g_sel]].text);
+        if (g_bufN[dig] >= g_bufMax) {                                                   // будет вопрос о ячейке: окно списка закрываем
+            PopupClose();
+            if (BufInsert(dig, nt)) { wchar_t m[64]; wsprintfW(m, Tr(L_T_TOBUF2), dig); Toast(m); }
+            return;
+        }
+        BufInsert(dig, nt);
         wchar_t m[64]; wsprintfW(m, Tr(L_T_TOBUF2), dig); Toast(m);
         if (buf) { g_sel = 0; PopupReselect(0); }
         return;
