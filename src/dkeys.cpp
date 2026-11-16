@@ -257,7 +257,7 @@ X(L_VOICE_DLENG, "voice.dl_engine", L"Скачиваю распознавате�
 X(L_VOICE_DLPROG, "voice.dl_progress", L"Скачиваю модель: %s") \
 X(L_VOICE_DLMB, "voice.dl_mb", L"%d МБ") \
 X(L_VOICE_READY, "voice.ready", L"Whisper установлен. Голосовой набор готов") \
-X(L_VOICE_DLERR, "voice.dl_error", L"Не удалось скачать Whisper (нужны интернет, curl и tar)") \
+X(L_VOICE_DLERR, "voice.dl_error2", L"Не удалось скачать Whisper (нужны интернет и Python)") \
 X(L_VOICE_EMPTY, "voice.empty", L"Речь не распознана") \
 X(L_VOICE_ERR, "voice.error", L"Голосовой набор: ошибка распознавания") \
 X(L_VOICE_CMDREC, "voice.cmd_listen2", L"Говорите команду...") \
@@ -7570,8 +7570,7 @@ static void RecShowSync(void) { RecNs::ShowSync(); }
 
 /* ---------- голосовой набор: микрофон -> WAV 16 кГц -> whisper.cpp (whisper\whisper-cli.exe + модель) -> текст в место курсора ---------- */
 namespace VoiceNs {
-static const wchar_t kEngUrl[] = L"https://github.com/mrDukereD/Dkeys/releases/download/whisper-engine/whisper-engine-x64.zip";
-static const wchar_t kModUrl[] = L"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-%s.bin";
+#include "whisper_fetch.inc"                                                           // kEx4: скрипт whisper\fetch.py - скачивает движок и модели (exe сам в сеть не ходит)
 static wchar_t lang[8];
 static volatile LONG stopF;
 static void Dir(wchar_t *p) { lstrcpynW(p, g_dir, MAX_PATH); Cat(p, MAX_PATH, L"whisper\\"); }
@@ -7604,26 +7603,23 @@ static DWORD RunWait(wchar_t *cmd, const wchar_t *dir, DWORD timeout, const wcha
     CloseHandle(pi.hProcess); return code;
 }
 static BOOL GetModel(const wchar_t *m, const wchar_t *dir) {
-    wchar_t mp[MAX_PATH], part[MAX_PATH], url[200], cmd[1400];
+    wchar_t mp[MAX_PATH], part[MAX_PATH], cmd[1400];
     if (HaveModel(m)) return TRUE;
     ModelPath(mp, m); lstrcpyW(part, mp); Cat(part, MAX_PATH, L".part"); DeleteFileW(part);
-    wsprintfW(url, kModUrl, m);
-    wsprintfW(cmd, L"curl.exe -L -f -s -S -o \"%s\" \"%s\"", part, url);
+    wsprintfW(cmd, L"\"%s\" \"%swhisper\\fetch.py\" model \"%s\" \"%s\"", g_python, g_dir, m, part);
     BOOL ok = RunWait(cmd, dir, 4 * 3600 * 1000, part, lstrcmpiW(m, L"small") ? 0 : 487601967ULL) == 0 && MoveFileExW(part, mp, MOVEFILE_REPLACE_EXISTING);
     if (!ok) DeleteFileW(part);
     return ok;
 }
 static DWORD WINAPI DlThread(LPVOID) {
-    wchar_t d[MAX_PATH], dd[MAX_PATH], cli[MAX_PATH], zip[MAX_PATH], cmd[1400];
+    wchar_t d[MAX_PATH], dd[MAX_PATH], cli[MAX_PATH], cmd[1400];
     Dir(d); CreateDirectoryW(d, NULL); lstrcpyW(dd, d); dd[lstrlenW(dd) - 1] = 0;           // без хвостового \ (иначе \" в командной строке)
+    { wchar_t fp[MAX_PATH]; lstrcpyW(fp, d); Cat(fp, MAX_PATH, L"fetch.py"); WriteText(fp, kEx4); }
     BOOL ok = TRUE;
     if (!FindCli(cli)) {
         Say(Tr(L_VOICE_DLENG));
-        lstrcpyW(zip, d); Cat(zip, MAX_PATH, L"engine.zip");
-        wsprintfW(cmd, L"curl.exe -L -f -s -S -o \"%s\" \"%s\"", zip, kEngUrl);
-        ok = RunWait(cmd, d, 600000, NULL, 0) == 0;
-        if (ok) { wsprintfW(cmd, L"tar.exe -xf \"%s\" -C \"%s\"", zip, dd); ok = RunWait(cmd, d, 120000, NULL, 0) == 0 && FindCli(cli); }
-        DeleteFileW(zip);
+        wsprintfW(cmd, L"\"%s\" \"%sfetch.py\" engine \"%s\"", g_python, d, dd);
+        ok = RunWait(cmd, d, 900000, NULL, 0) == 0 && FindCli(cli);
     }
     if (ok) ok = GetModel(g_vcModel, d);
     if (ok && g_vcCmdModel[0]) ok = GetModel(g_vcCmdModel, d);
