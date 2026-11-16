@@ -12,3 +12,19 @@ calendars/*.state/
 calendars/*.ini
 calendars/client_secret*.json
 __pycache__/
+
+# секреты и личное: никогда в git (на всякий случай - и в подпапках)
+*.state/
+**/token.json
+**/client.json
+client_secret*.json
+.env
+*.pem
+*.key
+*.pfx
+DKeys.ini
+memory/
+records/
+shots/
+src/*.png
+!src/icon.png
