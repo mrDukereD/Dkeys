@@ -73,10 +73,10 @@ static void BuildDays(const Cal::Store *st, const Cal::OccList *ol, I64 first, S
     }
 }
 
-// Тестовые события вокруг дня today (в память, не в файл): повторы, целодневные, несколько дней, разные пояса, много событий в один день.
+// Тестовые события (источник demo - в файлы не пишутся) вокруг дня today (в память, не в файл): повторы, целодневные, несколько дней, разные пояса, много событий в один день.
 static void DemoAdd(Cal::Store *st, const wchar_t *summary, BOOL allDay, const wchar_t *tz, I64 start, I64 end, const wchar_t *rrule) {
     Cal::Event *e = Cal::StoreNew(st); wchar_t u[80]; Cal::NewUid(u, 80);
-    e->uid = Dup(u); e->summary = Dup(summary); e->source = Dup(L"local"); e->allDay = allDay;
+    e->uid = Dup(u); e->summary = Dup(summary); e->source = Dup(L"demo"); e->allDay = allDay;
     e->tzid = allDay ? NULL : Dup(tz); e->start = start; e->end = end; if (rrule) e->rrule = Dup(rrule);
 }
 static void DemoFill(Cal::Store *st, I64 today) {

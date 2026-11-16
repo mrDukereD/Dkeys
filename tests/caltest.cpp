@@ -310,9 +310,207 @@ static void TestView(void) {
     DaysFree(&dl); OccFree(&ol); StoreFree(&ds);
 }
 
+// ---- этап 3: правка (клон, перенос между источниками, удаление/скрытие) ----
+static Event *AddEv(Store *st, const wchar_t *uid, const wchar_t *src, const wchar_t *sum, I64 start) {
+    Event *e = StoreNew(st); e->uid = Dup(uid); e->source = Dup(src); e->summary = Dup(sum); e->tzid = Dup(L"UTC"); e->start = start; e->end = start + 3600; return e;
+}
+static int CountSrc(const Store &st, const wchar_t *src, BOOL del) { int n = 0; for (int i = 0; i < st.n; i++) if (!lstrcmpW(st.ev[i].source, src) && st.ev[i].deleted == del) n++; return n; }
+static int Visible(const Store &st, BOOL showHidden) { OccList o; Query(&st, W(2026, 1, 1), W(2027, 1, 1), &o, showHidden); int n = o.n; OccFree(&o); return n; }
+static void TestEdit(void) {
+    Store st; memset(&st, 0, sizeof st);
+    Event *a = AddEv(&st, L"a", L"local", L"Серия", W(2026, 11, 2, 10)); a->rrule = Dup(L"FREQ=WEEKLY;COUNT=3"); AddAlarm(a, 10); AddExd(a, W(2026, 11, 9, 10)); a->extra = Dup(L"X-FOO:bar\n");
+    Event *o = AddEv(&st, L"a", L"local", L"Замена", W(2026, 11, 16, 12)); o->hasRec = TRUE; o->recId = W(2026, 11, 16, 10);
+    AddEv(&st, L"b", L"local", L"Одиночное", W(2026, 11, 20, 9));
+    CHECK(st.n == 3 && Visible(st, FALSE) == 3);                                           // серия (2 ноября; 9-го - EXDATE; 16-е заменено) + замена + «b»
+    // клон независим от оригинала
+    Event c; EventClone(&c, &st.ev[0]); SetStr(&c.summary, L"Другое"); c.alarms[0] = 99; c.exd[0] = 1; c.extra[0] = L'Y';
+    CHECK(!lstrcmpW(st.ev[0].summary, L"Серия") && st.ev[0].alarms[0] == 10 && st.ev[0].exd[0] == W(2026, 11, 9, 10) && st.ev[0].extra[0] == L'X' && c.nal == 1 && c.nexd == 1 && !lstrcmpW(c.rrule, st.ev[0].rrule));
+    EventFree(&c);
+    // дублирование = перенос в тот же источник с копией
+    int d = MoveEvent(&st, 2, L"local", TRUE, FALSE);
+    CHECK(st.n == 4 && d == 3 && lstrcmpW(st.ev[d].uid, L"b") && !lstrcmpW(st.ev[d].source, L"local") && !st.ev[2].deleted && st.ev[d].seq == 1 && st.ev[d].stamp > 0);
+    // перенос серии в другой источник с синхронизацией старого: новый UID, замена переезжает вместе, в старом - надгробия
+    st.ev[0].etag = Dup(L"E1"); st.ev[0].hidden = TRUE;
+    int m = MoveEvent(&st, 0, L"google", FALSE, TRUE);
+    CHECK(st.n == 6 && m == 4 && CountSrc(st, L"google", FALSE) == 2 && CountSrc(st, L"local", TRUE) == 2);
+    CHECK(!st.ev[m].etag && !st.ev[m].hidden && !st.ev[m].deleted && lstrcmpW(st.ev[m].uid, L"a") && !lstrcmpW(st.ev[m].summary, L"Серия") && !lstrcmpW(st.ev[m].rrule, L"FREQ=WEEKLY;COUNT=3"));
+    CHECK(!lstrcmpW(st.ev[5].uid, st.ev[m].uid) && st.ev[5].hasRec && st.ev[5].recId == W(2026, 11, 16, 10) && !lstrcmpW(st.ev[5].summary, L"Замена"));
+    CHECK(st.ev[0].deleted && st.ev[1].deleted && st.ev[0].seq == 1);
+    CHECK(Visible(st, FALSE) == 4);                                                         // новая серия (2 ноября и замена) + «b» и его копия
+    { wchar_t *t = Serialize(&st, L"local"); Store s2; memset(&s2, 0, sizeof s2); Parse(&s2, t, L"local"); Free(t);               // надгробие переживает запись в файл
+      CHECK(s2.n == 4 && s2.ev[StoreFind(&s2, L"a", FALSE, 0)].deleted && !s2.ev[StoreFind(&s2, L"b", FALSE, 0)].deleted); StoreFree(&s2); }
+    // перенос без синхронизации прежнего: прежнее сразу убирается; «оставить копию» - остаётся
+    int m2 = MoveEvent(&st, m, L"apple", FALSE, FALSE);
+    CHECK(st.n == 6 && CountSrc(st, L"google", FALSE) == 0 && CountSrc(st, L"apple", FALSE) == 2 && !lstrcmpW(st.ev[m2].source, L"apple"));
+    int m3 = MoveEvent(&st, m2, L"google", TRUE, FALSE);
+    CHECK(st.n == 8 && CountSrc(st, L"google", FALSE) == 2 && CountSrc(st, L"apple", FALSE) == 2 && lstrcmpW(st.ev[m3].uid, st.ev[m2].uid));
+    // удаление
+    int b = StoreFind(&st, L"b", FALSE, 0);
+    int vis = Visible(st, FALSE);
+    DeleteEvent(&st, b, FALSE, TRUE);                                                       // «только из DKeys»: остаётся в файле, не показывается
+    CHECK(st.ev[b].hidden && !st.ev[b].deleted && Visible(st, FALSE) == vis - 1 && Visible(st, TRUE) == vis);
+    { wchar_t *t = Serialize(&st, L"local"); Store s2; memset(&s2, 0, sizeof s2); Parse(&s2, t, L"local"); Free(t); CHECK(s2.ev[StoreFind(&s2, L"b", FALSE, 0)].hidden); StoreFree(&s2); }
+    SetHidden(&st, b, FALSE); CHECK(!st.ev[b].hidden && Visible(st, FALSE) == vis);
+    DeleteEvent(&st, b, TRUE, TRUE);                                                        // «везде» при синхронизации - надгробие
+    CHECK(st.ev[b].deleted && st.ev[b].seq == 1 && Visible(st, FALSE) == vis - 1 && Visible(st, TRUE) == vis - 1);
+    int n0 = st.n; DeleteEvent(&st, StoreFind(&st, L"a", FALSE, 0), TRUE, FALSE);          // «везде» без синхронизации - сразу из хранилища, вместе с заменой
+    CHECK(st.n == n0 - 2 && StoreFind(&st, L"a", FALSE, 0) == -1);
+    StoreFree(&st);
+}
+
+// ---- правило повтора из полей и обратно ----
+static void TestRuleSpec(void) {
+    wchar_t r[200]; RuleSpec s; memset(&s, 0, sizeof s); s.interval = 1;
+    s.freq = 1; RuleBuild(s, FALSE, L"", r, 200); CHECK(!lstrcmpW(r, L"FREQ=DAILY"));
+    s.freq = 0; RuleBuild(s, FALSE, L"", r, 200); CHECK(!r[0]);
+    s.freq = 2; s.interval = 2; s.wdMask = 1 | 4; RuleBuild(s, FALSE, L"", r, 200); CHECK(!lstrcmpW(r, L"FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE"));
+    s.wdMask = 64 | 32; s.interval = 1; s.endKind = 2; s.count = 5; RuleBuild(s, FALSE, L"", r, 200); CHECK(!lstrcmpW(r, L"FREQ=WEEKLY;BYDAY=SA,SU;COUNT=5"));
+    s.freq = 3; s.wdMask = 5; s.endKind = 1; s.untilDay = DaysFromCivil(2026, 12, 31);
+    RuleBuild(s, TRUE, NULL, r, 200); CHECK(!lstrcmpW(r, L"FREQ=MONTHLY;UNTIL=20261231"));                    // BYDAY только у недельного
+    RuleBuild(s, FALSE, L"", r, 200); CHECK(!lstrcmpW(r, L"FREQ=MONTHLY;UNTIL=20261231T235959"));
+    RuleBuild(s, FALSE, L"UTC", r, 200); CHECK(!lstrcmpW(r, L"FREQ=MONTHLY;UNTIL=20261231T235959Z"));
+    RuleBuild(s, FALSE, L"Europe/Moscow", r, 200); CHECK(!lstrcmpW(r, L"FREQ=MONTHLY;UNTIL=20261231T205959Z"));
+    s.endKind = 2; s.count = 0; RuleBuild(s, FALSE, L"", r, 200); CHECK(!lstrcmpW(r, L"FREQ=MONTHLY"));                  // COUNT=0 не пишется
+    // разбор: простые правила воспроизводятся, сложные - нет
+    Event e; memset(&e, 0, sizeof e); e.tzid = (wchar_t *)L"Europe/Moscow"; RuleSpec o;
+    CHECK(RuleSpecParse(NULL, &e, &o) && o.freq == 0 && RuleSpecParse(L"", &e, &o) && o.freq == 0);
+    CHECK(RuleSpecParse(L"FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE;COUNT=3", &e, &o) && o.freq == 2 && o.interval == 2 && o.wdMask == 5 && o.endKind == 2 && o.count == 3);
+    RuleBuild(o, FALSE, L"Europe/Moscow", r, 200); CHECK(!lstrcmpW(r, L"FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE;COUNT=3"));
+    CHECK(RuleSpecParse(L"FREQ=WEEKLY;WKST=MO;BYDAY=FR;UNTIL=20261231T205959Z", &e, &o) && o.freq == 2 && o.wdMask == 16 && o.endKind == 1 && o.untilDay == DaysFromCivil(2026, 12, 31));
+    RuleBuild(o, FALSE, L"Europe/Moscow", r, 200); CHECK(!lstrcmpW(r, L"FREQ=WEEKLY;BYDAY=FR;UNTIL=20261231T205959Z"));
+    CHECK(RuleSpecParse(L"FREQ=YEARLY", &e, &o) && o.freq == 4 && o.interval == 1 && o.endKind == 0);
+    CHECK(RuleSpecParse(L"FREQ=DAILY;UNTIL=20261105", &e, &o) && o.endKind == 1 && o.untilDay == DaysFromCivil(2026, 11, 5));
+    CHECK(!RuleSpecParse(L"FREQ=MONTHLY;BYDAY=2TU", &e, &o) && !RuleSpecParse(L"FREQ=MONTHLY;BYMONTHDAY=15", &e, &o) && !RuleSpecParse(L"FREQ=YEARLY;BYMONTH=3", &e, &o));
+    CHECK(!RuleSpecParse(L"FREQ=HOURLY", &e, &o) && !RuleSpecParse(L"FREQ=DAILY;COUNT=2;UNTIL=20261231", &e, &o) && !RuleSpecParse(L"FREQ=DAILY;BYDAY=MO", &e, &o) && !RuleSpecParse(L"FREQ=DAILY;BYHOUR=9", &e, &o));
+}
+
+// ---- даты и время в полях ввода ----
+static void TestFields(void) {
+    I64 base = DaysFromCivil(2026, 11, 16), d; int t;
+    CHECK(ParseDayStr(L"20.11.2026", base, &d) && d == DaysFromCivil(2026, 11, 20));
+    CHECK(ParseDayStr(L"  5.1.27 ", base, &d) && d == DaysFromCivil(2027, 1, 5));
+    CHECK(ParseDayStr(L"20/11/2026", base, &d) && d == DaysFromCivil(2026, 11, 20) && ParseDayStr(L"2026-11-20", base, &d) && d == DaysFromCivil(2026, 11, 20));
+    CHECK(ParseDayStr(L"20.11", base, &d) && d == DaysFromCivil(2026, 11, 20) && ParseDayStr(L"1.1", base, &d) && d == DaysFromCivil(2027, 1, 1) && ParseDayStr(L"16.11", base, &d) && d == base);
+    CHECK(ParseDayStr(L"29.2", base, &d) && d == DaysFromCivil(2028, 2, 29) && !ParseDayStr(L"29.02.2027", base, &d));
+    CHECK(!ParseDayStr(L"32.01.2026", base, &d) && !ParseDayStr(L"20.13.2026", base, &d) && !ParseDayStr(L"abc", base, &d) && !ParseDayStr(L"", base, &d) && !ParseDayStr(L"20.11.20260", base, &d) && !ParseDayStr(L"20.11.202", base, &d));
+    CHECK(ParseTodStr(L"9:05", &t) && t == 9 * 3600 + 300 && ParseTodStr(L"09:05", &t) && t == 9 * 3600 + 300 && ParseTodStr(L" 23:59 ", &t) && t == 86340 && ParseTodStr(L"7", &t) && t == 7 * 3600 && ParseTodStr(L"0:00", &t) && t == 0);
+    CHECK(!ParseTodStr(L"24:00", &t) && !ParseTodStr(L"12:60", &t) && !ParseTodStr(L"12:5", &t) && !ParseTodStr(L"", &t) && !ParseTodStr(L"12:30:00", &t) && !ParseTodStr(L"ab", &t));
+    wchar_t o[24]; FmtDay(o, DaysFromCivil(2026, 1, 5)); CHECK(!lstrcmpW(o, L"05.01.2026")); FmtTod(o, 9 * 3600 + 300); CHECK(!lstrcmpW(o, L"09:05"));
+    CHECK(DayAddMonths(DaysFromCivil(2026, 1, 31), 1) == DaysFromCivil(2026, 2, 28) && DayAddMonths(DaysFromCivil(2026, 11, 16), -12) == DaysFromCivil(2025, 11, 16));
+}
+
+// ---- быстрый ввод ----
+// «сейчас» в тестах - понедельник 16 ноября 2026, 12:00; defDay (выбранный день) - то же число
+static BOOL QRunAt(const wchar_t *t, I64 now, Quick *q) { return QuickParse(t, now, FloorDiv(now, 86400), q); }
+static BOOL QRun(const wchar_t *t, Quick *q) { return QRunAt(t, W(2026, 11, 16, 12), q); }
+static BOOL QTimed(const Quick &q, I64 s, I64 e) { return !q.allDay && q.start == s && q.end == e; }
+static BOOL QDay(const Quick &q, int y, int m, int d, int n = 1) { return q.allDay && q.start == W(y, m, d) && q.end == W(y, m, d) + n * 86400LL; }
+static BOOL QTitle(const Quick &q, const wchar_t *s) { return !lstrcmpW(q.summary, s); }
+static void TestQuick(void) {
+    Quick q; wchar_t r[100];
+    CHECK(QRun(L"завтра 15:00 встреча", &q) && QTimed(q, W(2026, 11, 17, 15), W(2026, 11, 17, 16)) && QTitle(q, L"Встреча") && !q.rule.freq); Free(q.summary);
+    CHECK(QRun(L"20.11 14:30-16 планёрка", &q) && QTimed(q, W(2026, 11, 20, 14, 30), W(2026, 11, 20, 16)) && QTitle(q, L"Планёрка")); Free(q.summary);
+    CHECK(QRun(L"каждый понедельник 10:00 летучка", &q) && QTimed(q, W(2026, 11, 16, 10), W(2026, 11, 16, 11)) && QTitle(q, L"Летучка") && q.rule.freq == 2 && q.rule.wdMask == 1 && q.rule.interval == 1);
+    RuleBuild(q.rule, FALSE, L"", r, 100); CHECK(!lstrcmpW(r, L"FREQ=WEEKLY;BYDAY=MO")); Free(q.summary);
+    CHECK(QRun(L"через 2 часа позвонить", &q) && QTimed(q, W(2026, 11, 16, 14), W(2026, 11, 16, 15)) && QTitle(q, L"Позвонить")); Free(q.summary);
+    CHECK(QRun(L"в пятницу весь день отпуск", &q) && QDay(q, 2026, 11, 20) && QTitle(q, L"Отпуск")); Free(q.summary);
+    // даты: слова, формы, год, прошедшие даты
+    CHECK(QRun(L"сегодня обед", &q) && QDay(q, 2026, 11, 16) && QTitle(q, L"Обед")); Free(q.summary);
+    CHECK(QRun(L"послезавтра обед", &q) && QDay(q, 2026, 11, 18)); Free(q.summary);
+    CHECK(QRun(L"вчера обед", &q) && QDay(q, 2026, 11, 15)); Free(q.summary);
+    CHECK(QRun(L"5 декабря 18:00 ужин", &q) && QTimed(q, W(2026, 12, 5, 18), W(2026, 12, 5, 19)) && QTitle(q, L"Ужин")); Free(q.summary);
+    CHECK(QRun(L"1 января отпуск", &q) && QDay(q, 2027, 1, 1)); Free(q.summary);                                // без года - ближайшая будущая дата
+    CHECK(QRun(L"16 ноября отчёт", &q) && QDay(q, 2026, 11, 16)); Free(q.summary);                               // сегодняшняя дата остаётся в этом году
+    CHECK(QRun(L"15 ноября отчёт", &q) && QDay(q, 2027, 11, 15)); Free(q.summary);
+    CHECK(QRun(L"3 мар 2028 отчёт", &q) && QDay(q, 2028, 3, 3) && QTitle(q, L"Отчёт")); Free(q.summary);
+    CHECK(QRun(L"31.12.2026 салют", &q) && QDay(q, 2026, 12, 31) && QRun(L"2026-12-31 салют", &q) && QDay(q, 2026, 12, 31)); Free(q.summary);
+    CHECK(QRun(L"29.02 високосный", &q) && QDay(q, 2028, 2, 29)); Free(q.summary);
+    CHECK(QRun(L"30.02 что-то", &q) && QTitle(q, L"30.02 что-то") && QDay(q, 2026, 11, 16)); Free(q.summary);        // несуществующая дата остаётся в названии
+    CHECK(QRun(L"на 20.11 планёрка", &q) && QDay(q, 2026, 11, 20) && QTitle(q, L"Планёрка")); Free(q.summary);
+    // дни недели: ближайший после сегодня; «следующий» - на следующей неделе
+    CHECK(QRun(L"в среду звонок", &q) && QDay(q, 2026, 11, 18)); Free(q.summary);
+    CHECK(QRun(L"понедельник звонок", &q) && QDay(q, 2026, 11, 23)); Free(q.summary);                           // сегодня понедельник - следующий
+    CHECK(QRun(L"в пт 18:00 пиво", &q) && QTimed(q, W(2026, 11, 20, 18), W(2026, 11, 20, 19)) && QTitle(q, L"Пиво")); Free(q.summary);
+    CHECK(QRun(L"в следующий вторник планёрка", &q) && QDay(q, 2026, 11, 24) && QTitle(q, L"Планёрка")); Free(q.summary);
+    CHECK(QRun(L"в следующую пятницу планёрка", &q) && QDay(q, 2026, 11, 27)); Free(q.summary);
+    CHECK(QRun(L"в воскресенье отдых", &q) && QDay(q, 2026, 11, 22) && QRun(L"в субботу отдых", &q) && QDay(q, 2026, 11, 21)); Free(q.summary);
+    // время: 12/24 часа, части суток, диапазоны, пересечение полуночи
+    CHECK(QRun(L"сегодня в 9 вечера ужин", &q) && QTimed(q, W(2026, 11, 16, 21), W(2026, 11, 16, 22)) && QTitle(q, L"Ужин")); Free(q.summary);
+    CHECK(QRun(L"в 9 утра зарядка", &q) && QTimed(q, W(2026, 11, 16, 9), W(2026, 11, 16, 10))); Free(q.summary);
+    CHECK(QRun(L"в 3 дня обед", &q) && q.start == W(2026, 11, 16, 15) && QRun(L"в 12 дня обед", &q) && q.start == W(2026, 11, 16, 12)); Free(q.summary);
+    CHECK(QRun(L"в 12 ночи салют", &q) && q.start == W(2026, 11, 16, 0) && QRun(L"в 2 часа ночи сон", &q) && q.start == W(2026, 11, 16, 2)); Free(q.summary);
+    CHECK(QRun(L"в 15 совещание", &q) && q.start == W(2026, 11, 16, 15) && QTitle(q, L"Совещание") && QRun(L"в 15 часов совещание", &q) && q.start == W(2026, 11, 16, 15) && QTitle(q, L"Совещание")); Free(q.summary);
+    CHECK(QRun(L"в полдень обед", &q) && q.start == W(2026, 11, 16, 12) && QRun(L"в полночь тост", &q) && q.start == W(2026, 11, 16, 0)); Free(q.summary);
+    CHECK(QRun(L"22:00-02:00 смена", &q) && QTimed(q, W(2026, 11, 16, 22), W(2026, 11, 17, 2))); Free(q.summary);
+    CHECK(QRun(L"завтра в 15:00 до 17:00 встреча", &q) && QTimed(q, W(2026, 11, 17, 15), W(2026, 11, 17, 17)) && QTitle(q, L"Встреча")); Free(q.summary);
+    CHECK(QRun(L"завтра 15:00 - 16:30 встреча", &q) && QTimed(q, W(2026, 11, 17, 15), W(2026, 11, 17, 16, 30))); Free(q.summary);
+    CHECK(QRun(L"завтра 15:00–16:30 встреча", &q) && QTimed(q, W(2026, 11, 17, 15), W(2026, 11, 17, 16, 30))); Free(q.summary);          // длинное тире
+    CHECK(QRun(L"с 14 до 16 урок", &q) && QTimed(q, W(2026, 11, 16, 14), W(2026, 11, 16, 16)) && QTitle(q, L"Урок")); Free(q.summary);
+    CHECK(QRun(L"с 2 до 4 дня урок", &q) && QTimed(q, W(2026, 11, 16, 14), W(2026, 11, 16, 16))); Free(q.summary);
+    CHECK(QRun(L"завтра 9:05 врач", &q) && q.start == W(2026, 11, 17, 9, 5)); Free(q.summary);
+    CHECK(QRun(L"завтра 24:00 плохо", &q) && q.allDay && QTitle(q, L"24:00 плохо")); Free(q.summary);                    // 24:00 - не время
+    CHECK(QRun(L"завтра 14:30-14:30 ноль", &q) && QTimed(q, W(2026, 11, 17, 14, 30), W(2026, 11, 17, 15, 30))); Free(q.summary);
+    // длительность и «через»
+    CHECK(QRun(L"завтра 15:00 на 2 часа встреча", &q) && QTimed(q, W(2026, 11, 17, 15), W(2026, 11, 17, 17)) && QTitle(q, L"Встреча")); Free(q.summary);
+    CHECK(QRun(L"завтра 15:00 на полчаса встреча", &q) && QTimed(q, W(2026, 11, 17, 15), W(2026, 11, 17, 15, 30))); Free(q.summary);
+    CHECK(QRun(L"завтра 15:00 на 45 минут встреча", &q) && QTimed(q, W(2026, 11, 17, 15), W(2026, 11, 17, 15, 45))); Free(q.summary);
+    CHECK(QRun(L"завтра на 3 дня поездка", &q) && QDay(q, 2026, 11, 17, 3) && QTitle(q, L"Поездка")); Free(q.summary);
+    CHECK(QRun(L"завтра на весь день поездка", &q) && QDay(q, 2026, 11, 17) && QTitle(q, L"Поездка")); Free(q.summary);
+    CHECK(QRun(L"завтра 15:00 целый день поездка", &q) && QDay(q, 2026, 11, 17)); Free(q.summary);                        // «весь день» главнее времени
+    CHECK(QRun(L"через полчаса чай", &q) && QTimed(q, W(2026, 11, 16, 12, 30), W(2026, 11, 16, 13, 30))); Free(q.summary);
+    CHECK(QRun(L"через час чай", &q) && q.start == W(2026, 11, 16, 13) && QRun(L"через 90 минут чай", &q) && q.start == W(2026, 11, 16, 13, 30)); Free(q.summary);
+    CHECK(QRunAt(L"через 30 минут чай", W(2026, 11, 16, 23, 50, 45), &q) && QTimed(q, W(2026, 11, 17, 0, 20), W(2026, 11, 17, 1, 20))); Free(q.summary);   // через полночь, секунды отбрасываются
+    CHECK(QRun(L"через неделю созвон", &q) && QDay(q, 2026, 11, 23) && QRun(L"через 3 дня 10:00 врач", &q) && QTimed(q, W(2026, 11, 19, 10), W(2026, 11, 19, 11))); Free(q.summary);
+    CHECK(QRun(L"через месяц платёж", &q) && QDay(q, 2026, 12, 16) && QRun(L"через 2 года платёж", &q) && QDay(q, 2028, 11, 16)); Free(q.summary);
+    CHECK(QRunAt(L"через месяц платёж", W(2026, 1, 31, 12), &q) && QDay(q, 2026, 2, 28)); Free(q.summary);                 // 31 января + месяц
+    CHECK(QRun(L"через дом", &q) && QTitle(q, L"Через дом")); Free(q.summary);                                            // «через» не про время остаётся в названии
+    // повторы
+    CHECK(QRun(L"каждый день зарядка", &q) && q.rule.freq == 1 && q.rule.interval == 1 && QDay(q, 2026, 11, 16) && QTitle(q, L"Зарядка")); Free(q.summary);
+    CHECK(QRun(L"каждую неделю 10:00 отчёт", &q) && q.rule.freq == 2 && q.rule.wdMask == 0 && q.start == W(2026, 11, 16, 10)); Free(q.summary);
+    CHECK(QRun(L"каждый месяц оплата", &q) && q.rule.freq == 3 && QRun(L"каждый год отчёт", &q) && q.rule.freq == 4 && QRun(L"ежегодно 20.11 день рождения", &q) && q.rule.freq == 4 && QDay(q, 2026, 11, 20) && QTitle(q, L"День рождения")); Free(q.summary);
+    CHECK(QRun(L"ежедневно 8:00 таблетка", &q) && q.rule.freq == 1 && q.start == W(2026, 11, 16, 8)); Free(q.summary);
+    CHECK(QRun(L"еженедельно планёрка", &q) && q.rule.freq == 2 && QRun(L"ежемесячно оплата", &q) && q.rule.freq == 3); Free(q.summary);
+    CHECK(QRun(L"каждые 2 недели по пн и ср 9:00 стендап", &q) && q.rule.freq == 2 && q.rule.interval == 2 && q.rule.wdMask == 5 && q.start == W(2026, 11, 16, 9) && QTitle(q, L"Стендап"));
+    RuleBuild(q.rule, FALSE, L"", r, 100); CHECK(!lstrcmpW(r, L"FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE")); Free(q.summary);
+    CHECK(QRun(L"каждый вторник и четверг 18:30 зал", &q) && q.rule.wdMask == 2 + 8 && q.start == W(2026, 11, 17, 18, 30) && QTitle(q, L"Зал")); Free(q.summary);   // первое вхождение - ближайший подходящий день
+    CHECK(QRun(L"по понедельникам, средам и пятницам 7:00 бег", &q) && q.rule.wdMask == 1 + 4 + 16 && q.start == W(2026, 11, 16, 7) && QTitle(q, L"Бег")); Free(q.summary);
+    CHECK(QRun(L"по будням 9:00 стендап", &q) && q.rule.wdMask == 31 && QRun(L"по выходным сон", &q) && q.rule.wdMask == 96 && QDay(q, 2026, 11, 21)); Free(q.summary);
+    CHECK(QRun(L"каждый будний день 9:00 работа", &q) && q.rule.wdMask == 31 && QTitle(q, L"Работа")); Free(q.summary);
+    CHECK(QRun(L"каждые 3 дня полив", &q) && q.rule.freq == 1 && q.rule.interval == 3 && QRun(L"раз в 2 недели уборка", &q) && q.rule.freq == 2 && q.rule.interval == 2 && QRun(L"раз в месяц уборка", &q) && q.rule.freq == 3); Free(q.summary);
+    CHECK(QRun(L"каждое 15 число оплата", &q) && q.rule.freq == 3 && QDay(q, 2026, 12, 15) && QTitle(q, L"Оплата")); Free(q.summary);
+    CHECK(QRun(L"каждое 20 число оплата", &q) && QDay(q, 2026, 11, 20)); Free(q.summary);
+    CHECK(QRun(L"каждый день до 31.12 зарядка", &q) && q.rule.freq == 1 && q.rule.endKind == 1 && q.rule.untilDay == DaysFromCivil(2026, 12, 31) && QTitle(q, L"Зарядка"));
+    RuleBuild(q.rule, TRUE, NULL, r, 100); CHECK(!lstrcmpW(r, L"FREQ=DAILY;UNTIL=20261231")); Free(q.summary);
+    CHECK(QRun(L"каждый день 10 раз таблетка 8:00", &q) && q.rule.endKind == 2 && q.rule.count == 10 && q.start == W(2026, 11, 16, 8) && QTitle(q, L"Таблетка")); Free(q.summary);
+    CHECK(QRun(L"каждую пятницу до 20 ноября 2027 отчёт", &q) && q.rule.endKind == 1 && q.rule.untilDay == DaysFromCivil(2027, 11, 20) && q.rule.wdMask == 16); Free(q.summary);
+    CHECK(QRun(L"каждый день до 31.12 с 14 до 16 урок", &q) && q.rule.endKind == 1 && QTimed(q, W(2026, 11, 16, 14), W(2026, 11, 16, 16))); Free(q.summary);      // «до» диапазона времени - не конец повтора
+    CHECK(QRun(L"каждый день в 10:00 зарядка", &q) && q.start == W(2026, 11, 16, 10) && QTitle(q, L"Зарядка")); Free(q.summary);
+    CHECK(QRun(L"каждый кот", &q) && !q.rule.freq && QTitle(q, L"Каждый кот")); Free(q.summary);                           // «каждый» не про повтор
+    CHECK(QRun(L"каждый день 20.11 зарядка", &q) && q.rule.freq == 1 && QDay(q, 2026, 11, 20)); Free(q.summary);          // дата начала серии
+    // прочее: регистр, знаки, пустой ввод, только дата, названия с цифрами и предлогами
+    CHECK(QRun(L"ЗАВТРА 15:00 ВСТРЕЧА с Иваном", &q) && QTimed(q, W(2026, 11, 17, 15), W(2026, 11, 17, 16)) && QTitle(q, L"ВСТРЕЧА с Иваном")); Free(q.summary);
+    CHECK(QRun(L"завтра позвонить, маме!", &q) && QTitle(q, L"Позвонить, маме!")); Free(q.summary);
+    CHECK(QRun(L"встреча с Иваном в кафе", &q) && QDay(q, 2026, 11, 16) && QTitle(q, L"Встреча с Иваном в кафе")); Free(q.summary);   // ничего не распознано: целый день, выбранный день
+    CHECK(QRun(L"  завтра   15:00    встреча   ", &q) && QTimed(q, W(2026, 11, 17, 15), W(2026, 11, 17, 16)) && QTitle(q, L"Встреча")); Free(q.summary);
+    CHECK(QRun(L"завтра", &q) && QDay(q, 2026, 11, 17) && QTitle(q, L"")); Free(q.summary);
+    CHECK(!QRun(L"", &q) && QTitle(q, L"") && !QRun(L"   ", &q)); Free(q.summary);
+    CHECK(QRun(L"в 5 раз больше", &q) && q.start == W(2026, 11, 16, 5) && QTitle(q, L"Раз больше")); Free(q.summary);      // известное ограничение: «в N» - это время
+    CHECK(QRun(L"встреча 2027 года", &q) && QTitle(q, L"Встреча 2027 года") && q.allDay); Free(q.summary);
+    // другой defDay (выбран день в окне): без даты событие ложится на него
+    CHECK(QuickParse(L"15:00 встреча", W(2026, 11, 16, 12), DaysFromCivil(2026, 12, 3), &q) && QTimed(q, W(2026, 12, 3, 15), W(2026, 12, 3, 16))); Free(q.summary);
+    CHECK(QuickParse(L"каждый понедельник планёрка", W(2026, 11, 16, 12), DaysFromCivil(2026, 12, 3), &q) && QDay(q, 2026, 12, 7)); Free(q.summary);
+    // готовое событие из разобранного: сохраняется, читается и разворачивается
+    Quick q2; QRun(L"каждые 2 недели по пн и ср 9:00 стендап", &q2);
+    Store st; memset(&st, 0, sizeof st); Event *e = StoreNew(&st); wchar_t u[80]; NewUid(u, 80); e->uid = Dup(u); e->summary = Dup(q2.summary); e->tzid = Dup(L"UTC");
+    e->start = q2.start; e->end = q2.end; RuleBuild(q2.rule, FALSE, L"UTC", r, 100); e->rrule = Dup(r);
+    OccList ol; Query(&st, W(2026, 11, 16), W(2026, 12, 4), &ol);                          // 16 и 18 ноября, неделя пропущена, 30 ноября и 2 декабря
+    CHECK(ol.n == 4 && DayOf(ol.a[0].s) == 16 && DayOf(ol.a[1].s) == 18 && DayOf(ol.a[2].s) == 30 && DayOf(ol.a[3].s) == 2);
+    OccFree(&ol); StoreFree(&st); Free(q2.summary);
+}
+
 int main() {
     g_heap = GetProcessHeap(); CoInitialize(NULL);
-    TestDates(); TestZones(); TestParse(); TestRules(); TestStoreFile(); TestView();
+    TestDates(); TestZones(); TestParse(); TestRules(); TestStoreFile(); TestView(); TestEdit(); TestRuleSpec(); TestFields(); TestQuick();
     printf("%d checks, %d failed\n", g_tests, g_fail);
     return g_fail ? 1 : 0;
 }

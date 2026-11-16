@@ -172,9 +172,9 @@ static CamRec g_cr[16]; static int g_ncr;
 static void CamRecSync(void); static void CamRecToggle(const wchar_t *n); static void CamRecDlg(const wchar_t *n); static BOOL CamRecOn(const wchar_t *n);
 static wchar_t g_cfgCamDev[80]; static int g_cfgCamW, g_cfgCamH, g_cfgWin[4];   // [Camera] в ini: камера, разрешение, x,y,ширина,высота окна
 static DWORD g_ignoreSeq, g_ownSeq;
-struct CalSrc { wchar_t id[24]; COLORREF col; BOOL show; };                         // источник календаря: id (local, ...), цвет плашек, показывать
+struct CalSrc { wchar_t id[24]; COLORREF col; BOOL show, sync; };                   // источник календаря: id (local, ...), цвет плашек, показывать, синхронизируется ли (тогда удаление - надгробие, пока не отправлено)
 static CalSrc g_calSrc[8]; static int g_ncalSrc = 1;
-static int g_calView, g_calWs, g_calWkn, g_calPanel = 1, g_calWin[5]; static BOOL g_calDemo;   // [Calendar] в ini: вид (0 месяц, 1 неделя), первый день недели (0 пн, 1 вс), номера недель, мини-панель, окно x,y,w,h,развёрнуто, тестовые события
+static int g_calView, g_calWs, g_calWkn, g_calPanel = 1, g_calWin[5], g_calAlarm = 10; static BOOL g_calDemo, g_calHid; static wchar_t g_calDefSrc[24];   // [Calendar] в ini: вид (0 месяц, 1 неделя), первый день недели (0 пн, 1 вс), номера недель, мини-панель, окно x,y,w,h,развёрнуто, тестовые события, напоминание по умолчанию (минут, 0 - без), источник по умолчанию, показывать скрытые
 
 static wchar_t g_editor[MAX_PATH];                                                      // [General] Editor: свой редактор (иначе Notepad++ / Блокнот)
 static int g_histOn, g_histMax = 50, g_pasteDelay = 300, g_copyTimeout = 600, g_pyPause = 1, g_toasts = 1;
@@ -286,7 +286,54 @@ X(L_CAL_MORE, "cal.more", L"+%d ещё") \
 X(L_CAL_CALS, "cal.calendars", L"Календари") \
 X(L_CAL_LOCAL, "cal.local", L"Локально") \
 X(L_CAL_NOTITLE, "cal.untitled", L"(без названия)") \
-X(L_CAL_EDITOR, "cal.editor_todo", L"Редактор событий будет в этапе 3") \
+X(L_CAL_ADD, "cal.add", L"+ Событие") \
+X(L_CAL_QUICK, "cal.quick", L"Быстро:") \
+X(L_CAL_QHINT, "cal.quick_hint", L"завтра 15:00 встреча, каждый понедельник 10:00 летучка") \
+X(L_CAL_SHOWHID, "cal.show_hidden", L"Показывать скрытые") \
+X(L_CAL_SAVEFAIL, "cal.save_failed", L"Не удалось сохранить календарь") \
+X(L_CAL_M_EDIT, "cal.menu_edit", L"Изменить…") \
+X(L_CAL_M_DUP, "cal.menu_dup", L"Дублировать") \
+X(L_CAL_M_DEL, "cal.menu_del", L"Удалить…") \
+X(L_CAL_M_MOVE, "cal.menu_move", L"Перенести в") \
+X(L_CAL_M_UNHIDE, "cal.menu_unhide", L"Вернуть в календарь") \
+X(L_CAL_M_NEW, "cal.menu_new", L"Новое событие…") \
+X(L_CAL_ED_NEW, "cal.ed_new", L"Новое событие") \
+X(L_CAL_ED_EDIT, "cal.ed_edit", L"Событие") \
+X(L_CAL_ED_NAME, "cal.ed_name", L"Название") \
+X(L_CAL_ED_ALLDAY, "cal.ed_allday", L"Весь день") \
+X(L_CAL_ED_START, "cal.ed_start", L"Начало") \
+X(L_CAL_ED_END, "cal.ed_end", L"Конец") \
+X(L_CAL_ED_TZ, "cal.ed_tz", L"Часовой пояс") \
+X(L_CAL_ED_FLOAT, "cal.ed_floating", L"Плавающий (местное время)") \
+X(L_CAL_ED_TZLOCAL, "cal.ed_tz_local", L"= %s по местному") \
+X(L_CAL_ED_REPEAT, "cal.ed_repeat", L"Повтор") \
+X(L_CAL_ED_REPS, "cal.ed_repeats", L"Не повторять,Каждый день,Каждую неделю,Каждый месяц,Каждый год,Свой…") \
+X(L_CAL_ED_REPRAW, "cal.ed_repeat_raw", L"Свой (RRULE=%s)") \
+X(L_CAL_ED_EVERY, "cal.ed_every", L"Каждые") \
+X(L_CAL_ED_UNITS, "cal.ed_units", L"дней,недель,месяцев,лет") \
+X(L_CAL_ED_ENDS, "cal.ed_ends", L"Без конца,До даты,Число раз") \
+X(L_CAL_ED_ALARMS, "cal.ed_alarms", L"Напоминания") \
+X(L_CAL_ED_AUNITS, "cal.ed_alarm_units", L"минут,часов,дней") \
+X(L_CAL_ED_AFMT, "cal.ed_alarm_fmt", L"за %d мин,за %d ч,за %d дн,в момент начала") \
+X(L_CAL_ED_AADD, "cal.ed_alarm_add", L"Добавить") \
+X(L_CAL_ED_ADEL, "cal.ed_alarm_del", L"Убрать") \
+X(L_CAL_ED_LOC, "cal.ed_location", L"Место") \
+X(L_CAL_ED_DESC, "cal.ed_desc", L"Описание") \
+X(L_CAL_ED_SRC, "cal.ed_source", L"Источник") \
+X(L_CAL_ED_KEEP, "cal.ed_keep", L"Оставить копию в прежнем источнике") \
+X(L_CAL_ED_SAVE, "cal.ed_save", L"Сохранить") \
+X(L_CAL_ED_DEL, "cal.ed_delete", L"Удалить…") \
+X(L_CAL_ED_SERIES, "cal.ed_series", L"Повторяющееся событие: правка относится ко всей серии") \
+X(L_CAL_ED_RECID, "cal.ed_recid", L"Изменённое вхождение серии: правится как обычное событие") \
+X(L_CAL_ED_BADDATE, "cal.ed_bad_date", L"Неверная дата (дд.мм.гггг)") \
+X(L_CAL_ED_BADTIME, "cal.ed_bad_time", L"Неверное время (чч:мм)") \
+X(L_CAL_ED_BADNUM, "cal.ed_bad_number", L"Введите число больше нуля") \
+X(L_CAL_DEL_TITLE, "cal.del_title", L"Удаление события") \
+X(L_CAL_DEL_ASK, "cal.del_ask", L"Удалить «%s»?") \
+X(L_CAL_DEL_SERIES, "cal.del_series", L"Событие повторяется: действие относится ко всей серии.") \
+X(L_CAL_DEL_ALL, "cal.del_all", L"Удалить везде") \
+X(L_CAL_DEL_HIDE, "cal.del_hide", L"Убрать только из DKeys") \
+X(L_CAL_DEL_HINT, "cal.del_hint", L"«Удалить везде» - событие исчезнет и из источника; «Убрать» - останется в источнике, но DKeys его не покажет.") \
 X(L_TRAY_HISTON, "tray.history_on", L"Своя история буфера") \
 X(L_TRAY_SELCOPY, "tray.selcopy", L"Автокопирование выделенного мышью") \
 X(L_TRAY_AUTO, "tray.autostart", L"Автозапуск") \
@@ -1002,6 +1049,11 @@ PowerShell=powershell.exe
 ; Show.local: 1 показывать календарь, 0 скрыть | Color.local: цвет плашек RRGGBB
 ;Show.local=1
 ;Color.local=4285F4
+; DefaultSource: источник для быстрого ввода (id, по умолчанию local) | DefaultAlarm: напоминание по умолчанию в минутах (0 или пусто - без)
+;DefaultSource=local
+;DefaultAlarm=10
+; ShowHidden: 1 - показывать события, убранные только из DKeys (в окне есть переключатель)
+;ShowHidden=0
 ; Window: положение и размер окна x,y,ширина,высота,развёрнуто (1) - запоминается само
 ;Window=100,100,1000,700,0
 ; Demo: 1 - добавлять в память тестовые события вокруг сегодняшнего дня (в файл не пишутся)
@@ -1265,7 +1317,7 @@ static void CfgDefaults(void) {
     g_tmCurrent = g_tmMenuSlot = 0;
     g_mHover = 300; g_mPos[0] = g_mPos[1] = -99999;
     g_cfgCamDev[0] = 0; g_cfgCamW = g_cfgCamH = 0; memset(g_cfgWin, 0, sizeof g_cfgWin);
-    g_calView = g_calWs = g_calWkn = 0; g_calPanel = 1; g_calDemo = FALSE; memset(g_calWin, 0, sizeof g_calWin);
+    g_calView = g_calWs = g_calWkn = 0; g_calPanel = 1; g_calDemo = g_calHid = FALSE; g_calAlarm = 10; g_calDefSrc[0] = 0; memset(g_calWin, 0, sizeof g_calWin);
     memset(g_calSrc, 0, sizeof g_calSrc); g_ncalSrc = 1; lstrcpyW(g_calSrc[0].id, L"local"); g_calSrc[0].col = RGB(66, 133, 244); g_calSrc[0].show = TRUE;
     g_remote = FALSE; g_selCopy = FALSE; g_selIgn[0] = 0;
     lstrcpyW(g_vcModel, L"small"); g_vcLang[0] = 0; g_vcThr = 0; g_vcPause = 600; g_vcMaxChunk = 15; g_vcSil = 300; g_vcStream = FALSE; g_vcLive = TRUE; g_vcDebug = FALSE; g_vcPrompt[0] = 0; g_vcCmdModel[0] = 0; g_cmdDirty = TRUE;
@@ -1406,6 +1458,9 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
         else if (!lstrcmpiW(k, L"WeekNumbers")) g_calWkn = ToInt(v) != 0;
         else if (!lstrcmpiW(k, L"Panel")) g_calPanel = ToInt(v) != 0;
         else if (!lstrcmpiW(k, L"Demo")) g_calDemo = ToInt(v) != 0;
+        else if (!lstrcmpiW(k, L"ShowHidden")) g_calHid = ToInt(v) != 0;
+        else if (!lstrcmpiW(k, L"DefaultAlarm")) g_calAlarm = ToInt(v) > 0 ? ToInt(v) : 0;
+        else if (!lstrcmpiW(k, L"DefaultSource")) lstrcpynW(g_calDefSrc, v, 24);
         else if (!lstrcmpiW(k, L"Window")) { const wchar_t *q = v; for (int i = 0; i < 5; i++) { g_calWin[i] = ToInt(q); while (*q && *q != L',') q++; if (*q) q++; } }
         else if (lstrlenW(k) > 6 && (CompareStringOrdinal(k, 5, L"Show.", 5, TRUE) == CSTR_EQUAL || CompareStringOrdinal(k, 6, L"Color.", 6, TRUE) == CSTR_EQUAL)) {
             BOOL show = (k[0] | 32) == L's'; const wchar_t *id = k + (show ? 5 : 6);
@@ -8236,14 +8291,16 @@ static void NavRun(void) {                                      // клавиш�
         for (int i = 0; i < g_nav[d] + (d == 0); i++) NavKey(VK_DOWN);
     }
 }
-/* ---------- календарь: окно с видом «месяц» (этап 2). Ядро - calendar.h, логика вида - calview.h, проверка - tests\run.cmd ---------- */
-// Одно окно на программу, всё рисуется самим DKeys (GDI, буфер в памяти). События - memory\calendar\local.ics (источник local).
+/* ---------- календарь: окно «месяц», редактор события, быстрый ввод. Ядро - calendar.h, логика вида - calview.h, проверка - tests\run.cmd ---------- */
+// Одно окно на программу, всё рисуется самим DKeys (GDI, буфер в памяти). События - memory\calendar\<источник>.ics (источник local - local.ics).
 // Выбранный день sel задаёт и показанный месяц; мини-месяц слева листается отдельно и возвращается к основному при любой навигации.
+// Любое изменение: Cal::Touch, сразу запись файла источника (SaveSrc), перестройка вида. Диалоги (редактор, удаление) - свои, модальные, только из главного потока.
 namespace CalNs {
 using namespace CalView;
-struct Geo { RECT panel, head, tgl, prev, next, tod, title, wd, grid, mPrev, mNext, mTitle, mWd, mGrid, srcHdr, src[8]; int wnW, mcw, mrh; };
-static HWND hw; static Cal::Store st; static Cal::OccList ol; static DayLists dl; static I64 *locStart;      // locStart[i] - начало вхождения i в местном времени
-static int dpi = 96, mY, mM, wheelAcc; static BOOL dark, placing; static HFONT fN, fB, fT, fS;
+struct Geo { RECT panel, head, tgl, prev, next, tod, add, title, wd, grid, qbox, qlab, qedit, mPrev, mNext, mTitle, mWd, mGrid, srcHdr, src[8], hid; int wnW, mcw, mrh; };
+static HWND hw, hQuick; static WNDPROC quickOld; static HBRUSH hbrQ; static RECT lastQ;
+static Cal::Store st; static Cal::OccList ol; static DayLists dl; static I64 *locStart;      // locStart[i] - начало вхождения i в местном времени
+static int dpi = 96, mY, mM, wheelAcc, selEv = -1; static BOOL dark, placing; static HFONT fN, fB, fT, fS;     // selEv - выбранное событие (индекс в st) в выбранном дне
 static I64 sel, today, first; static Geo G;
 
 static int Sc(int v) { return MulDiv(v, dpi, 96); }
@@ -8254,9 +8311,13 @@ static int SrcOf(const Cal::Event *e) {                       // индекс и
     for (int i = 0; i < g_ncalSrc; i++) if (!lstrcmpiW(g_calSrc[i].id, e->source)) return i;
     return -1;
 }
+static int SrcIdx(const wchar_t *id) { for (int i = 0; i < g_ncalSrc; i++) if (!lstrcmpiW(g_calSrc[i].id, id)) return i; return -1; }
+static const wchar_t *SrcName(int i) { return i == 0 ? Tr(L_CAL_LOCAL) : g_calSrc[i].id; }
+static int DefSrc(void) { int i = g_calDefSrc[0] ? SrcIdx(g_calDefSrc) : 0; return i < 0 ? 0 : i; }
 static BOOL ShowEv(const Cal::Event *e) { int i = SrcOf(e); return i < 0 || g_calSrc[i].show; }
 static COLORREF ColOf(const Cal::Event *e) { int i = SrcOf(e); return g_calSrc[i < 0 ? 0 : i].col; }
 static COLORREF OnCol(COLORREF c) { int l = (GetRValue(c) * 299 + GetGValue(c) * 587 + GetBValue(c) * 114) / 1000; return l > 150 ? RGB(20, 20, 20) : RGB(255, 255, 255); }
+static COLORREF Mix(COLORREF a, COLORREF b, int pa) { return RGB((GetRValue(a) * pa + GetRValue(b) * (100 - pa)) / 100, (GetGValue(a) * pa + GetGValue(b) * (100 - pa)) / 100, (GetBValue(a) * pa + GetBValue(b) * (100 - pa)) / 100); }
 static void Item(const wchar_t *list, int idx, wchar_t *out, int cap) {      // idx-й элемент списка через запятую (названия месяцев и дней - в одном тексте Tr)
     const wchar_t *p = list;
     for (; idx > 0 && *p; idx--) { while (*p && *p != L',') p++; if (*p) p++; }
@@ -8275,27 +8336,38 @@ static void DarkTitle(HWND h) {                               // тёмный з
     Fn f = (Fn)GetProcAddress(m, "DwmSetWindowAttribute"); BOOL v = dark;
     if (f) f(h, 20, &v, sizeof v);
 }
+static void MakeQBrush(void) { if (hbrQ) DeleteObject(hbrQ); hbrQ = CreateSolidBrush((dark ? ::kDark : ::kLight).hdr); }
 
 /* данные */
-static void Cleanup(void) { Cal::StoreFree(&st); Cal::OccFree(&ol); DaysFree(&dl); Free(locStart); locStart = NULL; }
+static void Cleanup(void) { Cal::StoreFree(&st); Cal::OccFree(&ol); DaysFree(&dl); Free(locStart); locStart = NULL; selEv = -1; }
+static void SrcPath(const wchar_t *id, wchar_t *p) { wchar_t rel[48]; lstrcpyW(rel, L"calendar\\"); Cat(rel, 48, id); Cat(rel, 48, L".ics"); MemPath(p, rel); }
+static void SaveSrc(const wchar_t *id) {                       // записать файл источника (неизвестные источники, в том числе demo, не пишутся)
+    if (!id || SrcIdx(id) < 0) return;
+    wchar_t p[MAX_PATH]; SrcPath(id, p);
+    if (!Cal::SaveFile(&st, p, id)) Toast(Tr(L_CAL_SAVEFAIL));
+}
 static void Load(void) {
-    Cal::StoreFree(&st);
-    wchar_t p[MAX_PATH]; MemPath(p, L"calendar\\local.ics"); Cal::LoadFile(&st, p, L"local");
-    if (g_calDemo) DemoFill(&st, today);                      // [Calendar] Demo=1: тестовые события только в памяти
+    Cal::StoreFree(&st); selEv = -1;
+    for (int i = 0; i < g_ncalSrc; i++) { wchar_t p[MAX_PATH]; SrcPath(g_calSrc[i].id, p); Cal::LoadFile(&st, p, g_calSrc[i].id); }
+    if (g_calDemo) DemoFill(&st, today);                      // [Calendar] Demo=1: тестовые события (источник demo) только в памяти
 }
 static void Rebuild(void) {                                   // события видимой сетки по дням
     Cal::OccFree(&ol); DaysFree(&dl); Free(locStart); locStart = NULL;
     int y, m, d; Cal::CivilFromDays(sel, &y, &m, &d);
     first = GridStart(y, m, g_calWs);
     I64 a, b; Range(first, GRID, &a, &b);
-    Cal::Query(&st, a, b, &ol);
+    Cal::Query(&st, a, b, &ol, g_calHid);
     BuildDays(&st, &ol, first, ShowEv, &dl);
     locStart = (I64 *)Alloc((ol.n + 1) * sizeof(I64));
     for (int i = 0; i < ol.n; i++) locStart[i] = ol.a[i].allDay ? ol.a[i].wall : Cal::UtcToWall(ol.a[i].s, L"");
 }
-static void SetSel(I64 d) { sel = d; int y, m, dd; Cal::CivilFromDays(d, &y, &m, &dd); mY = y; mM = m; Rebuild(); Inv(); }
+static void SetSel(I64 d) { sel = d; selEv = -1; int y, m, dd; Cal::CivilFromDays(d, &y, &m, &dd); mY = y; mM = m; Rebuild(); Inv(); }
 static void GoMonth(int n) { SetSel(ShiftMonths(sel, n)); }
 static void GoToday(void) { today = TodayLocal(); SetSel(today); }
+static I64 LocalDay(const Cal::Event &e) {                    // день начала события в местном времени
+    if (e.allDay) return Cal::FloorDiv(e.start, 86400);
+    return Cal::FloorDiv(Cal::UtcToWall(Cal::WallToUtc(e.start, e.tzid ? e.tzid : L""), L""), 86400);
+}
 
 /* раскладка */
 static void Layout(int W, int H) {
@@ -8305,10 +8377,14 @@ static void Layout(int W, int H) {
     G.prev = Mk(G.tgl.right + Sc(12), by, G.tgl.right + Sc(12) + bs, by + bs);
     G.tod = Mk(G.prev.right + Sc(4), by, G.prev.right + Sc(4) + Sc(92), by + bs);
     G.next = Mk(G.tod.right + Sc(4), by, G.tod.right + Sc(4) + bs, by + bs);
-    G.title = Mk(G.next.right + Sc(16), 0, W - pad, hh);
+    G.add = Mk(W - pad - Sc(116), by, W - pad, by + bs);
+    G.title = Mk(G.next.right + Sc(16), 0, G.add.left - Sc(8), hh);
     G.wnW = g_calWkn ? Sc(34) : 0;
+    G.qbox = Mk(mx + pad, H - pad - Sc(34), W - pad, H - pad);
+    G.qlab = Mk(G.qbox.left + Sc(10), G.qbox.top, G.qbox.left + Sc(10) + Sc(64), G.qbox.bottom);
+    G.qedit = Mk(G.qlab.right, G.qbox.top + Sc(8), G.qbox.right - Sc(10), G.qbox.bottom - Sc(8));
     G.wd = Mk(mx + pad, hh, W - pad, hh + Sc(26));
-    G.grid = Mk(mx + pad, G.wd.bottom, W - pad, H - pad);
+    G.grid = Mk(mx + pad, G.wd.bottom, W - pad, G.qbox.top - Sc(8));
     int x0 = pad, x1 = pw - pad, y = pad; G.mcw = (x1 - x0) / 7; G.mrh = Sc(26);
     G.mNext = Mk(x1 - Sc(28), y, x1, y + Sc(28)); G.mPrev = Mk(G.mNext.left - Sc(28), y, G.mNext.left, y + Sc(28));
     G.mTitle = Mk(x0 + Sc(4), y, G.mPrev.left, y + Sc(28));
@@ -8316,6 +8392,8 @@ static void Layout(int W, int H) {
     G.mGrid = Mk(x0, G.mWd.bottom, x0 + G.mcw * 7, G.mWd.bottom + G.mrh * 6);
     G.srcHdr = Mk(x0 + Sc(4), G.mGrid.bottom + Sc(20), x1, G.mGrid.bottom + Sc(44));
     for (int i = 0; i < g_ncalSrc && i < 8; i++) G.src[i] = Mk(x0, G.srcHdr.bottom + i * Sc(30), x1, G.srcHdr.bottom + (i + 1) * Sc(30));
+    int ns = g_ncalSrc < 8 ? g_ncalSrc : 8; G.hid = Mk(x0, G.srcHdr.bottom + ns * Sc(30) + Sc(8), x1, G.srcHdr.bottom + ns * Sc(30) + Sc(38));
+    if (hQuick && !EqualRect(&G.qedit, &lastQ)) { lastQ = G.qedit; MoveWindow(hQuick, G.qedit.left, G.qedit.top, G.qedit.right - G.qedit.left, G.qedit.bottom - G.qedit.top, TRUE); }
 }
 static void Lay(void) { RECT c; GetClientRect(hw, &c); Layout(c.right, c.bottom); }
 static void CellRc(int i, RECT *r) {                          // клетка i (0..41) сетки месяца
@@ -8323,6 +8401,18 @@ static void CellRc(int i, RECT *r) {                          // клетка i 
     r->left = gx + c * gw / 7; r->right = gx + (c + 1) * gw / 7; r->top = G.grid.top + row * gh / 6; r->bottom = G.grid.top + (row + 1) * gh / 6;
 }
 static int CellAt(int x, int y) { POINT p = {x, y}; for (int i = 0; i < GRID; i++) { RECT r; CellRc(i, &r); if (PtInRect(&r, p)) return i; } return -1; }
+static void CellPlates(int i, const RECT &r, int *y0, int *shown, int *cnt) {      // где начинаются плашки клетки, сколько показано из cnt (остальные - «+N ещё»)
+    int ph = Sc(18), gap = Sc(2); *cnt = dl.off[i + 1] - dl.off[i]; *y0 = r.top + Sc(31);
+    int avail = (r.bottom - Sc(3) - *y0) / (ph + gap);
+    *shown = *cnt <= avail ? *cnt : (avail > 0 ? avail - 1 : 0);
+}
+static int PlateAt(int x, int y, int *cell) {                 // индекс события (в st) под курсором или -1; в *cell - клетка
+    int c = CellAt(x, y); *cell = c; if (c < 0) return -1;
+    RECT r; CellRc(c, &r); int y0, shown, cnt; CellPlates(c, r, &y0, &shown, &cnt);
+    if (y < y0 || x < r.left + Sc(3) || x >= r.right - Sc(3)) return -1;
+    int k = (y - y0) / (Sc(18) + Sc(2)); if (k >= shown) return -1;
+    return ol.a[dl.items[dl.off[c] + k]].ev;
+}
 
 /* рисование */
 static void Fill(HDC dc, const RECT &r, COLORREF c) { SetBkColor(dc, c); ExtTextOutW(dc, 0, 0, ETO_OPAQUE, &r, NULL, 0, NULL); }
@@ -8336,6 +8426,11 @@ static void Chev(HDC dc, const RECT &r, int dir, COLORREF c) {      // стре�
     HPEN p = CreatePen(PS_SOLID, Sc(2) > 1 ? Sc(2) : 1, c); HGDIOBJ op = SelectObject(dc, p);
     int cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2, a = Sc(5);
     MoveToEx(dc, cx - dir * a / 2, cy - a, NULL); LineTo(dc, cx + dir * a / 2, cy); LineTo(dc, cx - dir * a / 2, cy + a + 1);
+    SelectObject(dc, op); DeleteObject(p);
+}
+static void Tick(HDC dc, const RECT &bx, COLORREF c) {              // галочка в квадрате
+    int cy = (bx.top + bx.bottom) / 2; HPEN p = CreatePen(PS_SOLID, Sc(2) > 1 ? Sc(2) : 1, c); HGDIOBJ op = SelectObject(dc, p);
+    MoveToEx(dc, bx.left + Sc(4), cy, NULL); LineTo(dc, bx.left + Sc(7), cy + Sc(3)); LineTo(dc, bx.left + Sc(12), cy - Sc(3));
     SelectObject(dc, op); DeleteObject(p);
 }
 static void Button(HDC dc, const Pal &P, const RECT &r) { Round(dc, r, P.bd, Sc(8), FALSE); RECT i = r; InflateRect(&i, -1, -1); Round(dc, i, P.hdr, Sc(8), FALSE); }
@@ -8367,13 +8462,16 @@ static void PaintMini(HDC dc, const Pal &P) {
         const CalSrc &s = g_calSrc[i]; const RECT &row = G.src[i]; int cy = (row.top + row.bottom) / 2;
         RECT bx = Mk(row.left + Sc(6), cy - Sc(8), row.left + Sc(22), cy + Sc(8));
         Round(dc, bx, s.col, Sc(4), FALSE);
-        if (s.show) {                                                       // галочка
-            HPEN p = CreatePen(PS_SOLID, Sc(2) > 1 ? Sc(2) : 1, OnCol(s.col)); HGDIOBJ op = SelectObject(dc, p);
-            MoveToEx(dc, bx.left + Sc(4), cy, NULL); LineTo(dc, bx.left + Sc(7), cy + Sc(3)); LineTo(dc, bx.left + Sc(12), cy - Sc(3));
-            SelectObject(dc, op); DeleteObject(p);
-        } else { RECT in = bx; InflateRect(&in, -Sc(2), -Sc(2)); Round(dc, in, P.hdr, Sc(2), FALSE); }
+        if (s.show) Tick(dc, bx, OnCol(s.col));
+        else { RECT in = bx; InflateRect(&in, -Sc(2), -Sc(2)); Round(dc, in, P.hdr, Sc(2), FALSE); }
         RECT tr = Mk(bx.right + Sc(10), row.top, row.right, row.bottom);
-        SelectObject(dc, fN); Txt(dc, i == 0 ? Tr(L_CAL_LOCAL) : s.id, tr, P.fg, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+        SelectObject(dc, fN); Txt(dc, SrcName(i), tr, P.fg, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+    }
+    {                                                                       // «показывать скрытые»
+        int cy = (G.hid.top + G.hid.bottom) / 2; RECT bx = Mk(G.hid.left + Sc(6), cy - Sc(8), G.hid.left + Sc(22), cy + Sc(8));
+        Round(dc, bx, g_calHid ? P.acc : P.bd, Sc(4), FALSE);
+        if (g_calHid) Tick(dc, bx, OnCol(P.acc)); else { RECT in = bx; InflateRect(&in, -Sc(2), -Sc(2)); Round(dc, in, P.hdr, Sc(2), FALSE); }
+        RECT tr = Mk(bx.right + Sc(10), G.hid.top, G.hid.right, G.hid.bottom); SelectObject(dc, fN); Txt(dc, Tr(L_CAL_SHOWHID), tr, P.fg, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
     }
 }
 static void PaintHead(HDC dc, const Pal &P) {
@@ -8382,19 +8480,26 @@ static void PaintHead(HDC dc, const Pal &P) {
     Button(dc, P, G.prev); Chev(dc, G.prev, -1, P.fg);
     Button(dc, P, G.next); Chev(dc, G.next, 1, P.fg);
     Button(dc, P, G.tod); SelectObject(dc, fB); Txt(dc, Tr(L_CAL_TODAY), G.tod, P.fg, DT_CENTER | DT_VCENTER);
+    Button(dc, P, G.add); Txt(dc, Tr(L_CAL_ADD), G.add, P.fg, DT_CENTER | DT_VCENTER);
     int y, m, d; Cal::CivilFromDays(sel, &y, &m, &d); wchar_t t[48]; MonthTitle(t, y, m);
     SelectObject(dc, fT); Txt(dc, t, G.title, P.fg, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
 }
 static void Plate(HDC dc, const Pal &P, int occ, I64 day, int x0, int y0, int x1, int ph, BOOL other) {      // плашка события в клетке дня
-    const Cal::Occ &o = ol.a[occ]; const Cal::Event &e = st.ev[o.ev]; COLORREF col = ColOf(&e);
+    const Cal::Occ &o = ol.a[occ]; const Cal::Event &e = st.ev[o.ev]; COLORREF col = ColOf(&e); BOOL hid = e.hidden;
     const wchar_t *s = e.summary && *e.summary ? e.summary : Tr(L_CAL_NOTITLE);
     RECT r = Mk(x0, y0, x1, y0 + ph); SelectObject(dc, fN);
-    if (o.allDay) { Round(dc, r, col, Sc(6), FALSE); r.left += Sc(6); Txt(dc, s, r, OnCol(col), DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS); return; }
-    int dd = Sc(8); RECT dot = Mk(x0 + Sc(4), y0 + (ph - dd) / 2, x0 + Sc(4) + dd, y0 + (ph - dd) / 2 + dd); Round(dc, dot, col, 0, TRUE);
-    wchar_t t[160]; t[0] = 0; int n = 0;
-    if (Cal::FloorDiv(locStart[occ], 86400) == day) { Cal::Tm tm = Cal::SecToTm(locStart[occ]); wsprintfW(t, L"%02d:%02d ", tm.h, tm.mi); n = lstrlenW(t); }
-    lstrcpynW(t + n, s, 160 - n);
-    r.left += Sc(16); Txt(dc, t, r, other ? P.dim : P.fg, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+    if (o.allDay) { Round(dc, r, hid ? Mix(col, P.bg, 30) : col, Sc(6), FALSE); r.left += Sc(6); Txt(dc, s, r, hid ? P.dim : OnCol(col), DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS); }
+    else {
+        int dd = Sc(8); RECT dot = Mk(x0 + Sc(4), y0 + (ph - dd) / 2, x0 + Sc(4) + dd, y0 + (ph - dd) / 2 + dd); Round(dc, dot, hid ? Mix(col, P.bg, 30) : col, 0, TRUE);
+        wchar_t t[160]; t[0] = 0; int n = 0;
+        if (Cal::FloorDiv(locStart[occ], 86400) == day) { Cal::Tm tm = Cal::SecToTm(locStart[occ]); wsprintfW(t, L"%02d:%02d ", tm.h, tm.mi); n = lstrlenW(t); }
+        lstrcpynW(t + n, s, 160 - n);
+        r.left += Sc(16); Txt(dc, t, r, other || hid ? P.dim : P.fg, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+    }
+    if (o.ev == selEv && day == sel) {                                       // выбранное событие - рамка
+        RECT a = Mk(x0 - 1, y0 - 1, x1 + 1, y0 + 1), b = Mk(x0 - 1, y0 + ph - 1, x1 + 1, y0 + ph + 1), c = Mk(x0 - 1, y0, x0 + 1, y0 + ph), d = Mk(x1 - 1, y0, x1 + 1, y0 + ph);
+        Fill(dc, a, P.fg); Fill(dc, b, P.fg); Fill(dc, c, P.fg); Fill(dc, d, P.fg);
+    }
 }
 static void PaintGrid(HDC dc, const Pal &P) {
     COLORREF shade = dark ? RGB(24, 24, 24) : RGB(238, 238, 238);
@@ -8413,10 +8518,9 @@ static void PaintGrid(HDC dc, const Pal &P) {
         RECT nr = Mk(cx - s / 2, r.top + Sc(3), cx - s / 2 + s, r.top + Sc(3) + s);
         if (day == today) { Round(dc, nr, P.acc, 0, TRUE); SelectObject(dc, fB); Txt(dc, t, nr, RGB(255, 255, 255), DT_CENTER | DT_VCENTER); }
         else { SelectObject(dc, fN); Txt(dc, t, nr, other ? P.dim : P.fg, DT_CENTER | DT_VCENTER); }
-        int cnt = dl.off[i + 1] - dl.off[i], y0 = r.top + Sc(31), avail = (r.bottom - Sc(3) - y0) / (ph + gap);
-        int shown = cnt <= avail ? cnt : (avail > 0 ? avail - 1 : 0);
+        int y0, shown, cnt; CellPlates(i, r, &y0, &shown, &cnt);
         for (int k = 0; k < shown; k++) Plate(dc, P, dl.items[dl.off[i] + k], day, r.left + Sc(3), y0 + k * (ph + gap), r.right - Sc(3), ph, other);
-        if (cnt > shown && avail > 0) {                                     // «+N ещё»
+        if (cnt > shown && (r.bottom - Sc(3) - y0) / (ph + gap) > 0) {      // «+N ещё»
             wchar_t mt[32]; wsprintfW(mt, Tr(L_CAL_MORE), cnt - shown);
             RECT mr = Mk(r.left + Sc(6), y0 + shown * (ph + gap), r.right - Sc(3), y0 + shown * (ph + gap) + ph); SelectObject(dc, fN); Txt(dc, mt, mr, P.dim, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
         }
@@ -8432,21 +8536,521 @@ static void PaintGrid(HDC dc, const Pal &P) {
         }
     }
 }
+static void PaintQuick(HDC dc, const Pal &P) {                              // строка быстрого ввода внизу (сам ввод - поле hQuick)
+    Round(dc, G.qbox, P.bd, Sc(8), FALSE); RECT i = G.qbox; InflateRect(&i, -1, -1); Round(dc, i, P.hdr, Sc(8), FALSE);
+    SelectObject(dc, fB); Txt(dc, Tr(L_CAL_QUICK), G.qlab, P.dim, DT_LEFT | DT_VCENTER);
+}
 static void Paint(HDC dc, int W, int H) {
     const Pal &P = dark ? ::kDark : ::kLight;
     RECT all = Mk(0, 0, W, H); Fill(dc, all, P.bg); SetBkMode(dc, TRANSPARENT);
     Layout(W, H);
     if (g_calPanel) PaintMini(dc, P);
-    PaintHead(dc, P); PaintGrid(dc, P);
+    PaintHead(dc, P); PaintGrid(dc, P); PaintQuick(dc, P);
+}
+/* ---------- диалоги: редактор события и удаление (свои, GDI; кнопки, галочки, радио и выпадающие списки рисуются сами - тёмная/светлая тема) ---------- */
+enum { R_NONE, R_SAVE, R_DELETE, R_DALL, R_DHID };
+enum { K_NONE, K_BTN, K_CHK, K_RAD, K_SEL };
+enum { E_TITLE = 100, E_ALLDAY, E_SD, E_SPREV, E_SNEXT, E_ST, E_ED, E_EPREV, E_ENEXT, E_ET, E_TZ, E_TZINFO, E_REP, E_RINT, E_RUNIT,
+       E_RWD, E_REND = E_RWD + 7, E_RENDV, E_ALST, E_ANUM, E_AUNIT, E_AADD, E_ADEL, E_LOC, E_DESC, E_SRC, E_KEEP = E_SRC + 8, E_NOTE, E_ERR, E_DEL,
+       E_LAB, E_DMSG = E_LAB + 12, E_DHINT, E_DALL, E_DHID, E_END };
+static HWND ed, ec[E_END]; static BYTE eKind[E_END]; static int eVal[E_END]; static RECT eFr[E_END];   // ec - элементы по id; eVal - галочка/выбранный пункт; eFr - рамка поля
+static Cal::Event *eEv; static BOOL eNew, eDelMode, eRaw, eDone, eCust, eBusy; static int eRes, eOrigSrc, eRep0, eAl[16], eNal, eTzN, eOutSrc; static BOOL eOutKeep;
+static I64 eS, eEn; static wchar_t eTzX[80], eErr[100]; static HBRUSH hbBg, hbFld;     // eS, eEn - начало и конец (стенные секунды пояса события; у целодневного конец - последний день включительно)
+
+static void SetT(int id, const wchar_t *t) { SetWindowTextW(ec[id], t); }
+static void GetT(int id, wchar_t *o, int cap) { GetWindowTextW(ec[id], o, cap); }
+static BOOL TxtEmpty(int id) { return GetWindowTextLengthW(ec[id]) == 0; }
+static void ErrMsg(int lid) { SetT(E_ERR, lid ? Tr(lid) : L""); }
+static void Fail(int lid, int ctl) { ErrMsg(lid); SetFocus(ec[ctl]); SendMessageW(ec[ctl], EM_SETSEL, 0, -1); MessageBeep(MB_ICONWARNING); }
+/* списки выбора (Sel): пункты зависят от поля */
+static int SelCount(int id) {
+    if (id == E_REP) return eRaw ? 7 : 6;
+    if (id == E_TZ) return 2 + eTzN + (eTzX[0] ? 1 : 0);
+    return id == E_RUNIT ? 4 : 3;
+}
+static void SelText(int id, int i, wchar_t *o, int cap) {
+    o[0] = 0;
+    if (id == E_REP) { if (i < 6) Item(Tr(L_CAL_ED_REPS), i, o, cap); else { wchar_t r[60]; lstrcpynW(r, eEv->rrule ? eEv->rrule : L"", 60); wsprintfW(o, Tr(L_CAL_ED_REPRAW), r); } }
+    else if (id == E_TZ) {
+        if (i == 0) lstrcpynW(o, Tr(L_CAL_ED_FLOAT), cap); else if (i == 1) lstrcpynW(o, L"UTC", cap);
+        else if (i - 2 < eTzN) { const char *ia, *wn; if (Cal::ZoneMapGet(i - 2, &ia, &wn)) Cal::Widen(o, ia, cap); } else lstrcpynW(o, eTzX, cap);
+    }
+    else if (id == E_RUNIT) Item(Tr(L_CAL_ED_UNITS), i, o, cap);
+    else if (id == E_REND) Item(Tr(L_CAL_ED_ENDS), i, o, cap);
+    else if (id == E_AUNIT) Item(Tr(L_CAL_ED_AUNITS), i, o, cap);
+}
+static void TzStr(int idx, wchar_t *o) { if (idx == 0) o[0] = 0; else if (idx == 1) lstrcpyW(o, L"UTC"); else SelText(E_TZ, idx, o, 80); }
+static int TzIdxOf(const wchar_t *tz) {                      // номер пояса в списке; незнакомый TZID дописывается в конец
+    if (!tz || !*tz) return 0;
+    if (Cal::IsUtcName(tz)) return 1;
+    const char *ia, *wn; for (int i = 0; Cal::ZoneMapGet(i, &ia, &wn); i++) if (Cal::EqIA(tz, ia)) return 2 + i;
+    lstrcpynW(eTzX, tz, 80); return 2 + eTzN;
+}
+static void AlarmText(int m, wchar_t *o) {
+    if (m == 0) Item(Tr(L_CAL_ED_AFMT), 3, o, 60);
+    else { wchar_t f[40]; int k = m % 1440 == 0 ? 2 : m % 60 == 0 ? 1 : 0; Item(Tr(L_CAL_ED_AFMT), k, f, 40); wsprintfW(o, f, k == 2 ? m / 1440 : k == 1 ? m / 60 : m); }
+}
+static void AlarmsShow(void) { SendMessageW(ec[E_ALST], LB_RESETCONTENT, 0, 0); for (int i = 0; i < eNal; i++) { wchar_t t[60]; AlarmText(eAl[i], t); SendMessageW(ec[E_ALST], LB_ADDSTRING, 0, (LPARAM)t); } }
+static void AlarmAdd(void) {
+    wchar_t t[16]; GetT(E_ANUM, t, 16); const wchar_t *q = t; int v = ToInt(q);
+    if (TxtEmpty(E_ANUM) || v < 0 || v > 99999) { Fail(L_CAL_ED_BADNUM, E_ANUM); return; }
+    ErrMsg(0); int m = v * (eVal[E_AUNIT] == 0 ? 1 : eVal[E_AUNIT] == 1 ? 60 : 1440);
+    for (int i = 0; i < eNal; i++) if (eAl[i] == m) return;
+    if (eNal >= 16) return;
+    int k = eNal++; while (k > 0 && eAl[k - 1] > m) { eAl[k] = eAl[k - 1]; k--; } eAl[k] = m;       // по возрастанию
+    AlarmsShow();
+}
+static void AlarmDel(void) {
+    int s = (int)SendMessageW(ec[E_ALST], LB_GETCURSEL, 0, 0); if (s < 0 || s >= eNal) return;
+    for (int i = s; i < eNal - 1; i++) eAl[i] = eAl[i + 1];
+    eNal--; AlarmsShow(); if (eNal) SendMessageW(ec[E_ALST], LB_SETCURSEL, s < eNal ? s : eNal - 1, 0);
+}
+/* начало и конец */
+static void UpdTz(void) {                                    // «= 12:00 по местному» для события в чужом поясе
+    wchar_t t[80], o[100]; o[0] = 0;
+    if (!eVal[E_ALLDAY] && eVal[E_TZ] != 0) {
+        TzStr(eVal[E_TZ], t); I64 lw = Cal::UtcToWall(Cal::WallToUtc(eS, t), L"");
+        if (lw != eS) { Cal::Tm tm = Cal::SecToTm(lw); wchar_t f[24]; wsprintfW(f, L"%02d.%02d %02d:%02d", tm.d, tm.mo, tm.h, tm.mi); wsprintfW(o, Tr(L_CAL_ED_TZLOCAL), f); }
+    }
+    SetT(E_TZINFO, o);
+}
+static void ShowFields(void) {
+    wchar_t t[24]; eBusy = TRUE; I64 d = Cal::FloorDiv(eS, 86400), e = Cal::FloorDiv(eEn, 86400);
+    Cal::FmtDay(t, d); SetT(E_SD, t); Cal::FmtTod(t, (int)(eS - d * 86400)); SetT(E_ST, t);
+    Cal::FmtDay(t, e); SetT(E_ED, t); Cal::FmtTod(t, (int)(eEn - e * 86400)); SetT(E_ET, t);
+    eBusy = FALSE; ErrMsg(0); UpdTz();
+}
+static int ReadDT(int idD, int idT, I64 *out, int *bad) {   // 0 - разобрано, иначе номер текста ошибки; *bad - поле
+    wchar_t t[40]; I64 d; int tod = 0;
+    GetT(idD, t, 40); if (!Cal::ParseDayStr(t, today, &d)) { *bad = idD; return L_CAL_ED_BADDATE; }
+    if (!eVal[E_ALLDAY]) { GetT(idT, t, 40); if (!Cal::ParseTodStr(t, &tod)) { *bad = idT; return L_CAL_ED_BADTIME; } }
+    *out = d * 86400 + tod; return 0;
+}
+static BOOL SyncStart(BOOL report) {                         // поля начала -> eS; конец сдвигается на столько же (длительность сохраняется)
+    I64 v; int bad = 0, e = ReadDT(E_SD, E_ST, &v, &bad);
+    if (e) { if (report) Fail(e, bad); else { ShowFields(); ErrMsg(e); } return FALSE; }
+    eEn += v - eS; eS = v; ShowFields(); return TRUE;
+}
+static BOOL SyncEnd(BOOL report) {
+    I64 v; int bad = 0, e = ReadDT(E_ED, E_ET, &v, &bad);
+    if (e) { if (report) Fail(e, bad); else { ShowFields(); ErrMsg(e); } return FALSE; }
+    eEn = v < eS ? eS : v; ShowFields(); return TRUE;
+}
+/* раскладка (числа - при 96 dpi) */
+static void Put(int id, int x, int y, int w, int h, BOOL show, int ix = 0, int iy = 0) {
+    HWND c = ec[id]; if (!c) return;
+    eFr[id] = Mk(Sc(x), Sc(y), Sc(x + w), Sc(y + h));
+    if (!show || !ix) memset(&eFr[id], 0, sizeof(RECT));
+    SetWindowPos(c, NULL, Sc(x + ix), Sc(y + iy), Sc(w - 2 * ix), Sc(h - 2 * iy), SWP_NOZORDER | SWP_NOACTIVATE | (show ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+}
+static const int EW = 600;                                   // ширина клиентской области редактора
+static int EdLayout(void) {
+    const int X0 = 16, LW = 100, FX = X0 + LW, FW = EW - FX - X0; int y = 14;
+    BOOL ad = eVal[E_ALLDAY], cust = eVal[E_REP] == 5, wk = cust && eVal[E_RUNIT] == 1, note = eEv->hasRec || eEv->rrule || eVal[E_REP] != 0;
+    Put(E_NOTE, X0, y, EW - 2 * X0, 18, note); if (note) y += 24;
+    Put(E_LAB + 0, X0, y + 5, LW - 6, 18, TRUE); Put(E_TITLE, FX, y, FW, 28, TRUE, 6, 6); y += 36;
+    Put(E_ALLDAY, FX, y, 220, 24, TRUE); y += 32;
+    Put(E_LAB + 1, X0, y + 5, LW - 6, 18, TRUE); Put(E_SD, FX, y, 112, 28, TRUE, 6, 6); Put(E_SPREV, FX + 118, y, 26, 28, TRUE); Put(E_SNEXT, FX + 146, y, 26, 28, TRUE); Put(E_ST, FX + 182, y, 72, 28, !ad, 6, 6); y += 36;
+    Put(E_LAB + 2, X0, y + 5, LW - 6, 18, TRUE); Put(E_ED, FX, y, 112, 28, TRUE, 6, 6); Put(E_EPREV, FX + 118, y, 26, 28, TRUE); Put(E_ENEXT, FX + 146, y, 26, 28, TRUE); Put(E_ET, FX + 182, y, 72, 28, !ad, 6, 6); y += 36;
+    Put(E_LAB + 3, X0, y + 5, LW - 6, 18, !ad); Put(E_TZ, FX, y, 250, 28, !ad); Put(E_TZINFO, FX + 260, y + 6, FW - 260, 18, !ad); if (!ad) y += 36;
+    Put(E_LAB + 4, X0, y + 5, LW - 6, 18, TRUE); Put(E_REP, FX, y, 250, 28, TRUE); y += 36;
+    Put(E_LAB + 5, X0, y + 5, LW - 6, 18, cust); Put(E_RINT, FX, y, 64, 28, cust, 6, 6); Put(E_RUNIT, FX + 72, y, 130, 28, cust); if (cust) y += 36;
+    for (int i = 0; i < 7; i++) Put(E_RWD + i, FX + i * (FW / 7), y, FW / 7, 24, wk); if (wk) y += 30;
+    Put(E_REND, FX, y, 160, 28, cust); Put(E_RENDV, FX + 170, y, 120, 28, cust && eVal[E_REND] != 0, 6, 6); if (cust) y += 36;
+    Put(E_LAB + 6, X0, y + 5, LW - 6, 18, TRUE); Put(E_ALST, FX, y, 250, 72, TRUE, 3, 3);
+    Put(E_ANUM, FX + 262, y, 56, 28, TRUE, 6, 6); Put(E_AUNIT, FX + 326, y, 100, 28, TRUE); Put(E_AADD, FX + 262, y + 36, 96, 28, TRUE); Put(E_ADEL, FX + 366, y + 36, 96, 28, TRUE); y += 80;
+    Put(E_LAB + 7, X0, y + 5, LW - 6, 18, TRUE); Put(E_LOC, FX, y, FW, 28, TRUE, 6, 6); y += 36;
+    Put(E_LAB + 8, X0, y + 5, LW - 6, 18, TRUE); Put(E_DESC, FX, y, FW, 84, TRUE, 6, 5); y += 92;
+    int n = g_ncalSrc < 8 ? g_ncalSrc : 8, sw = FW / n < 150 ? FW / n : 150;
+    Put(E_LAB + 9, X0, y + 3, LW - 6, 18, TRUE); for (int i = 0; i < 8; i++) Put(E_SRC + i, FX + i * sw, y, sw, 24, i < n); y += 30;
+    BOOL keep = n > 1 && !eNew && eOrigSrc >= 0; Put(E_KEEP, FX, y, FW, 24, keep); if (keep) y += 30;
+    y += 6; Put(E_DEL, X0, y, 112, 32, !eNew); Put(E_ERR, X0 + 122, y + 7, 250, 20, TRUE); Put(IDOK, EW - X0 - 232, y, 112, 32, TRUE); Put(IDCANCEL, EW - X0 - 112, y, 112, 32, TRUE);
+    return y + 32 + 14;
+}
+static void ResizeEd(int h96) {                              // подогнать окно под клиентскую область (EW x h96)
+    RECT r = {0, 0, Sc(EW), Sc(h96)}; AdjustWindowRectExForDpi(&r, WS_POPUP | WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_DLGMODALFRAME, dpi);
+    SetWindowPos(ed, NULL, 0, 0, r.right - r.left, r.bottom - r.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+static void CenterEd(void) {                                 // по центру окна календаря, в пределах рабочей области
+    RECT o, r; GetWindowRect(hw, &o); GetWindowRect(ed, &r); int w = r.right - r.left, h = r.bottom - r.top;
+    MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoW(MonitorFromWindow(hw, MONITOR_DEFAULTTONEAREST), &mi);
+    int x = (o.left + o.right - w) / 2, y = (o.top + o.bottom - h) / 2;
+    if (x + w > mi.rcWork.right) x = mi.rcWork.right - w; if (y + h > mi.rcWork.bottom) y = mi.rcWork.bottom - h;
+    if (x < mi.rcWork.left) x = mi.rcWork.left; if (y < mi.rcWork.top) y = mi.rcWork.top;
+    SetWindowPos(ed, NULL, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+/* выпадающий список: меню под полем */
+static void TzMenu(HMENU m, int cur) {                       // пояса по частям света (Europe, Asia, ...), первыми - плавающий и UTC
+    AppendMenuW(m, MF_STRING | (cur == 0 ? MF_CHECKED : 0), 1, Tr(L_CAL_ED_FLOAT));
+    AppendMenuW(m, MF_STRING | (cur == 1 ? MF_CHECKED : 0), 2, L"UTC"); AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    HMENU sub[12]; wchar_t pre[12][16]; int ns = 0;
+    for (int i = 0; i < eTzN; i++) {
+        const char *ia, *wn; Cal::ZoneMapGet(i, &ia, &wn); int pl = 0; while (ia[pl] && ia[pl] != '/') pl++;
+        int k = 0; for (; k < ns; k++) { int j = 0; while (j < pl && pre[k][j] == (wchar_t)ia[j]) j++; if (j == pl && !pre[k][pl]) break; }
+        if (k == ns) { if (ns >= 12 || pl > 15) continue; sub[ns] = CreatePopupMenu(); for (int j = 0; j < pl; j++) pre[ns][j] = (wchar_t)ia[j]; pre[ns][pl] = 0; AppendMenuW(m, MF_POPUP, (UINT_PTR)sub[ns], pre[ns]); ns++; }
+        wchar_t nm[64]; Cal::Widen(nm, ia + pl + (ia[pl] ? 1 : 0), 64); for (wchar_t *q = nm; *q; q++) if (*q == L'_') *q = L' ';
+        AppendMenuW(sub[k], MF_STRING | (cur == 2 + i ? MF_CHECKED : 0), 3 + i, nm);
+    }
+    if (eTzX[0]) AppendMenuW(m, MF_STRING | (cur == 2 + eTzN ? MF_CHECKED : 0), 3 + eTzN, eTzX);
+}
+static void SelSet(int id, int v) {
+    if (eVal[id] == v) return;
+    eVal[id] = v; InvalidateRect(ec[id], NULL, FALSE);
+    if (id == E_REP || id == E_RUNIT || id == E_REND) { if (id != E_REP) eCust = TRUE; ResizeEd(EdLayout()); InvalidateRect(ed, NULL, TRUE); }
+    else if (id == E_TZ) UpdTz();
+}
+static void SelPopup(int id) {
+    HMENU m = CreatePopupMenu(); int n = SelCount(id);
+    if (id == E_TZ) TzMenu(m, eVal[id]);
+    else for (int i = 0; i < n; i++) { wchar_t t[120]; SelText(id, i, t, 120); AppendMenuW(m, MF_STRING | (i == eVal[id] ? MF_CHECKED : 0), i + 1, t); }
+    RECT r; GetWindowRect(ec[id], &r);
+    int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN, r.left, r.bottom, 0, ed, NULL);
+    DestroyMenu(m); if (cmd > 0) SelSet(id, cmd - 1);
+}
+/* рисование элементов */
+static void DrawCtl(const DRAWITEMSTRUCT *d) {
+    const Pal &P = dark ? ::kDark : ::kLight; int id = (int)d->CtlID, k = eKind[id]; HDC dc = d->hDC; RECT r = d->rcItem;
+    BOOL on = eVal[id] != 0, dis = (d->itemState & ODS_DISABLED) != 0, pr = (d->itemState & ODS_SELECTED) != 0;
+    wchar_t t[160]; if (k == K_SEL) SelText(id, eVal[id], t, 160); else GetWindowTextW(d->hwndItem, t, 160);
+    Fill(dc, r, P.bg); SetBkMode(dc, TRANSPARENT); SelectObject(dc, fN);
+    COLORREF fg = dis ? P.dim : P.fg;
+    if (k == K_BTN) {
+        COLORREF bg = id == IDOK ? P.acc : pr ? P.sel : P.hdr; Round(dc, r, P.bd, Sc(6), FALSE); RECT i = r; InflateRect(&i, -1, -1); Round(dc, i, bg, Sc(6), FALSE);
+        Txt(dc, t, r, id == IDOK ? OnCol(P.acc) : fg, DT_CENTER | DT_VCENTER | DT_END_ELLIPSIS);
+    } else if (k == K_SEL) {
+        Fill(dc, r, P.bd); RECT i = r; InflateRect(&i, -1, -1); Fill(dc, i, pr ? P.sel : P.hdr);
+        RECT tr = Mk(r.left + Sc(8), r.top, r.right - Sc(22), r.bottom); Txt(dc, t, tr, fg, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+        RECT ar = Mk(r.right - Sc(22), r.top, r.right - Sc(6), r.bottom); HPEN p = CreatePen(PS_SOLID, 1, P.dim); HGDIOBJ op = SelectObject(dc, p); int cx = (ar.left + ar.right) / 2, cy = (ar.top + ar.bottom) / 2, a = Sc(4);
+        for (int j = 0; j < 2; j++) { MoveToEx(dc, cx - a, cy - a / 2 + j, NULL); LineTo(dc, cx, cy + a / 2 + j); LineTo(dc, cx + a + 1, cy - a / 2 + j - 1); }
+        SelectObject(dc, op); DeleteObject(p);
+    } else {                                                                // галочка или радио: квадрат/круг 16 и подпись справа
+        int bs = Sc(16), cy = (r.top + r.bottom) / 2; RECT bx = Mk(r.left + Sc(2), cy - bs / 2, r.left + Sc(2) + bs, cy - bs / 2 + bs);
+        BOOL rad = k == K_RAD; Round(dc, bx, dis ? P.dim : P.bd, Sc(4), rad); RECT in = bx; InflateRect(&in, -1, -1); Round(dc, in, on && !rad ? P.acc : P.hdr, Sc(4), rad);
+        if (on && !rad) Tick(dc, Mk(bx.left - Sc(1), bx.top, bx.right, bx.bottom), OnCol(P.acc));
+        if (on && rad) { RECT dt = bx; InflateRect(&dt, -Sc(4), -Sc(4)); Round(dc, dt, P.acc, 0, TRUE); }
+        RECT tr = Mk(bx.right + Sc(8), r.top, r.right, r.bottom); Txt(dc, t, tr, fg, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+    }
+    if (d->itemState & ODS_FOCUS) { RECT f = r; InflateRect(&f, -Sc(2), -Sc(2)); DrawFocusRect(dc, &f); }
+}
+static void PaintEd(HDC dc) {                                // рамки полей ввода
+    const Pal &P = dark ? ::kDark : ::kLight; HBRUSH bd = CreateSolidBrush(P.bd), fl = CreateSolidBrush(P.hdr);
+    for (int id = E_TITLE; id < E_END; id++) {
+        if (!ec[id] || (eFr[id].right == 0 && eFr[id].bottom == 0) || !IsWindowVisible(ec[id])) continue;
+        FillRect(dc, &eFr[id], fl); FrameRect(dc, &eFr[id], bd);
+    }
+    DeleteObject(bd); DeleteObject(fl);
+}
+/* сбор значений и сохранение */
+static wchar_t *EditText(int id) { int n = GetWindowTextLengthW(ec[id]); wchar_t *t = (wchar_t *)Alloc((n + 1) * sizeof(wchar_t)); GetWindowTextW(ec[id], t, n + 1); return t; }
+static BOOL ReadNum(int id, int *v) { wchar_t t[16]; GetT(id, t, 16); const wchar_t *q = t; *v = ToInt(q); return !TxtEmpty(id) && *v > 0 && *v < 100000; }
+static BOOL CollectRule(const wchar_t *tz) {                 // FALSE - ошибка (поле подсвечено); правило не тронуто, если выбор и свои поля не менялись
+    int rep = eVal[E_REP]; if ((rep == eRep0 && !eCust) || rep == 6) return TRUE;
+    wchar_t r[200]; r[0] = 0; Cal::RuleSpec sp; memset(&sp, 0, sizeof sp); sp.interval = 1; BOOL ad = eVal[E_ALLDAY] != 0;
+    if (rep >= 1 && rep <= 4) sp.freq = rep;
+    else if (rep == 5) {
+        sp.freq = eVal[E_RUNIT] + 1;
+        if (!ReadNum(E_RINT, &sp.interval)) { Fail(L_CAL_ED_BADNUM, E_RINT); return FALSE; }
+        if (sp.freq == 2) for (int i = 0; i < 7; i++) if (eVal[E_RWD + i]) sp.wdMask |= 1 << i;
+        sp.endKind = eVal[E_REND];
+        if (sp.endKind == 1) { wchar_t t[40]; GetT(E_RENDV, t, 40); if (!Cal::ParseDayStr(t, today, &sp.untilDay)) { Fail(L_CAL_ED_BADDATE, E_RENDV); return FALSE; } }
+        else if (sp.endKind == 2 && !ReadNum(E_RENDV, &sp.count)) { Fail(L_CAL_ED_BADNUM, E_RENDV); return FALSE; }
+    }
+    Cal::RuleBuild(sp, ad, tz, r, 200); Cal::SetStr(&eEv->rrule, r[0] ? r : NULL); return TRUE;
+}
+static BOOL DoSave(void) {                                   // поля -> рабочая копия события
+    ErrMsg(0); if (!SyncStart(TRUE) || !SyncEnd(TRUE)) return FALSE;
+    BOOL ad = eVal[E_ALLDAY] != 0; wchar_t tz[80]; TzStr(eVal[E_TZ], tz);
+    if (!CollectRule(ad ? L"" : tz)) return FALSE;
+    wchar_t *t = EditText(E_TITLE); Cal::SetStr(&eEv->summary, t); Free(t);
+    t = EditText(E_LOC); Cal::SetStr(&eEv->loc, *t ? t : NULL); Free(t);
+    t = EditText(E_DESC); { int o = 0; for (int i = 0; t[i]; i++) if (t[i] != L'\r') t[o++] = t[i]; t[o] = 0; } Cal::SetStr(&eEv->desc, *t ? t : NULL); Free(t);
+    eEv->allDay = ad; Cal::SetStr(&eEv->tzid, ad ? NULL : tz);
+    if (ad) { eEv->start = Cal::FloorDiv(eS, 86400) * 86400; eEv->end = (Cal::FloorDiv(eEn, 86400) + 1) * 86400; if (eEv->end < eEv->start + 86400) eEv->end = eEv->start + 86400; }
+    else { eEv->start = eS; eEv->end = eEn < eS ? eS : eEn; }
+    Free(eEv->alarms); eEv->alarms = NULL; eEv->nal = 0; for (int i = 0; i < eNal; i++) Cal::AddAlarm(eEv, eAl[i]);
+    eOutSrc = -1; for (int i = 0; i < g_ncalSrc && i < 8; i++) if (eVal[E_SRC + i]) eOutSrc = i;
+    eOutKeep = eVal[E_KEEP] && IsWindowEnabled(ec[E_KEEP]); return TRUE;
+}
+static void SrcPick(int i) {
+    for (int k = 0; k < 8; k++) { eVal[E_SRC + k] = k == i; if (ec[E_SRC + k]) InvalidateRect(ec[E_SRC + k], NULL, FALSE); }
+    EnableWindow(ec[E_KEEP], !eNew && eOrigSrc >= 0 && i != eOrigSrc); InvalidateRect(ec[E_KEEP], NULL, FALSE);
+}
+static void AllDayToggle(void) {
+    eVal[E_ALLDAY] = !eVal[E_ALLDAY]; InvalidateRect(ec[E_ALLDAY], NULL, FALSE);
+    if (!eVal[E_ALLDAY] && eS % 86400 == 0 && eEn % 86400 == 0) {          // из целодневного во временное: 9:00-10:00 вместо 0:00-0:00
+        I64 sd = Cal::FloorDiv(eS, 86400), ed2 = Cal::FloorDiv(eEn, 86400); eS = sd * 86400 + 9 * 3600; eEn = ed2 == sd ? eS + 3600 : ed2 * 86400 + 10 * 3600;
+    }
+    ShowFields(); ResizeEd(EdLayout()); InvalidateRect(ed, NULL, TRUE);
+}
+static void StepDate(int id, int dir) {                      // кнопки ‹ ›: день назад/вперёд (начало тянет за собой конец)
+    if (id == E_SPREV || id == E_SNEXT) { if (!SyncStart(FALSE)) return; eS += dir * 86400; eEn += dir * 86400; }
+    else { if (!SyncEnd(FALSE)) return; if (eEn + dir * 86400 >= eS) eEn += dir * 86400; }
+    ShowFields();
+}
+static LRESULT CALLBACK EdProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    const Pal &P = dark ? ::kDark : ::kLight;
+    switch (m) {
+    case WM_ERASEBKGND: { RECT r; GetClientRect(h, &r); FillRect((HDC)w, &r, hbBg); return 1; }
+    case WM_PAINT: { PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); PaintEd(dc); EndPaint(h, &ps); return 0; }
+    case WM_DRAWITEM: DrawCtl((const DRAWITEMSTRUCT *)l); return TRUE;
+    case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX: SetTextColor((HDC)w, P.fg); SetBkColor((HDC)w, P.hdr); return (LRESULT)hbFld;
+    case WM_CTLCOLORSTATIC: {
+        int id = GetDlgCtrlID((HWND)l); SetBkColor((HDC)w, P.bg);
+        SetTextColor((HDC)w, id == E_ERR ? RGB(224, 80, 80) : id == E_NOTE || id == E_TZINFO || id == E_DHINT ? P.dim : P.fg);
+        return (LRESULT)hbBg;
+    }
+    case WM_COMMAND: {
+        int id = LOWORD(w), nf = HIWORD(w); if (eBusy) return 0;
+        if (nf == EN_KILLFOCUS) { if (id == E_SD || id == E_ST) SyncStart(FALSE); else if (id == E_ED || id == E_ET) SyncEnd(FALSE); return 0; }
+        if (nf == EN_CHANGE) { if (id == E_RINT || id == E_RENDV) eCust = TRUE; return 0; }
+        if (nf != BN_CLICKED) return 0;
+        if (id == IDOK) { if (!eDelMode && DoSave()) { eRes = R_SAVE; eDone = TRUE; } }
+        else if (id == IDCANCEL) { eRes = R_NONE; eDone = TRUE; }
+        else if (id == E_DEL) { eRes = R_DELETE; eDone = TRUE; }
+        else if (id == E_DALL) { eRes = R_DALL; eDone = TRUE; }
+        else if (id == E_DHID) { eRes = R_DHID; eDone = TRUE; }
+        else if (id == E_ALLDAY) AllDayToggle();
+        else if (id == E_SPREV || id == E_ENEXT || id == E_SNEXT || id == E_EPREV) StepDate(id, id == E_SPREV || id == E_EPREV ? -1 : 1);
+        else if (id == E_TZ || id == E_REP || id == E_RUNIT || id == E_REND || id == E_AUNIT) { SetFocus(ec[id]); SelPopup(id); }
+        else if (id >= E_RWD && id < E_RWD + 7) { eVal[id] = !eVal[id]; eCust = TRUE; InvalidateRect(ec[id], NULL, FALSE); }
+        else if (id >= E_SRC && id < E_SRC + 8) SrcPick(id - E_SRC);
+        else if (id == E_KEEP) { eVal[id] = !eVal[id]; InvalidateRect(ec[id], NULL, FALSE); }
+        else if (id == E_AADD) AlarmAdd();
+        else if (id == E_ADEL) AlarmDel();
+        return 0;
+    }
+    case WM_CLOSE: eRes = R_NONE; eDone = TRUE; return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+static HWND Ctl(int id, const wchar_t *cls, const wchar_t *txt, DWORD style, int kind = K_NONE) {
+    if (kind) style |= BS_OWNERDRAW | WS_TABSTOP;
+    HWND c = CreateWindowExW(0, cls, txt, WS_CHILD | style, 0, 0, 10, 10, ed, (HMENU)(INT_PTR)id, g_inst, NULL);
+    SendMessageW(c, WM_SETFONT, (WPARAM)fN, TRUE); ec[id] = c; eKind[id] = (BYTE)kind; return c;
+}
+static void Btn(int id, const wchar_t *t) { Ctl(id, L"BUTTON", t, 0, K_BTN); }
+static void Lab(int id, const wchar_t *t) { Ctl(id, L"STATIC", t, SS_LEFT); }
+static void Fld(int id, DWORD extra = 0) { Ctl(id, L"EDIT", L"", WS_TABSTOP | ES_AUTOHSCROLL | extra); }
+static void MakeEd(void) {
+    Lab(E_NOTE, L""); Lab(E_LAB + 0, Tr(L_CAL_ED_NAME)); Fld(E_TITLE); SendMessageW(ec[E_TITLE], EM_SETLIMITTEXT, 300, 0);
+    Ctl(E_ALLDAY, L"BUTTON", Tr(L_CAL_ED_ALLDAY), 0, K_CHK);
+    Lab(E_LAB + 1, Tr(L_CAL_ED_START)); Fld(E_SD); Btn(E_SPREV, L"\x2039"); Btn(E_SNEXT, L"\x203A"); Fld(E_ST);
+    Lab(E_LAB + 2, Tr(L_CAL_ED_END)); Fld(E_ED); Btn(E_EPREV, L"\x2039"); Btn(E_ENEXT, L"\x203A"); Fld(E_ET);
+    Lab(E_LAB + 3, Tr(L_CAL_ED_TZ)); Ctl(E_TZ, L"BUTTON", L"", 0, K_SEL); Lab(E_TZINFO, L"");
+    Lab(E_LAB + 4, Tr(L_CAL_ED_REPEAT)); Ctl(E_REP, L"BUTTON", L"", 0, K_SEL);
+    Lab(E_LAB + 5, Tr(L_CAL_ED_EVERY)); Fld(E_RINT, ES_NUMBER); Ctl(E_RUNIT, L"BUTTON", L"", 0, K_SEL);
+    for (int i = 0; i < 7; i++) { wchar_t n[16]; Item(Tr(L_CAL_DAYS), i, n, 16); Ctl(E_RWD + i, L"BUTTON", n, 0, K_CHK); }
+    Ctl(E_REND, L"BUTTON", L"", 0, K_SEL); Fld(E_RENDV);
+    Lab(E_LAB + 6, Tr(L_CAL_ED_ALARMS)); Ctl(E_ALST, L"LISTBOX", L"", WS_TABSTOP | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT);
+    Fld(E_ANUM, ES_NUMBER); Ctl(E_AUNIT, L"BUTTON", L"", 0, K_SEL); Btn(E_AADD, Tr(L_CAL_ED_AADD)); Btn(E_ADEL, Tr(L_CAL_ED_ADEL));
+    Lab(E_LAB + 7, Tr(L_CAL_ED_LOC)); Fld(E_LOC); SendMessageW(ec[E_LOC], EM_SETLIMITTEXT, 300, 0);
+    Lab(E_LAB + 8, Tr(L_CAL_ED_DESC)); Ctl(E_DESC, L"EDIT", L"", WS_TABSTOP | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN); SendMessageW(ec[E_DESC], EM_SETLIMITTEXT, 100000, 0);
+    Lab(E_LAB + 9, Tr(L_CAL_ED_SRC)); for (int i = 0; i < g_ncalSrc && i < 8; i++) Ctl(E_SRC + i, L"BUTTON", SrcName(i), 0, K_RAD);
+    Ctl(E_KEEP, L"BUTTON", Tr(L_CAL_ED_KEEP), 0, K_CHK); Lab(E_ERR, L"");
+    Btn(E_DEL, Tr(L_CAL_ED_DEL)); Btn(IDOK, Tr(L_CAL_ED_SAVE)); Btn(IDCANCEL, Tr(L_CANCEL));
+}
+static void FillEd(void) {                                   // событие -> поля
+    Cal::Event *e = eEv; eBusy = TRUE;
+    SetT(E_TITLE, e->summary ? e->summary : L""); SetT(E_LOC, e->loc ? e->loc : L"");
+    { Buf b = {0}; if (e->desc) for (const wchar_t *p = e->desc; *p; p++) { if (*p == L'\n') BufAdd(&b, L"\r\n"); else if (*p != L'\r') BufAdd(&b, p, 1); } SetT(E_DESC, b.p ? b.p : L""); Free(b.p); }
+    eVal[E_ALLDAY] = e->allDay; eS = e->start; eEn = e->allDay ? (e->end > e->start + 86400 ? e->end - 86400 : e->start) : (e->end < e->start ? e->start : e->end);
+    wchar_t lt[80]; Cal::LocalTzid(lt, 80); eTzX[0] = 0;
+    eVal[E_TZ] = TzIdxOf(e->allDay || !e->tzid ? lt : e->tzid);
+    eNal = 0; for (int i = 0; i < e->nal && i < 16; i++) { int k = eNal++; while (k > 0 && eAl[k - 1] > e->alarms[i]) { eAl[k] = eAl[k - 1]; k--; } eAl[k] = e->alarms[i]; }
+    AlarmsShow(); SetT(E_ANUM, L"10"); eVal[E_AUNIT] = 0;
+    Cal::RuleSpec sp; BOOL simple = Cal::RuleSpecParse(e->rrule, e, &sp); int rep = 0;
+    if (!e->rrule || !*e->rrule) rep = 0;
+    else if (!simple) { eRaw = TRUE; rep = 6; memset(&sp, 0, sizeof sp); sp.interval = 1; }
+    else rep = sp.interval == 1 && sp.endKind == 0 && (sp.freq != 2 || sp.wdMask == 0 || sp.wdMask == 1 << Cal::Weekday(Cal::FloorDiv(e->start, 86400))) ? sp.freq : 5;
+    eVal[E_REP] = eRep0 = rep; eCust = FALSE;
+    wchar_t t[24]; wsprintfW(t, L"%d", sp.interval < 1 ? 1 : sp.interval); SetT(E_RINT, t); eVal[E_RUNIT] = sp.freq ? sp.freq - 1 : 1;
+    int wm = sp.wdMask ? sp.wdMask : 1 << Cal::Weekday(Cal::FloorDiv(e->start, 86400)); for (int i = 0; i < 7; i++) eVal[E_RWD + i] = (wm >> i) & 1;
+    eVal[E_REND] = sp.endKind; if (sp.endKind == 1) Cal::FmtDay(t, sp.untilDay); else if (sp.endKind == 2) wsprintfW(t, L"%d", sp.count); else lstrcpyW(t, L"10"); SetT(E_RENDV, t);
+    SetT(E_NOTE, Tr(e->hasRec ? L_CAL_ED_RECID : L_CAL_ED_SERIES));
+    for (int i = 0; i < 8; i++) eVal[E_SRC + i] = i == eOrigSrc;
+    EnableWindow(ec[E_KEEP], FALSE); eVal[E_KEEP] = FALSE;
+    eBusy = FALSE; ShowFields();
+}
+// Диалог события: ev - рабочая копия (меняется при «Сохранить»). Возвращает R_SAVE / R_DELETE / R_NONE; *outSrc - выбранный источник (-1 - не выбран), *outKeep - оставить копию в прежнем.
+static int RunModal(void) {
+    EnableWindow(hw, FALSE); InterlockedExchange(&g_modal, 1);
+    MSG msg;
+    while (!eDone && GetMessageW(&msg, NULL, 0, 0) > 0) {
+        if (msg.message == WM_KEYDOWN) {
+            HWND f = GetFocus(); BOOL mine = f && (f == ed || IsChild(ed, f)); int id = mine && f != ed ? GetDlgCtrlID(f) : 0;
+            if (mine && msg.wParam == VK_ESCAPE) { eRes = R_NONE; break; }
+            if (mine && msg.wParam == VK_RETURN) {
+                if (id == E_DESC && !(GetKeyState(VK_CONTROL) & 0x8000)) { /* перевод строки в описании */ }
+                else if (id == E_ANUM) { SendMessageW(ed, WM_COMMAND, E_AADD, 0); continue; }
+                else if (id > 0 && id < E_END && eKind[id] == K_BTN) { SendMessageW(f, BM_CLICK, 0, 0); continue; }
+                else { SendMessageW(ed, WM_COMMAND, eDelMode ? IDCANCEL : IDOK, 0); continue; }
+            }
+        }
+        if (!IsDialogMessage(ed, &msg)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
+    }
+    InterlockedExchange(&g_modal, 0); EnableWindow(hw, TRUE);
+    return eRes;
+}
+static void EdOpen(const wchar_t *title) {
+    static BOOL reg; if (!reg) { RegClass(L"DKCalEd", EdProc, 0); reg = TRUE; }
+    const Pal &P = dark ? ::kDark : ::kLight; hbBg = CreateSolidBrush(P.bg); hbFld = CreateSolidBrush(P.hdr);
+    memset(ec, 0, sizeof ec); memset(eKind, 0, sizeof eKind); memset(eVal, 0, sizeof eVal); memset(eFr, 0, sizeof eFr);
+    eDone = FALSE; eRes = R_NONE; eBusy = FALSE;
+    ed = CreateWindowExW(WS_EX_DLGMODALFRAME, L"DKCalEd", title, WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN, 0, 0, 100, 100, hw, NULL, g_inst, NULL);
+    DarkTitle(ed);
+}
+static void EdClose(void) {
+    DestroyWindow(ed); ed = NULL; DeleteObject(hbBg); DeleteObject(hbFld); hbBg = hbFld = NULL;
+    if (hw) { SetForegroundWindow(hw); SetFocus(hw); }
+}
+static int EditDlg(Cal::Event *ev, BOOL isNew, int origSrc, int *outSrc, BOOL *outKeep) {
+    eEv = ev; eNew = isNew; eDelMode = FALSE; eRaw = FALSE; eOrigSrc = origSrc; eOutSrc = origSrc; eOutKeep = FALSE; eTzN = 0; eTzX[0] = 0; eNal = 0;
+    { const char *a, *b; while (Cal::ZoneMapGet(eTzN, &a, &b)) eTzN++; }
+    EdOpen(Tr(isNew ? L_CAL_ED_NEW : L_CAL_ED_EDIT)); MakeEd(); FillEd();
+    ResizeEd(EdLayout()); CenterEd(); ShowWindow(ed, SW_SHOW); ForceFg(ed);
+    SetFocus(ec[E_TITLE]); SendMessageW(ec[E_TITLE], EM_SETSEL, 0, -1);
+    int r = RunModal(); *outSrc = eOutSrc; *outKeep = eOutKeep; EdClose(); return r;
+}
+// Удаление: R_DALL («удалить везде»), R_DHID («убрать только из DKeys») или R_NONE.
+static int AskDelete(const Cal::Event *e) {
+    eEv = (Cal::Event *)e; eDelMode = TRUE; eNew = FALSE; eRaw = FALSE; eOrigSrc = -1; eTzN = 0; eTzX[0] = 0; eNal = 0;
+    EdOpen(Tr(L_CAL_DEL_TITLE));
+    wchar_t sm[80], msg[200]; lstrcpynW(sm, e->summary && *e->summary ? e->summary : Tr(L_CAL_NOTITLE), 80); wsprintfW(msg, Tr(L_CAL_DEL_ASK), sm);
+    Lab(E_DMSG, msg); SendMessageW(ec[E_DMSG], WM_SETFONT, (WPARAM)fB, TRUE);
+    Lab(E_NOTE, e->rrule || e->hasRec ? Tr(L_CAL_DEL_SERIES) : L""); Lab(E_DHINT, Tr(L_CAL_DEL_HINT));
+    Btn(E_DALL, Tr(L_CAL_DEL_ALL)); Btn(E_DHID, Tr(L_CAL_DEL_HIDE)); Btn(IDCANCEL, Tr(L_CANCEL));
+    const int W = 540, X = 20; int y = 18, bw = (W - 2 * X - 16) / 3;
+    Put(E_DMSG, X, y, W - 2 * X, 22, TRUE); y += 28;
+    BOOL ser = e->rrule || e->hasRec; Put(E_NOTE, X, y, W - 2 * X, 18, ser); if (ser) y += 24;
+    Put(E_DHINT, X, y, W - 2 * X, 42, TRUE); y += 54;
+    Put(E_DALL, X, y, bw, 32, TRUE); Put(E_DHID, X + bw + 8, y, bw, 32, TRUE); Put(IDCANCEL, X + 2 * (bw + 8), y, bw, 32, TRUE); y += 32 + 18;
+    RECT r = {0, 0, Sc(W), Sc(y)}; AdjustWindowRectExForDpi(&r, WS_POPUP | WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_DLGMODALFRAME, dpi);
+    SetWindowPos(ed, NULL, 0, 0, r.right - r.left, r.bottom - r.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE); CenterEd();
+    ShowWindow(ed, SW_SHOW); ForceFg(ed); SetFocus(ec[E_DHID]);
+    int rs = RunModal(); EdClose(); return rs == R_DALL || rs == R_DHID ? rs : R_NONE;
+}
+/* ---------- действия над событиями: каждое сразу пишет файл источника и перестраивает вид ---------- */
+static BOOL pendRef;                                          // «Перечитать настройки» пришло, пока был открыт диалог: перечитать после него
+static void Refresh(void);
+static void Settle(void) { if (pendRef && !ed) { pendRef = FALSE; Refresh(); } }
+static BOOL SrcSyncs(int si) { return si >= 0 && g_calSrc[si].sync; }
+static const wchar_t *SrcId(int si) { return si >= 0 && si < g_ncalSrc ? g_calSrc[si].id : NULL; }
+static BOOL Busy(void) { return ed || g_modal; }
+static void EnsureShown(int si) {                             // событие в скрытом источнике не увидишь: включить показ
+    if (si < 0 || g_calSrc[si].show) return;
+    wchar_t k[40] = L"Show."; Cat(k, 40, g_calSrc[si].id); g_calSrc[si].show = TRUE; IniSet(L"Calendar", k, L"1");
+}
+static void Focus(int idx) {                                  // перейти к событию idx и выделить его
+    if (idx < 0 || idx >= st.n) { Rebuild(); Inv(); return; }
+    SetSel(LocalDay(st.ev[idx])); selEv = idx; Inv();
+}
+static void NewEvent(I64 day) {
+    if (Busy()) return;
+    Cal::Event w; memset(&w, 0, sizeof w); wchar_t u[80], tz[80]; Cal::NewUid(u, 80); Cal::SetStr(&w.uid, u);
+    Cal::LocalTzid(tz, 80); Cal::SetStr(&w.tzid, tz[0] ? tz : NULL);
+    int h = 9; if (day == today) { h = (int)((Cal::UtcToWall(Cal::NowUtc(), L"") - today * 86400) / 3600) + 1; if (h > 22) h = 22; }
+    w.start = day * 86400 + h * 3600; w.end = w.start + 3600; if (g_calAlarm > 0) Cal::AddAlarm(&w, g_calAlarm);
+    int si = DefSrc(), os = si; BOOL keep = FALSE;
+    if (EditDlg(&w, TRUE, si, &os, &keep) == R_SAVE) {
+        if (os < 0) os = si;
+        Cal::SetStr(&w.source, g_calSrc[os].id); Cal::Touch(&w); EnsureShown(os);
+        Cal::Event *e = Cal::StoreNew(&st); *e = w; int k = (int)(e - st.ev); memset(&w, 0, sizeof w);
+        SaveSrc(g_calSrc[os].id); Focus(k);
+    } else Cal::EventFree(&w);
+    Settle();
+}
+static void DeleteFlow(int idx) {
+    if (idx < 0 || idx >= st.n || Busy()) return;
+    int r = AskDelete(&st.ev[idx]); Settle();
+    if (r == R_NONE || idx >= st.n) return;
+    int s = SrcOf(&st.ev[idx]); wchar_t id[24]; lstrcpynW(id, s >= 0 ? g_calSrc[s].id : L"", 24);
+    if (r == R_DALL) Cal::DeleteEvent(&st, idx, TRUE, SrcSyncs(s)); else Cal::DeleteEvent(&st, idx, FALSE, FALSE);
+    if (s >= 0) SaveSrc(id);
+    selEv = -1; Rebuild(); Inv();
+}
+static void EditEvent(int idx) {
+    if (idx < 0 || idx >= st.n || Busy()) return;
+    Cal::Event w; Cal::EventClone(&w, &st.ev[idx]);
+    int s0 = SrcOf(&w), os = s0; BOOL keep = FALSE;
+    int r = EditDlg(&w, FALSE, s0, &os, &keep);
+    if (r == R_DELETE) { Cal::EventFree(&w); DeleteFlow(idx); return; }
+    if (r != R_SAVE || pendRef) { Cal::EventFree(&w); Settle(); return; }          // перечитали настройки - индекс мог устареть
+    if (os < 0) os = s0 < 0 ? 0 : s0;
+    Cal::Touch(&w); Cal::EventTake(&st.ev[idx], &w); int k = idx;
+    if (os != s0) {
+        EnsureShown(os); k = Cal::MoveEvent(&st, idx, g_calSrc[os].id, keep, SrcSyncs(s0));
+        if (s0 >= 0) SaveSrc(g_calSrc[s0].id);
+    }
+    SaveSrc(g_calSrc[os].id); Focus(k);
+}
+static void DupEv(int idx) {
+    if (idx < 0 || idx >= st.n) return;
+    int s = SrcOf(&st.ev[idx]); int k = Cal::MoveEvent(&st, idx, s >= 0 ? g_calSrc[s].id : g_calSrc[0].id, TRUE, FALSE);
+    if (s >= 0) SaveSrc(g_calSrc[s].id);
+    Focus(k);
+}
+static void MoveEv(int idx, int ns) {
+    if (idx < 0 || idx >= st.n || ns < 0 || ns >= g_ncalSrc) return;
+    int s0 = SrcOf(&st.ev[idx]); if (s0 == ns) return;
+    EnsureShown(ns); int k = Cal::MoveEvent(&st, idx, g_calSrc[ns].id, FALSE, SrcSyncs(s0));
+    if (s0 >= 0) SaveSrc(g_calSrc[s0].id);
+    SaveSrc(g_calSrc[ns].id); Focus(k);
+}
+static void Unhide(int idx) {
+    if (idx < 0 || idx >= st.n) return;
+    int s = SrcOf(&st.ev[idx]); Cal::SetHidden(&st, idx, FALSE); if (s >= 0) SaveSrc(g_calSrc[s].id);
+    Rebuild(); Inv();
+}
+static void QuickAdd(void) {                                   // строка быстрого ввода: «завтра 15:00 встреча» -> событие в источнике по умолчанию
+    int n = GetWindowTextLengthW(hQuick); if (n <= 0) return;
+    wchar_t *t = (wchar_t *)Alloc((n + 1) * sizeof(wchar_t)); GetWindowTextW(hQuick, t, n + 1);
+    Cal::Quick q; BOOL ok = Cal::QuickParse(t, Cal::UtcToWall(Cal::NowUtc(), L""), sel, &q); Free(t);
+    if (ok) {
+        int si = DefSrc(); EnsureShown(si);
+        Cal::Event *e = Cal::StoreNew(&st); int k = (int)(e - st.ev); wchar_t u[80], tz[80], rr[200];
+        Cal::NewUid(u, 80); Cal::SetStr(&e->uid, u); Cal::SetStr(&e->summary, q.summary); Cal::SetStr(&e->source, g_calSrc[si].id);
+        e->allDay = q.allDay; e->start = q.start; e->end = q.end;
+        if (!q.allDay) { Cal::LocalTzid(tz, 80); Cal::SetStr(&e->tzid, tz[0] ? tz : NULL); if (g_calAlarm > 0) Cal::AddAlarm(e, g_calAlarm); }
+        Cal::RuleBuild(q.rule, q.allDay, q.allDay ? L"" : (e->tzid ? e->tzid : L""), rr, 200); if (rr[0]) Cal::SetStr(&e->rrule, rr);
+        Cal::Touch(e); SaveSrc(g_calSrc[si].id); SetWindowTextW(hQuick, L""); Focus(k);
+    }
+    Free(q.summary);
+}
+static void CycleSel(int dir) {                                // Tab / Shift+Tab: следующее событие выбранного дня
+    int c = (int)(sel - first); if (c < 0 || c >= GRID) return;
+    int a = dl.off[c], n = dl.off[c + 1] - a; if (n <= 0) return;
+    int cur = -1; for (int k = 0; k < n; k++) if (ol.a[dl.items[a + k]].ev == selEv) cur = k;
+    int k = cur < 0 ? (dir > 0 ? 0 : n - 1) : (cur + dir + n) % n;
+    selEv = ol.a[dl.items[a + k]].ev; Inv();
+}
+static void Context(int x, int y) {                            // правая кнопка: меню события или «новое событие»
+    Lay(); int c, ev = PlateAt(x, y, &c); if (c < 0) return;
+    SetSel(first + c); if (ev >= 0) selEv = ev; Inv();
+    HMENU m = CreatePopupMenu(), mv = NULL; int ns = g_ncalSrc < 8 ? g_ncalSrc : 8;
+    if (ev >= 0) {
+        int s0 = SrcOf(&st.ev[ev]); BOOL hid = st.ev[ev].hidden;
+        AppendMenuW(m, MF_STRING, 1, Tr(L_CAL_M_EDIT)); AppendMenuW(m, MF_STRING, 2, Tr(L_CAL_M_DUP));
+        if (ns > 1) { mv = CreatePopupMenu(); for (int i = 0; i < ns; i++) if (i != s0) AppendMenuW(mv, MF_STRING, 10 + i, SrcName(i)); AppendMenuW(m, MF_POPUP, (UINT_PTR)mv, Tr(L_CAL_M_MOVE)); }
+        if (hid) AppendMenuW(m, MF_STRING, 4, Tr(L_CAL_M_UNHIDE));
+        AppendMenuW(m, MF_SEPARATOR, 0, NULL); AppendMenuW(m, MF_STRING, 3, Tr(L_CAL_M_DEL));
+    } else AppendMenuW(m, MF_STRING, 5, Tr(L_CAL_M_NEW));
+    POINT p = {x, y}; ClientToScreen(hw, &p); g_menuOpen = TRUE;
+    int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, p.x, p.y, 0, hw, NULL);
+    g_menuOpen = FALSE; DestroyMenu(m);
+    if (cmd == 1) EditEvent(ev); else if (cmd == 2) DupEv(ev); else if (cmd == 3) DeleteFlow(ev); else if (cmd == 4) Unhide(ev);
+    else if (cmd == 5) NewEvent(sel); else if (cmd >= 10) MoveEv(ev, cmd - 10);
 }
 
-/* ввод */
+/* ввод и окно */
 static void Click(int x, int y, BOOL dbl) {
     Lay(); POINT p = {x, y};
+    if (hQuick && PtInRect(&G.qbox, p)) { SetFocus(hQuick); return; }
+    SetFocus(hw);
     if (g_calPanel && PtInRect(&G.panel, p)) {
         if (PtInRect(&G.mPrev, p)) { AddMonths(&mY, &mM, -1); Inv(); }
         else if (PtInRect(&G.mNext, p)) { AddMonths(&mY, &mM, 1); Inv(); }
-        else if (PtInRect(&G.mGrid, p)) { SetSel(GridStart(mY, mM, g_calWs) + (y - G.mGrid.top) / G.mrh * 7 + (x - G.mGrid.left) / G.mcw); if (dbl) Toast(Tr(L_CAL_EDITOR)); }
+        else if (PtInRect(&G.mGrid, p)) { if (dbl) NewEvent(sel); else SetSel(GridStart(mY, mM, g_calWs) + (y - G.mGrid.top) / G.mrh * 7 + (x - G.mGrid.left) / G.mcw); }
+        else if (PtInRect(&G.hid, p)) { g_calHid = !g_calHid; IniSet(L"Calendar", L"ShowHidden", g_calHid ? L"1" : L"0"); Rebuild(); Inv(); }
         else for (int i = 0; i < g_ncalSrc && i < 8; i++) if (PtInRect(&G.src[i], p)) {
             wchar_t k[40] = L"Show."; Cat(k, 40, g_calSrc[i].id);
             g_calSrc[i].show = !g_calSrc[i].show; IniSet(L"Calendar", k, g_calSrc[i].show ? L"1" : L"0"); Rebuild(); Inv();
@@ -8457,7 +9061,9 @@ static void Click(int x, int y, BOOL dbl) {
     else if (PtInRect(&G.prev, p)) GoMonth(-1);
     else if (PtInRect(&G.next, p)) GoMonth(1);
     else if (PtInRect(&G.tod, p)) GoToday();
-    else { int c = CellAt(x, y); if (c >= 0) { SetSel(first + c); if (dbl) Toast(Tr(L_CAL_EDITOR)); } }      // правка события - этап 3
+    else if (PtInRect(&G.add, p)) NewEvent(sel);
+    else if (dbl) { if (CellAt(x, y) >= 0) { if (selEv >= 0) EditEvent(selEv); else NewEvent(sel); } }      // первый щелчок уже выбрал день и событие под курсором
+    else { int c, ev = PlateAt(x, y, &c); if (c >= 0) { SetSel(first + c); selEv = ev; Inv(); } }
 }
 static void Save(void) {                                      // положение, размер и панель - в ini
     if (!hw) return;
@@ -8469,11 +9075,11 @@ static void Save(void) {                                      // положен�
     }
     IniSet(L"Calendar", L"Panel", g_calPanel ? L"1" : L"0");
 }
-static void Close(void) { if (hw) { Save(); DestroyWindow(hw); } }
+static void Close(void) { if (hw && !ed) { Save(); DestroyWindow(hw); } }
 static void Key(UINT vk) {
-    BOOL ctl = GetKeyState(VK_CONTROL) < 0;
+    BOOL ctl = GetKeyState(VK_CONTROL) < 0, shf = GetKeyState(VK_SHIFT) < 0;
     switch (vk) {
-    case VK_ESCAPE: Close(); break;
+    case VK_ESCAPE: if (selEv >= 0) { selEv = -1; Inv(); } else Close(); break;
     case VK_LEFT: SetSel(sel - 1); break;
     case VK_RIGHT: SetSel(sel + 1); break;
     case VK_UP: SetSel(sel - 7); break;
@@ -8481,14 +9087,40 @@ static void Key(UINT vk) {
     case VK_PRIOR: GoMonth(ctl ? -12 : -1); break;
     case VK_NEXT: GoMonth(ctl ? 12 : 1); break;
     case VK_HOME: GoToday(); break;
-    case VK_RETURN: Toast(Tr(L_CAL_EDITOR)); break;       // правка события - этап 3
+    case VK_TAB: CycleSel(shf ? -1 : 1); break;
+    case VK_RETURN: if (selEv >= 0) EditEvent(selEv); break;
+    case VK_DELETE: if (selEv >= 0) DeleteFlow(selEv); break;
+    case VK_INSERT: SetFocus(hQuick); break;
+    case 'N': if (ctl) NewEvent(sel); else SetFocus(hQuick); break;
     }
+}
+static LRESULT CALLBACK QuickProc(HWND h, UINT m, WPARAM w, LPARAM l) {      // поле быстрого ввода: Enter - добавить, Esc - очистить и вернуться к календарю; подсказка рисуется поверх пустого поля
+    switch (m) {
+    case WM_KEYDOWN:
+        if (w == VK_RETURN) { QuickAdd(); return 0; }
+        if (w == VK_ESCAPE) { SetWindowTextW(h, L""); SetFocus(hw); return 0; }
+        break;
+    case WM_CHAR: if (w == VK_RETURN || w == VK_ESCAPE) return 0; break;
+    case WM_PAINT: {
+        LRESULT r = CallWindowProcW(quickOld, h, m, w, l);
+        if (!GetWindowTextLengthW(h) && GetFocus() != h) {
+            HDC dc = GetDC(h); RECT rc; GetClientRect(h, &rc); SelectObject(dc, fN); SetBkMode(dc, TRANSPARENT);
+            Txt(dc, Tr(L_CAL_QHINT), rc, (dark ? ::kDark : ::kLight).dim, DT_LEFT | DT_END_ELLIPSIS); ReleaseDC(h, dc);
+        }
+        return r;
+    }
+    case WM_SETFOCUS: case WM_KILLFOCUS: { LRESULT r = CallWindowProcW(quickOld, h, m, w, l); InvalidateRect(h, NULL, TRUE); return r; }
+    }
+    return CallWindowProcW(quickOld, h, m, w, l);
 }
 static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
     case WM_CREATE:
-        hw = h; dpi = GetDpiForWindow(h); dark = IsDark(); MakeFonts(); DarkTitle(h); SetTimer(h, 1, 30000, NULL);
+        hw = h; dpi = GetDpiForWindow(h); dark = IsDark(); MakeFonts(); DarkTitle(h); MakeQBrush(); SetTimer(h, 1, 30000, NULL);
         SendMessageW(h, WM_SETICON, ICON_SMALL, (LPARAM)g_icon); SendMessageW(h, WM_SETICON, ICON_BIG, (LPARAM)g_icon);
+        hQuick = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 0, 0, 10, 10, h, (HMENU)(INT_PTR)99, g_inst, NULL);
+        SendMessageW(hQuick, WM_SETFONT, (WPARAM)fN, TRUE); SendMessageW(hQuick, EM_SETLIMITTEXT, 300, 0); memset(&lastQ, 0, sizeof lastQ);
+        quickOld = (WNDPROC)SetWindowLongPtrW(hQuick, GWLP_WNDPROC, (LONG_PTR)QuickProc);
         return 0;
     case WM_ERASEBKGND: return 1;
     case WM_PAINT: {
@@ -8498,10 +9130,14 @@ static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         BitBlt(dc, 0, 0, rc.right, rc.bottom, md, 0, 0, SRCCOPY);
         SelectObject(md, ob); DeleteObject(bm); DeleteDC(md); EndPaint(h, &ps); return 0;
     }
+    case WM_CTLCOLOREDIT:
+        if ((HWND)l == hQuick) { const Pal &P = dark ? ::kDark : ::kLight; SetTextColor((HDC)w, P.fg); SetBkColor((HDC)w, P.hdr); return (LRESULT)hbrQ; }
+        break;
     case WM_SIZE: Inv(); return 0;
     case WM_GETMINMAXINFO: { MINMAXINFO *mi = (MINMAXINFO *)l; mi->ptMinTrackSize.x = Sc(560); mi->ptMinTrackSize.y = Sc(420); return 0; }
     case WM_LBUTTONDOWN: Click((short)LOWORD(l), (short)HIWORD(l), FALSE); return 0;
     case WM_LBUTTONDBLCLK: Click((short)LOWORD(l), (short)HIWORD(l), TRUE); return 0;
+    case WM_RBUTTONUP: Context((short)LOWORD(l), (short)HIWORD(l)); return 0;
     case WM_MOUSEWHEEL:
         wheelAcc += GET_WHEEL_DELTA_WPARAM(w);
         while (wheelAcc >= WHEEL_DELTA) { wheelAcc -= WHEEL_DELTA; GoMonth(-1); }
@@ -8514,15 +9150,16 @@ static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     }
     case WM_SETTINGCHANGE:
-        if (l && !lstrcmpW((LPCWSTR)l, L"ImmersiveColorSet")) { dark = IsDark(); DarkTitle(h); Inv(); }
+        if (l && !lstrcmpW((LPCWSTR)l, L"ImmersiveColorSet")) { dark = IsDark(); DarkTitle(h); MakeQBrush(); Inv(); if (hQuick) InvalidateRect(hQuick, NULL, TRUE); }
         return 0;
     case WM_DPICHANGED:
-        dpi = HIWORD(w); MakeFonts();
+        dpi = HIWORD(w); MakeFonts(); if (hQuick) SendMessageW(hQuick, WM_SETFONT, (WPARAM)fN, TRUE); memset(&lastQ, 0, sizeof lastQ);
         if (!placing) { const RECT *r = (const RECT *)l; SetWindowPos(h, NULL, r->left, r->top, r->right - r->left, r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE); }
         Inv(); return 0;
     case WM_CLOSE: Close(); return 0;
     case WM_DESTROY: {
-        KillTimer(h, 1); hw = NULL; Cleanup();
+        KillTimer(h, 1); hw = NULL; hQuick = NULL; Cleanup();
+        if (hbrQ) { DeleteObject(hbrQ); hbrQ = NULL; }
         HFONT *f[4] = {&fN, &fB, &fT, &fS}; for (int i = 0; i < 4; i++) if (*f[i]) { DeleteObject(*f[i]); *f[i] = NULL; }
         return 0;
     }
@@ -8534,7 +9171,7 @@ static void Open(void) {
     static BOOL reg; if (!reg) { RegClass(L"DKCal", Proc, CS_DBLCLKS); reg = TRUE; }
     today = TodayLocal(); Load(); SetSel(today);                            // сразу на текущем месяце; View=week пока тоже показывается как месяц (вид «неделя» - этап 7)
     placing = TRUE;
-    HWND h = CreateWindowExW(0, L"DKCal", Tr(L_CAL_WND), WS_OVERLAPPEDWINDOW, 0, 0, 100, 100, NULL, NULL, g_inst, NULL);
+    HWND h = CreateWindowExW(0, L"DKCal", Tr(L_CAL_WND), WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, 0, 0, 100, 100, NULL, NULL, g_inst, NULL);
     if (!h) { placing = FALSE; Cleanup(); return; }
     POINT pt; GetCursorPos(&pt); MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoW(MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST), &mi);
     RECT wa = mi.rcWork, r = Mk(g_calWin[0], g_calWin[1], g_calWin[0] + g_calWin[2], g_calWin[1] + g_calWin[3]);
@@ -8549,7 +9186,7 @@ static void Open(void) {
     }
     placing = FALSE; SetForegroundWindow(h);
 }
-static void Refresh(void) { if (hw) { today = TodayLocal(); Load(); Rebuild(); Inv(); } }      // после «Перечитать настройки»
+static void Refresh(void) { if (!hw) return; if (ed) { pendRef = TRUE; return; } today = TodayLocal(); Load(); Rebuild(); Inv(); }      // после «Перечитать настройки»
 } // namespace CalNs
 static void CalOpen(void) { CalNs::Open(); }
 static void CalRefresh(void) { CalNs::Refresh(); }

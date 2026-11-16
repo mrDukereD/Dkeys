@@ -619,14 +619,14 @@ static void QueryCb(const Event *e, I64 wall, I64 s, I64 en, void *c) {
     Occ *o = &l->a[l->n++]; o->ev = q->ev; o->s = s; o->e = en; o->wall = wall; o->allDay = e->allDay;
 }
 static void OccFree(OccList *l) { Free(l->a); memset(l, 0, sizeof *l); }
-// Все видимые вхождения (без скрытых, удалённых и отменённых), отсортированные по началу; целодневные раньше.
-static void Query(const Store *st, I64 fromUtc, I64 toUtc, OccList *out) {
+// Все видимые вхождения (без скрытых, удалённых и отменённых; showHidden - со скрытыми), отсортированные по началу; целодневные раньше.
+static void Query(const Store *st, I64 fromUtc, I64 toUtc, OccList *out, BOOL showHidden = FALSE) {
     memset(out, 0, sizeof *out);
     QCtx q; q.st = st; q.out = out; q.checkOverrides = FALSE;
     for (int i = 0; i < st->n; i++) if (st->ev[i].hasRec) q.checkOverrides = TRUE;
     for (int i = 0; i < st->n; i++) {
         const Event *e = &st->ev[i];
-        if (e->hidden || e->deleted || e->cancelled) continue;
+        if ((e->hidden && !showHidden) || e->deleted || e->cancelled) continue;
         q.ev = i; Expand(e, fromUtc, toUtc, QueryCb, &q);
     }
     for (int i = 1; i < out->n; i++) {
@@ -634,6 +634,368 @@ static void Query(const Store *st, I64 fromUtc, I64 toUtc, OccList *out) {
         while (j >= 0 && (out->a[j].s > v.s || (out->a[j].s == v.s && !out->a[j].allDay && v.allDay))) { out->a[j + 1] = out->a[j]; j--; }
         out->a[j + 1] = v;
     }
+}
+
+/* ---------- правка: копия, перенос между источниками, удаление/скрытие ---------- */
+static wchar_t *DupOr0(const wchar_t *s) { return s ? Dup(s) : NULL; }
+static void EventClone(Event *d, const Event *s) {                  // глубокая копия
+    *d = *s;
+    d->uid = DupOr0(s->uid); d->summary = DupOr0(s->summary); d->desc = DupOr0(s->desc); d->loc = DupOr0(s->loc); d->tzid = DupOr0(s->tzid);
+    d->rrule = DupOr0(s->rrule); d->source = DupOr0(s->source); d->etag = DupOr0(s->etag); d->extra = DupOr0(s->extra);
+    d->exd = NULL; d->alarms = NULL;
+    if (s->nexd) { d->exd = (I64 *)Alloc(s->nexd * sizeof(I64)); memcpy(d->exd, s->exd, s->nexd * sizeof(I64)); }
+    if (s->nal) { d->alarms = (int *)Alloc(s->nal * sizeof(int)); memcpy(d->alarms, s->alarms, s->nal * sizeof(int)); }
+}
+static int StoreAddClone(Store *st, const Event *src) {            // src может лежать в самом хранилище; возвращает индекс копии
+    Event t; EventClone(&t, src); Event *e = StoreNew(st); *e = t; return (int)(e - st->ev);
+}
+static void EventTake(Event *dst, Event *src) { EventFree(dst); *dst = *src; memset(src, 0, sizeof *src); }      // dst получает содержимое src (src обнуляется)
+static BOOL SameSrc(const wchar_t *a, const wchar_t *b) { return !lstrcmpW(a ? a : L"", b ? b : L""); }
+static BOOL SameSeries(const Event *e, const wchar_t *uid, const wchar_t *src) { return e->uid && !lstrcmpW(e->uid, uid) && SameSrc(e->source, src); }
+// Перенос события (всей серии: главное событие и замены вхождений) в другой источник: в новом создаётся копия с НОВЫМ UID; в прежнем событие
+// помечается удалённым (oldSyncs - источник синхронизируется, надгробие ждёт отправки) либо сразу убирается; keepCopy - прежнее остаётся как есть.
+// Возвращает индекс новой копии события idx. Тот же источник + keepCopy даёт обычное дублирование.
+static int MoveEvent(Store *st, int idx, const wchar_t *newSrc, BOOL keepCopy, BOOL oldSyncs) {
+    wchar_t *uid = Dup(st->ev[idx].uid), *old = Dup(st->ev[idx].source); wchar_t nu[80]; NewUid(nu, 80);
+    int n0 = st->n, res = -1;
+    for (int i = 0; i < n0; i++) {
+        if (!SameSeries(&st->ev[i], uid, old) || st->ev[i].deleted) continue;
+        int k = StoreAddClone(st, &st->ev[i]); Event *c = &st->ev[k];
+        SetStr(&c->uid, nu); SetStr(&c->source, newSrc); SetStr(&c->etag, NULL); c->hidden = c->deleted = FALSE; Touch(c);
+        if (i == idx) res = k;
+    }
+    if (!keepCopy) for (int i = n0 - 1; i >= 0; i--) {
+        Event *o = &st->ev[i];
+        if (!SameSeries(o, uid, old) || o->deleted) continue;
+        if (oldSyncs) { o->deleted = TRUE; Touch(o); } else { StoreRemove(st, i); if (res > i) res--; }
+    }
+    Free(uid); Free(old); return res;
+}
+// Удаление серии события idx: everywhere - «удалить везде» (источник синхронизируется - надгробие deleted, иначе сразу из хранилища);
+// иначе «убрать только из DKeys» (hidden: остаётся в источнике, не возвращается при синхронизации; stamp не трогаем - в источник это не уходит).
+static void DeleteEvent(Store *st, int idx, BOOL everywhere, BOOL syncs) {
+    wchar_t *uid = Dup(st->ev[idx].uid), *src = Dup(st->ev[idx].source);
+    for (int i = st->n - 1; i >= 0; i--) {
+        Event *e = &st->ev[i]; if (!SameSeries(e, uid, src)) continue;
+        if (!everywhere) e->hidden = TRUE;
+        else if (syncs) { e->deleted = TRUE; Touch(e); }
+        else StoreRemove(st, i);
+    }
+    Free(uid); Free(src);
+}
+static void SetHidden(Store *st, int idx, BOOL hide) {              // вернуть скрытое (hide FALSE) или скрыть серию
+    wchar_t *uid = Dup(st->ev[idx].uid), *src = Dup(st->ev[idx].source);
+    for (int i = 0; i < st->n; i++) if (SameSeries(&st->ev[i], uid, src)) st->ev[i].hidden = hide;
+    Free(uid); Free(src);
+}
+
+/* ---------- правило повтора из полей диалога <-> RRULE ---------- */
+struct RuleSpec { int freq, interval, wdMask, endKind, count; I64 untilDay; };      // freq 0 - нет, 1..4 - день/неделя/месяц/год; wdMask - биты дней (0 = пн); endKind 0 - никогда, 1 - до даты (untilDay включительно), 2 - N раз
+static BOOL RuleSpecEq(const RuleSpec &a, const RuleSpec &b) { return a.freq == b.freq && a.interval == b.interval && a.wdMask == b.wdMask && a.endKind == b.endKind && a.count == b.count && a.untilDay == b.untilDay; }
+static void RuleBuild(const RuleSpec &r, BOOL allDay, const wchar_t *tzid, wchar_t *out, int cap) {
+    out[0] = 0; if (r.freq < 1 || r.freq > 4) return;
+    static const wchar_t *fr[4] = {L"DAILY", L"WEEKLY", L"MONTHLY", L"YEARLY"}, *wd[7] = {L"MO", L"TU", L"WE", L"TH", L"FR", L"SA", L"SU"};
+    wchar_t t[160], x[48]; wsprintfW(t, L"FREQ=%s", fr[r.freq - 1]);
+    if (r.interval > 1) { wsprintfW(x, L";INTERVAL=%d", r.interval); lstrcatW(t, x); }
+    if (r.freq == 2 && r.wdMask) {
+        lstrcatW(t, L";BYDAY="); BOOL first = TRUE;
+        for (int i = 0; i < 7; i++) if (r.wdMask & (1 << i)) { if (!first) lstrcatW(t, L","); lstrcatW(t, wd[i]); first = FALSE; }
+    }
+    if (r.endKind == 1) {                                               // конец включительно: последняя секунда дня в зоне события
+        I64 w = r.untilDay * 86400 + 86399; wchar_t d[40];
+        if (allDay) FmtDt(d, w, TRUE, FALSE); else if (!tzid || !*tzid) FmtDt(d, w, FALSE, FALSE); else FmtDt(d, WallToUtc(w, tzid), FALSE, TRUE);
+        lstrcatW(t, L";UNTIL="); lstrcatW(t, d);
+    } else if (r.endKind == 2 && r.count > 0) { wsprintfW(x, L";COUNT=%d", r.count); lstrcatW(t, x); }
+    lstrcpynW(out, t, cap);
+}
+// RRULE -> поля. TRUE - правило простое (поля воспроизводят его); FALSE - сложнее поддерживаемого: такую строку надо хранить как есть.
+static BOOL RuleSpecParse(const wchar_t *rrule, const Event *e, RuleSpec *o) {
+    memset(o, 0, sizeof *o); o->interval = 1;
+    if (!rrule || !*rrule) return TRUE;
+    BOOL hasC = FALSE, hasU = FALSE;
+    for (const wchar_t *p = rrule; *p; ) {
+        const wchar_t *k = p; while (*p && *p != L'=' && *p != L';') p++;
+        int kl = (int)(p - k); const wchar_t *v = p; if (*p == L'=') { v = ++p; while (*p && *p != L';') p++; }
+        int vl = (int)(p - v); if (*p == L';') p++;
+        BOOL ok = KeyIs(k, kl, L"FREQ") || KeyIs(k, kl, L"INTERVAL") || KeyIs(k, kl, L"WKST");
+        if (KeyIs(k, kl, L"COUNT")) { ok = TRUE; hasC = TRUE; } else if (KeyIs(k, kl, L"UNTIL")) { ok = TRUE; hasU = TRUE; }
+        else if (KeyIs(k, kl, L"BYDAY")) { ok = TRUE; for (int i = 0; i < vl; i++) if (v[i] >= L'0' && v[i] <= L'9') ok = FALSE; }
+        if (!ok) return FALSE;
+    }
+    Rule r; if ((hasC && hasU) || !ParseRule(rrule, &r, e) || (hasU && !r.hasUntil) || (r.nbd && r.freq != 2)) return FALSE;
+    o->freq = r.freq; o->interval = r.interval; for (int i = 0; i < r.nbd; i++) o->wdMask |= 1 << r.bd[i];
+    if (r.hasUntil) { o->endKind = 1; o->untilDay = FloorDiv(r.until, 86400); } else if (r.count > 0) { o->endKind = 2; o->count = r.count; }
+    return TRUE;
+}
+
+/* ---------- дата и время в текстовых полях ---------- */
+static BOOL ScanInt(const wchar_t *s, int n, int *pos, int maxDig, int *v) {
+    int i = *pos, c = 0, x = 0;
+    while (i < n && s[i] >= L'0' && s[i] <= L'9' && c < maxDig) { x = x * 10 + (s[i] - L'0'); i++; c++; }
+    if (!c) return FALSE;
+    *v = x; *pos = i; return TRUE;
+}
+static BOOL MkDay(int y, int m, int d, I64 *day) { if (m < 1 || m > 12 || d < 1 || y < 1900 || y > 2200 || d > DaysInMonth(y, m)) return FALSE; *day = DaysFromCivil(y, m, d); return TRUE; }
+static BOOL MkDayNear(int d, int m, int y, I64 base, I64 *out) {     // y < 0 - без года: ближайшая дата не раньше base
+    if (y >= 0) return MkDay(y, m, d, out);
+    int by, bm, bd; CivilFromDays(base, &by, &bm, &bd);
+    for (int yy = by; yy <= by + 8; yy++) { I64 x; if (MkDay(yy, m, d, &x) && x >= base) { *out = x; return TRUE; } }
+    return FALSE;
+}
+static BOOL IsDash(wchar_t c) { return c == L'-' || c == 0x2013 || c == 0x2014; }
+// дд.мм[.гг[гг]] | дд/мм/гггг | гггг-мм-дд; весь текст s[0..n) должен быть датой
+static BOOL ScanDate(const wchar_t *s, int n, I64 base, I64 *out) {
+    int pos = 0, a, b, c;
+    if (!ScanInt(s, n, &pos, 4, &a) || pos >= n) return FALSE;
+    if (pos == 4 && s[pos] == L'-') {
+        pos++; if (!ScanInt(s, n, &pos, 2, &b) || pos >= n || s[pos] != L'-') return FALSE;
+        pos++; if (!ScanInt(s, n, &pos, 2, &c) || pos != n) return FALSE;
+        return MkDay(a, b, c, out);
+    }
+    if ((s[pos] != L'.' && s[pos] != L'/') || a < 1 || a > 31) return FALSE;
+    wchar_t sep = s[pos++]; int y = -1;
+    if (!ScanInt(s, n, &pos, 2, &b)) return FALSE;
+    if (pos < n) {
+        if (s[pos] != sep) return FALSE;
+        pos++; int ys = pos; if (!ScanInt(s, n, &pos, 4, &c)) return FALSE;
+        if (pos - ys == 2) y = 2000 + c; else if (pos - ys == 4) y = c; else return FALSE;
+    }
+    return pos == n && MkDayNear(a, b, y, base, out);
+}
+static BOOL ScanTime(const wchar_t *s, int n, int *pos, BOOL needColon, int *tod) {   // ч:мм (или просто ч, если needColon FALSE) -> секунды от полуночи
+    int p = *pos, h, m = 0; if (!ScanInt(s, n, &p, 2, &h)) return FALSE;
+    if (p < n && s[p] == L':') { p++; int ms = p; if (!ScanInt(s, n, &p, 2, &m) || p - ms != 2) return FALSE; }
+    else if (needColon) return FALSE;
+    if (h > 23 || m > 59) return FALSE;
+    *tod = h * 3600 + m * 60; *pos = p; return TRUE;
+}
+static void Trim(const wchar_t *&s, int &n) { while (n > 0 && s[n - 1] <= L' ') n--; while (n > 0 && *s <= L' ') { s++; n--; } }
+static BOOL ParseDayStr(const wchar_t *s, I64 base, I64 *day) { int n = lstrlenW(s); Trim(s, n); return ScanDate(s, n, base, day); }
+static BOOL ParseTodStr(const wchar_t *s, int *tod) { int n = lstrlenW(s), pos = 0; Trim(s, n); return ScanTime(s, n, &pos, FALSE, tod) && pos == n; }
+static void FmtDay(wchar_t *o, I64 day) { int y, m, d; CivilFromDays(day, &y, &m, &d); wsprintfW(o, L"%02d.%02d.%04d", d, m, y); }
+static void FmtTod(wchar_t *o, int tod) { wsprintfW(o, L"%02d:%02d", tod / 3600, tod / 60 % 60); }
+static I64 DayAddMonths(I64 day, int n) {                            // тот же день через n месяцев (31-е -> последний день месяца)
+    int y, m, d; CivilFromDays(day, &y, &m, &d); I64 mi = (I64)y * 12 + (m - 1) + n, yy = FloorDiv(mi, 12);
+    y = (int)yy; m = (int)(mi - yy * 12) + 1; int dim = DaysInMonth(y, m); if (d > dim) d = dim;
+    return DaysFromCivil(y, m, d);
+}
+
+/* ---------- быстрый ввод по-русски: «завтра 15:00 встреча», «20.11 14:30-16 планёрка», «каждый понедельник 10:00 летучка» ----------
+   Разбор по словам: распознанные слова (дата, время, повтор, длительность) забираются, остальное - название (с заглавной буквы).
+   Без даты берётся defDay, без времени - целый день; конец по умолчанию - через час. Времена - местные стенные секунды. */
+struct Quick { wchar_t *summary; RuleSpec rule; BOOL allDay; I64 start, end; };       // summary - Free; end для целодневного не включается
+struct QTok { int off, len, clen; BOOL used; };
+struct QP { const wchar_t *src; wchar_t *lc; QTok *t; int n; I64 now, today; };
+static BOOL QAnyS(const wchar_t *s, int n, const wchar_t *list) {    // s[0..n) совпадает с одним из слов списка "а|б|в" (пустой вариант допустим)
+    for (;;) {
+        const wchar_t *e = list; while (*e && *e != L'|') e++;
+        int l = (int)(e - list), i = 0; if (l == n) { while (i < n && s[i] == list[i]) i++; if (i == n) return TRUE; }
+        if (!*e) return FALSE;
+        list = e + 1;
+    }
+}
+static BOOL QAny(const QP &p, int i, const wchar_t *list) { return i >= 0 && i < p.n && !p.t[i].used && QAnyS(p.lc + p.t[i].off, p.t[i].clen, list); }
+static BOOL QNum(const QP &p, int i, int *v) {
+    if (i < 0 || i >= p.n || p.t[i].used) return FALSE;
+    const wchar_t *s = p.lc + p.t[i].off; int n = p.t[i].clen, x = 0; if (n < 1 || n > 4) return FALSE;
+    for (int k = 0; k < n; k++) { if (s[k] < L'0' || s[k] > L'9') return FALSE; x = x * 10 + (s[k] - L'0'); }
+    *v = x; return TRUE;
+}
+static void QUse(QP &p, int a, int b) { for (int i = a; i < b; i++) p.t[i].used = TRUE; }
+static int QWd(const QP &p, int i) {                                 // день недели в любой форме («пятницу», «по средам», «пн»), 0 = пн
+    static const wchar_t *st[7] = {L"понедельник", L"вторник", L"сред", L"четверг", L"пятниц", L"суббот", L"воскресень"}, *ab[7] = {L"пн", L"вт", L"ср", L"чт", L"пт", L"сб", L"вс"};
+    if (i < 0 || i >= p.n || p.t[i].used) return -1;
+    const wchar_t *s = p.lc + p.t[i].off; int n = p.t[i].clen;
+    for (int d = 0; d < 7; d++) {
+        if (QAnyS(s, n, ab[d])) return d;
+        int sl = lstrlenW(st[d]), k = 0; if (n < sl) continue;
+        while (k < sl && s[k] == st[d][k]) k++;
+        if (k == sl && QAnyS(s + sl, n - sl, L"|а|у|ы|е|ой|ам|ах|ь|ю|я|ям|ях")) return d;
+    }
+    return -1;
+}
+static int QMon(const QP &p, int i) {
+    static const wchar_t *m[12] = {L"января|январь|янв", L"февраля|февраль|фев", L"марта|март|мар", L"апреля|апрель|апр", L"мая|май", L"июня|июнь|июн", L"июля|июль|июл",
+                                   L"августа|август|авг", L"сентября|сентябрь|сен|сент", L"октября|октябрь|окт", L"ноября|ноябрь|ноя|нояб", L"декабря|декабрь|дек"};
+    if (i < 0 || i >= p.n || p.t[i].used) return 0;
+    for (int k = 0; k < 12; k++) if (QAnyS(p.lc + p.t[i].off, p.t[i].clen, m[k])) return k + 1;
+    return 0;
+}
+static int QUnit(const QP &p, int i) {                              // 1 минуты, 2 часы, 3 дни, 4 недели, 5 месяцы, 6 годы
+    if (QAny(p, i, L"минуту|минуты|минут|минута|мин")) return 1;
+    if (QAny(p, i, L"час|часа|часов|ч")) return 2;
+    if (QAny(p, i, L"день|дня|дней|дни|дн")) return 3;
+    if (QAny(p, i, L"неделю|недели|недель|неделя|нед")) return 4;
+    if (QAny(p, i, L"месяц|месяца|месяцев|мес")) return 5;
+    if (QAny(p, i, L"год|года|лет|г")) return 6;
+    return 0;
+}
+static BOOL QDateAt(const QP &p, int i, I64 *day, int *nt) {          // дата в токене i: слово («завтра»), дд.мм[.гггг], «20 ноября [2027]»
+    if (i < 0 || i >= p.n || p.t[i].used) return FALSE;
+    const wchar_t *s = p.lc + p.t[i].off; int n = p.t[i].clen, a, pos = 0; *nt = 1;
+    if (QAnyS(s, n, L"сегодня")) { *day = p.today; return TRUE; }
+    if (QAnyS(s, n, L"завтра")) { *day = p.today + 1; return TRUE; }
+    if (QAnyS(s, n, L"послезавтра")) { *day = p.today + 2; return TRUE; }
+    if (QAnyS(s, n, L"вчера")) { *day = p.today - 1; return TRUE; }
+    if (ScanDate(s, n, p.today, day)) return TRUE;
+    if (ScanInt(s, n, &pos, 2, &a) && pos == n && a >= 1 && a <= 31) {
+        int m = QMon(p, i + 1), v, y = -1; if (!m) return FALSE;
+        *nt = 2; if (QNum(p, i + 2, &v) && v >= 2000 && v <= 2200) { y = v; *nt = 3; }
+        return MkDayNear(a, m, y, p.today, day);
+    }
+    return FALSE;
+}
+static BOOL QTimeTok(const QP &p, int i, int *t1, int *t2) {         // «15:00» или «14:30-16[:00]» одним токеном; t2 = -1 без конца
+    if (i < 0 || i >= p.n || p.t[i].used) return FALSE;
+    const wchar_t *s = p.lc + p.t[i].off; int n = p.t[i].clen, pos = 0; *t2 = -1;
+    if (!ScanTime(s, n, &pos, TRUE, t1)) return FALSE;
+    if (pos == n) return TRUE;
+    if (!IsDash(s[pos])) return FALSE;
+    pos++; if (!ScanTime(s, n, &pos, FALSE, t2) || pos != n) return FALSE;
+    return TRUE;
+}
+static BOOL QTimeEnd(const QP &p, int j, int *t2, int *nt) {          // конец после начала: «- 16:00», «до 16»
+    if (j < 0 || j + 1 >= p.n || p.t[j].used || p.t[j + 1].used) return FALSE;
+    BOOL dash = p.t[j].clen == 1 && IsDash(p.lc[p.t[j].off]);
+    if (!dash && !QAny(p, j, L"до")) return FALSE;
+    const wchar_t *s = p.lc + p.t[j + 1].off; int n = p.t[j + 1].clen, pos = 0;
+    if (!ScanTime(s, n, &pos, FALSE, t2) || pos != n) return FALSE;
+    *nt = 2; return TRUE;
+}
+static int QDayPart(const QP &p, int i) { return QAny(p, i, L"утра") ? 1 : QAny(p, i, L"дня") ? 2 : QAny(p, i, L"вечера") ? 3 : QAny(p, i, L"ночи") ? 4 : 0; }
+static int QHour(int h, int dp) {                                    // «9 вечера» -> 21, «12 ночи» -> 0
+    if ((dp == 2 || dp == 3) && h < 12) return h + 12;
+    if ((dp == 1 || dp == 4) && h == 12) return 0;
+    return h;
+}
+static int QWdList(QP &p, int j, int *mask) {                         // «пн, ср и пт»: забирает перечисление дней недели, возвращает индекс за ним
+    int k = j, cnt = 0; *mask = 0;
+    for (;;) {
+        int w = QWd(p, k);
+        if (w >= 0) { *mask |= 1 << w; k++; cnt++; }
+        else if (cnt && QAny(p, k, L"и") && QWd(p, k + 1) >= 0) k++;
+        else break;
+    }
+    QUse(p, j, k); return k;
+}
+static void QRecur(QP &p, int i, RuleSpec *r, int *mday) {           // повтор: «каждый день|понедельник|2 недели», «по пн и ср», «ежегодно», «раз в неделю»
+    if (QAny(p, i, L"ежедневно|каждодневно")) { r->freq = 1; QUse(p, i, i + 1); return; }
+    if (QAny(p, i, L"еженедельно")) { r->freq = 2; QUse(p, i, i + 1); return; }
+    if (QAny(p, i, L"ежемесячно")) { r->freq = 3; QUse(p, i, i + 1); return; }
+    if (QAny(p, i, L"ежегодно")) { r->freq = 4; QUse(p, i, i + 1); return; }
+    int j = i + 1, v = 1, mask, u;
+    if (QAny(p, i, L"каждый|каждую|каждое|каждые|каждого|каждой")) {
+        BOOL num = QNum(p, j, &v); if (num) j++;
+        if (!num && QAny(p, j, L"будний|будние|будни|рабочий|рабочие") && QAny(p, j + 1, L"день|дни")) { r->freq = 2; r->wdMask = 31; QUse(p, i, j + 2); return; }
+        if (!num && QWd(p, j) >= 0) { QWdList(p, j, &mask); r->freq = 2; r->wdMask = mask; QUse(p, i, j); return; }
+        if (num && QAny(p, j, L"число") && v >= 1 && v <= 31) { r->freq = 3; *mday = v; QUse(p, i, j + 1); return; }
+        u = QUnit(p, j);
+        if (u >= 3 && u <= 6) { r->freq = u - 2; r->interval = v < 1 ? 1 : v; QUse(p, i, j + 1); }
+        return;
+    }
+    if (QAny(p, i, L"по")) {
+        if (QAny(p, j, L"будням|будним")) { r->freq = 2; r->wdMask = 31; QUse(p, i, j + 1); }
+        else if (QAny(p, j, L"выходным|выходные")) { r->freq = 2; r->wdMask = 96; QUse(p, i, j + 1); }
+        else if (QWd(p, j) >= 0) { QWdList(p, j, &mask); r->freq = 2; r->wdMask = mask; QUse(p, i, j); }
+        return;
+    }
+    if (QAny(p, i, L"раз") && QAny(p, j, L"в")) {
+        j++; BOOL num = QNum(p, j, &v); if (num) j++;
+        u = QUnit(p, j);
+        if (u >= 3 && u <= 6) { r->freq = u - 2; r->interval = v < 1 ? 1 : v; QUse(p, i, j + 1); }
+    }
+}
+static BOOL QEatPrev(QP &p, int i, const wchar_t *list) { if (i > 0 && QAny(p, i - 1, list)) { p.t[i - 1].used = TRUE; return TRUE; } return FALSE; }
+
+static BOOL QuickParse(const wchar_t *text, I64 nowWall, I64 defDay, Quick *q) {
+    memset(q, 0, sizeof *q); q->rule.interval = 1;
+    int n = lstrlenW(text), cnt = 0;
+    for (int i = 0; i < n; ) { while (i < n && text[i] <= L' ') i++; if (i >= n) break; cnt++; while (i < n && text[i] > L' ') i++; }
+    if (!cnt) { q->summary = Dup(L""); return FALSE; }
+    QP p; memset(&p, 0, sizeof p); p.src = text; p.lc = Dup(text); CharLowerBuffW(p.lc, n); p.now = nowWall; p.today = FloorDiv(nowWall, 86400);
+    p.t = (QTok *)Alloc((cnt + 1) * sizeof(QTok));
+    for (int i = 0; i < n; ) {
+        while (i < n && text[i] <= L' ') i++; if (i >= n) break;
+        int s = i; while (i < n && text[i] > L' ') i++;
+        QTok *t = &p.t[p.n++]; t->off = s; t->len = i - s; int c = t->len;
+        while (c > 1 && (text[s + c - 1] == L',' || text[s + c - 1] == L';' || text[s + c - 1] == L'!' || text[s + c - 1] == L'?' || text[s + c - 1] == L'.')) c--;
+        t->clen = c;
+    }
+    RuleSpec &rs = q->rule; int mday = 0;
+    for (int i = 0; i < p.n && !rs.freq; i++) if (!p.t[i].used) QRecur(p, i, &rs, &mday);
+    if (rs.freq == 2 && !rs.wdMask) for (int i = 0; i + 1 < p.n; i++) if (QAny(p, i, L"по") && QWd(p, i + 1) >= 0) { int mask; QWdList(p, i + 1, &mask); rs.wdMask = mask; QUse(p, i, i + 1); break; }   // «каждые 2 недели по пн и ср»
+    if (rs.freq) for (int i = 0; i < p.n; i++) {                        // конец повтора: «до 31.12», «10 раз»
+        I64 d; int nt, v;
+        if (QAny(p, i, L"до") && QDateAt(p, i + 1, &d, &nt)) { rs.endKind = 1; rs.untilDay = d; QUse(p, i, i + 1 + nt); }
+        else if (QNum(p, i, &v) && v > 0 && QAny(p, i + 1, L"раз|раза")) { rs.endKind = 2; rs.count = v; QUse(p, i, i + 2); }
+    }
+    BOOL haveDay = FALSE, haveTime = FALSE, allDay = FALSE; I64 day = defDay, dur = 0; int tod = 0, endTod = -1;
+    for (int i = 0; i + 1 < p.n; i++) if (QAny(p, i, L"весь|целый") && QAny(p, i + 1, L"день")) { allDay = TRUE; QUse(p, i, i + 2); QEatPrev(p, i, L"на"); break; }
+    for (int i = 0; i < p.n; i++) {                                     // «через 2 часа|3 дня|неделю|полчаса»
+        if (!QAny(p, i, L"через")) continue;
+        int j = i + 1, v = 1, u; BOOL num = QNum(p, j, &v); if (num) j++;
+        if (!num && QAny(p, j, L"полчаса")) { u = 1; v = 30; } else u = QUnit(p, j);
+        if (!u) continue;
+        QUse(p, i, j + 1);
+        if (u <= 2) { I64 rel = FloorDiv(p.now, 60) * 60 + (I64)v * (u == 1 ? 60 : 3600); day = FloorDiv(rel, 86400); tod = (int)(rel - day * 86400); haveDay = haveTime = TRUE; }
+        else { day = u == 3 ? p.today + v : u == 4 ? p.today + 7 * v : DayAddMonths(p.today, u == 5 ? v : 12 * v); haveDay = TRUE; }
+        break;
+    }
+    for (int i = 0; i < p.n && !haveDay; i++) {                          // дата или день недели
+        I64 d; int nt;
+        if (QDateAt(p, i, &d, &nt)) { QUse(p, i, i + nt); QEatPrev(p, i, L"в|во|на"); day = d; haveDay = TRUE; }
+        else if (QWd(p, i) >= 0) {
+            int wd = QWd(p, i), td = Weekday(p.today); BOOL next = QAny(p, i - 1, L"следующий|следующую|следующее|след");
+            day = next ? p.today - td + 7 + wd : p.today + 1 + (wd - td + 6) % 7;
+            QUse(p, i, i + 1); if (next) p.t[i - 1].used = TRUE; QEatPrev(p, i - (next ? 1 : 0), L"в|во|на"); haveDay = TRUE;
+        }
+        if (haveDay) break;
+    }
+    if (!haveTime) for (int i = 0; i < p.n && !haveTime; i++) {          // время: «15:00», «14:30-16», «с 14 до 16», «в 9 вечера», «в полдень»
+        int t1, t2, nt, h, h2;
+        if (QTimeTok(p, i, &t1, &t2)) {
+            QUse(p, i, i + 1); QEatPrev(p, i, L"в|во|с|со|к"); tod = t1; endTod = t2; haveTime = TRUE;
+            if (t2 < 0 && QTimeEnd(p, i + 1, &t2, &nt)) { QUse(p, i + 1, i + 1 + nt); endTod = t2; }
+        } else if (QAny(p, i, L"с|со") && QNum(p, i + 1, &h) && QAny(p, i + 2, L"до") && QNum(p, i + 3, &h2) && h <= 23 && h2 <= 23) {
+            int j = i + 4; if (QAny(p, j, L"часов|часа|час|ч")) j++;
+            int dp = QDayPart(p, j); if (dp) j++;
+            QUse(p, i, j); tod = QHour(h, dp) * 3600; endTod = QHour(h2, dp) * 3600; haveTime = TRUE;
+        } else if (QAny(p, i, L"в|во") && QAny(p, i + 1, L"полдень|полночь")) {
+            tod = QAny(p, i + 1, L"полдень") ? 12 * 3600 : 0; QUse(p, i, i + 2); haveTime = TRUE;
+        } else if (QAny(p, i, L"в|во") && QNum(p, i + 1, &h) && h <= 23) {
+            int j = i + 2; if (QAny(p, j, L"часов|часа|час|ч")) j++;
+            int dp = QDayPart(p, j); if (dp) j++;
+            QUse(p, i, j); tod = QHour(h, dp) * 3600; haveTime = TRUE;
+            if (QTimeEnd(p, j, &t2, &nt)) { QUse(p, j, j + nt); endTod = t2; }
+        }
+    }
+    for (int i = 0; i < p.n; i++) {                                      // длительность: «на 2 часа», «на полчаса», «на 3 дня»
+        if (!QAny(p, i, L"на")) continue;
+        int j = i + 1, v = 1, u; BOOL num = QNum(p, j, &v); if (num) j++;
+        if (!num && QAny(p, j, L"полчаса")) { dur = 1800; QUse(p, i, j + 1); break; }
+        u = QUnit(p, j);
+        if (u >= 1 && u <= 4) { dur = (I64)v * (u == 1 ? 60 : u == 2 ? 3600 : u == 3 ? 86400 : 604800); QUse(p, i, j + 1); break; }
+    }
+    if (rs.freq == 2 && !haveDay) {                                      // первое вхождение: ближайший подходящий день не раньше defDay
+        int mask = rs.wdMask ? rs.wdMask : 1 << Weekday(defDay);
+        for (day = defDay; !(mask & (1 << Weekday(day))); day++) {}
+    } else if (rs.freq == 3 && mday && !haveDay) {
+        int y, m, d0; CivilFromDays(defDay, &y, &m, &d0);
+        for (int k = 0; k < 14; k++) {                                   // «каждое 15 число»: ближайшее 15-е не раньше defDay (месяцы без такого числа пропускаются)
+            I64 mi = (I64)y * 12 + (m - 1) + k, yy = FloorDiv(mi, 12), d;
+            if (MkDay((int)yy, (int)(mi - yy * 12) + 1, mday, &d) && d >= defDay) { day = d; break; }
+        }
+    }
+    q->allDay = allDay || !haveTime;
+    if (q->allDay) { I64 nd = dur >= 86400 ? dur / 86400 : 1; q->start = day * 86400; q->end = (day + nd) * 86400; }
+    else {
+        q->start = day * 86400 + tod;
+        q->end = endTod > tod ? day * 86400 + endTod : endTod >= 0 && endTod < tod ? (day + 1) * 86400 + endTod : q->start + (dur ? dur : 3600);
+    }
+    Buf b = {0};
+    for (int i = 0; i < p.n; i++) if (!p.t[i].used) { if (b.n) BufAdd(&b, L" "); BufAdd(&b, p.src + p.t[i].off, p.t[i].len); }
+    q->summary = b.p ? b.p : Dup(L""); if (q->summary[0]) CharUpperBuffW(q->summary, 1);
+    Free(p.lc); Free(p.t); return TRUE;
 }
 
 } // namespace Cal
