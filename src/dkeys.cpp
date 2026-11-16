@@ -292,6 +292,8 @@ X(L_CAL_MORE, "cal.more", L"+%d ещё") \
 X(L_CAL_CALS, "cal.calendars", L"Календари") \
 X(L_CAL_LOCAL, "cal.local", L"Локально") \
 X(L_CAL_NOTITLE, "cal.untitled", L"(без названия)") \
+X(L_CAL_YEARIN, "cal.year_enter", L"Ввести год…") \
+X(L_CAL_YEARIN_T, "cal.year_title", L"Год (число)") \
 X(L_CAL_ADD, "cal.add", L"+ Событие") \
 X(L_CAL_V_MONTH, "cal.view_month", L"Месяц") \
 X(L_CAL_V_WEEK, "cal.view_week", L"Неделя") \
@@ -899,7 +901,7 @@ Win+K=webcam
 Win+S=draw
 Win+Shift+C=colorpicker
 Win+Shift+R=record
-Win+Shift+K=calendar
+Alt+Win+C=calendar
 )INI";
 static const char *kIni2 = u8R"INI(
 [Schedule]
@@ -1375,11 +1377,12 @@ static void AudCommit(void) {
 }
 // Источники-скрипты календаря: calendars\<имя>.py; секции calendars\<имя>.ini - профили (источник имя:секция). Подключён - есть ini или папка .state;
 // иначе источник виден в списке, но не синхронизируется, пока не нажато «Подключить…». Вспомогательные (_*.py, dkcal.py) и тестовый stub.py без ini - не источники.
+static wchar_t g_calUnc[8][24]; static int g_nUnc;                           // скрипты без ini и .state: в списке не показываются, но доступны в «Подключить…»
 static void CalDiscover(void) {
     static const COLORREF pal[8] = {RGB(66, 133, 244), RGB(219, 68, 55), RGB(15, 157, 88), RGB(244, 180, 0), RGB(171, 71, 188), RGB(0, 172, 193), RGB(255, 112, 67), RGB(121, 134, 203)};
     CalSrc old[8]; memcpy(old, g_calSrc, sizeof old); int nold = g_ncalSrc;                 // показ и цвет уже известных источников сохраняются
     for (int i = 1; i < 8; i++) memset(&g_calSrc[i], 0, sizeof g_calSrc[i]);
-    g_ncalSrc = 1; g_calSrc[0].prov = g_calSrc[0].sync = FALSE;
+    g_ncalSrc = 1; g_calSrc[0].prov = g_calSrc[0].sync = FALSE; g_nUnc = 0;
     wchar_t dir[MAX_PATH], pat[MAX_PATH]; lstrcpynW(dir, g_dir, MAX_PATH); Cat(dir, MAX_PATH, L"calendars\\"); lstrcpyW(pat, dir); Cat(pat, MAX_PATH, L"*.py");
     WIN32_FIND_DATAW fd; HANDLE h = FindFirstFileW(pat, &fd);
     if (h == INVALID_HANDLE_VALUE) return;
@@ -1390,7 +1393,7 @@ static void CalDiscover(void) {
         if (stem[0] == L'_' || !lstrcmpiW(stem, L"dkcal")) continue;
         wchar_t ini[MAX_PATH], stt[MAX_PATH]; lstrcpyW(ini, dir); Cat(ini, MAX_PATH, stem); lstrcpyW(stt, ini); Cat(ini, MAX_PATH, L".ini"); Cat(stt, MAX_PATH, L".state");
         DWORD sa = GetFileAttributesW(stt); BOOL hasIni = GetFileAttributesW(ini) != INVALID_FILE_ATTRIBUTES, hasSt = sa != INVALID_FILE_ATTRIBUTES && (sa & FILE_ATTRIBUTE_DIRECTORY);
-        if (!lstrcmpiW(stem, L"stub") && !hasIni && !hasSt) continue;
+        if (!hasIni && !hasSt) { if (lstrcmpiW(stem, L"stub") && g_nUnc < 8) lstrcpyW(g_calUnc[g_nUnc++], stem); continue; }   // не подключён: нет ini - в списке не показываем
         wchar_t secs[1024]; DWORD ns = hasIni ? GetPrivateProfileSectionNamesW(secs, 1024, ini) : 0;
         for (const wchar_t *s = secs; ; ) {
             wchar_t id[24]; lstrcpyW(id, stem); BOOL last = FALSE;
@@ -8443,7 +8446,7 @@ static void CalHookEv(int kind, const Cal::Event *e);                           
 static void CalHookAt(int kind, const Cal::Event *e, Cal::I64 sw, Cal::I64 ew);
 namespace CalNs {
 using namespace CalView;
-struct Geo { RECT vw[4], panel, head, tgl, prev, next, tod, add, title, wd, grid, qbox, qlab, qedit, mPrev, mNext, mTitle, mWd, mGrid, srcHdr, src[8], hid, rem, sst, sbtn, cbtn; int wnW, mcw, mrh; };
+struct Geo { RECT vw[4], panel, head, tgl, prev, next, tod, add, dm, dy, title, wd, grid, qbox, qlab, qedit, mPrev, mNext, mTitle, mWd, mGrid, srcHdr, src[8], hid, rem, sst, sbtn, cbtn; int wnW, mcw, mrh; };
 static HWND hw, hQuick; static WNDPROC quickOld; static HBRUSH hbrQ; static RECT lastQ;
 static Cal::Store st; static Cal::OccList ol; static DayLists dl; static I64 *locStart;      // locStart[i] - начало вхождения i в местном времени
 static int dpi = 96, mY, mM, wheelAcc, selEv = -1; static BOOL dark, placing; static HFONT fN, fB, fT, fS;     // selEv - выбранное событие (индекс в st) в выбранном дне
@@ -8584,7 +8587,7 @@ static void SplitId(const wchar_t *id, wchar_t *stem, wchar_t *prof) {      // �
     int n = 0; while (id[n] && id[n] != L':') n++;
     lstrcpynW(stem, id, n + 1); lstrcpyW(prof, id[n] ? id + n + 1 : L"");
 }
-static BOOL HasProv(void) { for (int i = 0; i < g_ncalSrc; i++) if (g_calSrc[i].prov) return TRUE; return FALSE; }
+static BOOL HasProv(void) { if (g_nUnc) return TRUE; for (int i = 0; i < g_ncalSrc; i++) if (g_calSrc[i].prov) return TRUE; return FALSE; }
 static unsigned AllMask(void) { unsigned m = 0; for (int i = 0; i < g_ncalSrc; i++) if (g_calSrc[i].prov && g_calSrc[i].sync) m |= 1u << i; return m; }
 static void ErrText(const Cal::SyncStat &r, wchar_t *o, int cap) {
     wchar_t t[300];
@@ -8711,9 +8714,13 @@ static void SyTimer(UINT id) {
     else if (id == TID_SYNCD) { KillTimer(g_hwnd, TID_SYNCD); if (syDone) SyFinish(); else SyPump(); }
 }
 static DWORD WINAPI SetupWait(void *a) { WaitForSingleObject((HANDLE)a, INFINITE); CloseHandle((HANDLE)a); PostMessageW(g_hwnd, WM_APP_SETUP, 0, 0); return 0; }
+static void ConnectId(const wchar_t *id);
 static void Connect(int si) {                                       // «Подключить…»: скрипт setup в своей консоли; когда она закроется - источники ищутся заново и идёт синхронизация
     if (si < 0 || si >= g_ncalSrc || !g_calSrc[si].prov) return;
-    wchar_t stem[24], prof[24], dir[MAX_PATH], script[MAX_PATH]; SplitId(g_calSrc[si].id, stem, prof);
+    ConnectId(g_calSrc[si].id);
+}
+static void ConnectId(const wchar_t *id) {
+    wchar_t stem[24], prof[24], dir[MAX_PATH], script[MAX_PATH]; SplitId(id, stem, prof);
     lstrcpynW(dir, g_dir, MAX_PATH); Cat(dir, MAX_PATH, L"calendars\\"); lstrcpyW(script, dir); Cat(script, MAX_PATH, stem); Cat(script, MAX_PATH, L".py");
     Buf c = {0}; BufAdd(&c, L"cmd.exe /d /c \"chcp 65001 >nul & \""); BufAdd(&c, g_python); BufAdd(&c, L"\" \""); BufAdd(&c, script); BufAdd(&c, L"\" setup");
     if (prof[0]) { BufAdd(&c, L" --profile \""); BufAdd(&c, prof); BufAdd(&c, L"\""); }
@@ -8727,13 +8734,35 @@ static void Connect(int si) {                                       // «Под�
     } else { wchar_t m[200]; wsprintfW(m, Tr(L_T_PYFAIL), g_python); Toast(m); }
     Free(c.p);
 }
+static void PickYM(int y, int m) {                                    // перейти к месяцу/году, день по возможности сохраняется
+    int cy, cm, cd; Cal::CivilFromDays(sel, &cy, &cm, &cd); if (y < 1900) y = 1900; if (y > 2999) y = 2999;
+    int dim = Cal::DaysInMonth(y, m); SetSel(Cal::DaysFromCivil(y, m, cd > dim ? dim : cd));
+}
+static void DropMenu(BOOL year) {                                     // выпадающий список месяцев или лет под кнопкой
+    int y, m, d; Cal::CivilFromDays(sel, &y, &m, &d); HMENU mn = CreatePopupMenu();
+    if (!year) { for (int i = 0; i < 12; i++) { wchar_t t[24]; Item(Tr(L_CAL_MONTHS), i, t, 24); AppendMenuW(mn, MF_STRING | (i == m - 1 ? MF_CHECKED : 0), 200 + i, t); } }
+    else {
+        for (int k = -7; k <= 7; k++) { wchar_t t[12]; wsprintfW(t, L"%d", y + k); AppendMenuW(mn, MF_STRING | (k == 0 ? MF_CHECKED : 0), 300 + k + 7, t); }
+        AppendMenuW(mn, MF_SEPARATOR, 0, NULL); AppendMenuW(mn, MF_STRING, 299, Tr(L_CAL_YEARIN));
+    }
+    const RECT &b = year ? G.dy : G.dm; POINT p = {b.left, b.bottom}; ClientToScreen(hw, &p); g_menuOpen = TRUE;
+    int c = TrackPopupMenu(mn, TPM_RETURNCMD | TPM_RIGHTBUTTON, p.x, p.y, 0, hw, NULL); g_menuOpen = FALSE; DestroyMenu(mn);
+    if (c >= 200 && c < 212) PickYM(y, c - 200 + 1);
+    else if (c >= 300 && c < 315) PickYM(y + c - 307, m);
+    else if (c == 299) {
+        wchar_t cur[12]; wsprintfW(cur, L"%d", y); g_edLine = TRUE; wchar_t *s = EditDialog(Tr(L_CAL_YEARIN_T), cur); g_edLine = FALSE;
+        int v = s ? ToInt(s) : 0; Free(s); if (v >= 1900 && v <= 2999) PickYM(v, m);
+    }
+}
 static void ConnectMenu(int x, int y) {                             // кнопка «Подключить…»: один скрипт - сразу, несколько - выбор
-    int one = -1, n = 0; for (int i = 0; i < g_ncalSrc; i++) if (g_calSrc[i].prov) { one = i; n++; }
-    if (n == 1) { Connect(one); return; }
+    int one = -1, n = g_nUnc; for (int i = 0; i < g_ncalSrc; i++) if (g_calSrc[i].prov) { one = i; n++; }
+    if (n == 1 && one >= 0) { Connect(one); return; }
+    if (n == 1) { ConnectId(g_calUnc[0]); return; }
     HMENU m = CreatePopupMenu(); for (int i = 0; i < g_ncalSrc; i++) if (g_calSrc[i].prov) AppendMenuW(m, MF_STRING, 100 + i, g_calSrc[i].id);
+    for (int i = 0; i < g_nUnc; i++) AppendMenuW(m, MF_STRING, 200 + i, g_calUnc[i]);
     POINT p = {x, y}; ClientToScreen(hw, &p); g_menuOpen = TRUE;
     int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, p.x, p.y, 0, hw, NULL); g_menuOpen = FALSE; DestroyMenu(m);
-    if (cmd >= 100) Connect(cmd - 100);
+    if (cmd >= 200) ConnectId(g_calUnc[cmd - 200]); else if (cmd >= 100) Connect(cmd - 100);
 }
 static void PickColor(int si) {
     static COLORREF cust[16]; CHOOSECOLORW cc; memset(&cc, 0, sizeof cc);
@@ -8760,11 +8789,13 @@ static void Layout(int W, int H) {
     G.panel = Mk(0, 0, pw, H); G.head = Mk(mx, 0, W, hh);
     G.tgl = Mk(mx + pad, by, mx + pad + bs, by + bs);
     G.prev = Mk(G.tgl.right + Sc(12), by, G.tgl.right + Sc(12) + bs, by + bs);
-    G.tod = Mk(G.prev.right + Sc(4), by, G.prev.right + Sc(4) + Sc(80), by + bs);
+    G.tod = Mk(G.prev.right + Sc(4), by, G.prev.right + Sc(4) + Sc(74), by + bs);
     G.next = Mk(G.tod.right + Sc(4), by, G.tod.right + Sc(4) + bs, by + bs);
     G.add = Mk(W - pad - Sc(104), by, W - pad, by + bs);
-    for (int i = 0; i < 4; i++) G.vw[i] = Mk(G.add.left - Sc(12) - (4 - i) * Sc(58), by, G.add.left - Sc(12) - (3 - i) * Sc(58), by + bs);
-    G.title = Mk(G.next.right + Sc(16), 0, G.vw[0].left - Sc(8), hh);
+    for (int i = 0; i < 4; i++) G.vw[i] = Mk(G.add.left - Sc(12) - (4 - i) * Sc(56), by, G.add.left - Sc(12) - (3 - i) * Sc(56), by + bs);
+    G.dm = Mk(G.next.right + Sc(16), by, G.next.right + Sc(16) + Sc(104), by + bs);
+    G.dy = Mk(G.dm.right + Sc(6), by, G.dm.right + Sc(6) + Sc(66), by + bs);
+    G.title = Mk(G.dy.right + Sc(14), 0, G.vw[0].left - Sc(8), hh);
     G.wnW = g_calWkn ? Sc(34) : 0;
     G.qbox = Mk(mx + pad, H - pad - Sc(34), W - pad, H - pad);
     G.qlab = Mk(G.qbox.left + Sc(10), G.qbox.top, G.qbox.left + Sc(10) + Sc(64), G.qbox.bottom);
@@ -8889,12 +8920,21 @@ static void PaintHead(HDC dc, const Pal &P) {
         else { Button(dc, P, G.vw[i]); Txt(dc, Tr(vid[i]), G.vw[i], P.fg, DT_CENTER | DT_VCENTER); }
     }
     int y, m, d; Cal::CivilFromDays(sel, &y, &m, &d); wchar_t t[64]; MonthTitle(t, y, m);
+    {                                                                         // выпадающие списки: месяц и год
+        wchar_t mn[24], yn[12]; Item(Tr(L_CAL_MONTHS), m - 1, mn, 24); wsprintfW(yn, L"%d", y); SelectObject(dc, fB);
+        for (int k = 0; k < 2; k++) {
+            const RECT &b = k ? G.dy : G.dm; Button(dc, P, b);
+            RECT tr = b; tr.left += Sc(10); tr.right -= Sc(22); Txt(dc, k ? yn : mn, tr, P.fg, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+            RECT ar = b; ar.left = b.right - Sc(24); ar.right -= Sc(4); Txt(dc, L"\u25BE", ar, P.dim, DT_CENTER | DT_VCENTER);
+        }
+    }
     if (g_calView == 2) { wchar_t dn[16], mn[24]; Item(Tr(L_CAL_DAYS), Cal::Weekday(sel), dn, 16); Item(Tr(L_CAL_MONTHS), m - 1, mn, 24); wsprintfW(t, L"%s, %d %s %d", dn, d, mn, y); }
     else if (g_calView == 1) {
         int y2, m2, d2; wchar_t m1n[24], m2n[24]; Cal::CivilFromDays(first + 6, &y2, &m2, &d2); Cal::CivilFromDays(first, &y, &m, &d);
         Item(Tr(L_CAL_MONTHS), m - 1, m1n, 24); Item(Tr(L_CAL_MONTHS), m2 - 1, m2n, 24);
         if (m == m2) wsprintfW(t, L"%d\u2013%d %s %d", d, d2, m2n, y2); else wsprintfW(t, L"%d %s \u2013 %d %s %d", d, m1n, d2, m2n, y2);
     }
+    if (g_calView == 0 || g_calView == 3) return;                              // в месяце и списке заголовок - сами списки
     SelectObject(dc, fT); RECT cr = G.title; DrawTextW(dc, t, -1, &cr, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX); if (cr.right - cr.left > G.title.right - G.title.left) SelectObject(dc, fB);      // длинный заголовок - шрифтом поменьше
     Txt(dc, t, G.title, P.fg, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
 }
@@ -9703,6 +9743,8 @@ static void Click(int x, int y, BOOL dbl) {
     else if (PtInRect(&G.prev, p)) GoNav(-1);
     else if (PtInRect(&G.next, p)) GoNav(1);
     else if (PtInRect(&G.tod, p)) GoToday();
+    else if (PtInRect(&G.dm, p)) DropMenu(FALSE);
+    else if (PtInRect(&G.dy, p)) DropMenu(TRUE);
     else if (PtInRect(&G.add, p)) NewEvent(sel);
     else if (PtInRect(&G.vw[0], p) || PtInRect(&G.vw[1], p) || PtInRect(&G.vw[2], p) || PtInRect(&G.vw[3], p)) { for (int i = 0; i < 4; i++) if (PtInRect(&G.vw[i], p)) SetView(i); }
     else if (g_calView != 0) ClickTime(x, y, dbl);
@@ -9779,7 +9821,7 @@ static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if ((HWND)l == hQuick) { const Pal &P = dark ? ::kDark : ::kLight; SetTextColor((HDC)w, P.fg); SetBkColor((HDC)w, P.hdr); return (LRESULT)hbrQ; }
         break;
     case WM_SIZE: Inv(); return 0;
-    case WM_GETMINMAXINFO: { MINMAXINFO *mi = (MINMAXINFO *)l; mi->ptMinTrackSize.x = Sc(900); mi->ptMinTrackSize.y = Sc(420); return 0; }
+    case WM_GETMINMAXINFO: { MINMAXINFO *mi = (MINMAXINFO *)l; mi->ptMinTrackSize.x = Sc(770) + (g_calPanel ? Sc(232) : 0); mi->ptMinTrackSize.y = Sc(420); return 0; }
     case WM_LBUTTONDOWN: Click((short)LOWORD(l), (short)HIWORD(l), FALSE); return 0;
     case WM_LBUTTONDBLCLK: Click((short)LOWORD(l), (short)HIWORD(l), TRUE); return 0;
     case WM_RBUTTONUP: Context((short)LOWORD(l), (short)HIWORD(l)); return 0;
