@@ -73,6 +73,40 @@ static void BuildDays(const Cal::Store *st, const Cal::OccList *ol, I64 first, S
     }
 }
 
+// ---- сетка по часам (неделя/день): раскладка блоков и привязка к 15 минутам ----
+static const int SNAP = 900;                                   // шаг привязки, секунд
+static I64 SnapSec(I64 s) { return Cal::FloorDiv(s + SNAP / 2, SNAP) * SNAP; }
+// Блоки одного дня (минуты от полуночи, e > s): перекрывающиеся получают колонки рядом. col - колонка, ncol - число колонок в группе перекрытий.
+struct Blk { int s, e, col, ncol; };
+static const int MAXBLK = 64;
+static void LayoutBlocks(Blk *b, int n) {
+    int ord[MAXBLK]; if (n > MAXBLK) n = MAXBLK;
+    for (int i = 0; i < n; i++) { int j = i; while (j > 0 && (b[ord[j - 1]].s > b[i].s || (b[ord[j - 1]].s == b[i].s && b[ord[j - 1]].e < b[i].e))) { ord[j] = ord[j - 1]; j--; } ord[j] = i; }
+    int i = 0;
+    while (i < n) {
+        int colEnd[MAXBLK], nc = 0, gEnd = -1, j = i;               // группа: цепочка перекрытий
+        for (; j < n; j++) {
+            Blk &x = b[ord[j]]; if (j > i && x.s >= gEnd) break;
+            int c = 0; while (c < nc && colEnd[c] > x.s) c++;
+            if (c == nc) nc++;
+            colEnd[c] = x.e; x.col = c; if (x.e > gEnd) gEnd = x.e;
+        }
+        for (int k = i; k < j; k++) b[ord[k]].ncol = nc;
+        i = j;
+    }
+}
+// Перетаскивание блока: mode 0 - перенос, 1 - длительность (нижний край). s, e, delta - местные секунды; lockDay - день менять нельзя (повтор).
+static void DragApply(int mode, I64 s, I64 e, I64 delta, BOOL lockDay, I64 *ns, I64 *ne) {
+    if (mode == 0) {
+        I64 n = SnapSec(s + delta);
+        if (lockDay) n = Cal::FloorDiv(s, 86400) * 86400 + (n - Cal::FloorDiv(n, 86400) * 86400);
+        *ns = n; *ne = n + (e - s);
+    } else {
+        I64 n = SnapSec(e + delta); if (n < s + SNAP) n = s + SNAP;
+        *ns = s; *ne = n;
+    }
+}
+
 // Тестовые события (источник demo - в файлы не пишутся) вокруг дня today (в память, не в файл): повторы, целодневные, несколько дней, разные пояса, много событий в один день.
 static void DemoAdd(Cal::Store *st, const wchar_t *summary, BOOL allDay, const wchar_t *tz, I64 start, I64 end, const wchar_t *rrule) {
     Cal::Event *e = Cal::StoreNew(st); wchar_t u[80]; Cal::NewUid(u, 80);

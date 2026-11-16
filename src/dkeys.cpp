@@ -180,7 +180,7 @@ static DWORD g_ignoreSeq, g_ownSeq;
 struct CalSrc { wchar_t id[24]; COLORREF col; BOOL show, sync, prov; };             // источник календаря: id (local | имя | имя:профиль), цвет плашек, показывать, синхронизируется ли (подключён - тогда удаление надгробие, пока не отправлено), prov - есть скрипт в папке calendars
 static int g_calSyncMin = 15;                                                       // [Calendar] SyncMinutes: период синхронизации, минут (0 - только вручную)
 static CalSrc g_calSrc[8]; static int g_ncalSrc = 1;
-static int g_calView, g_calWs, g_calWkn, g_calPanel = 1, g_calWin[5], g_calAlarm = 10, g_calPopSec, g_calAdTod = 9 * 3600; static BOOL g_calDemo, g_calHid, g_calRem = TRUE, g_calSound = TRUE; static wchar_t g_calDefSrc[24];   // [Calendar] в ini: вид (0 месяц, 1 неделя), первый день недели (0 пн, 1 вс), номера недель, мини-панель, окно x,y,w,h,развёрнуто, тестовые события, напоминание по умолчанию (минут, 0 - без), источник по умолчанию, показывать скрытые; напоминания: включены, звук, автозакрытие (с, 0 - нет), час целодневных (секунды от полуночи)
+static int g_calWk[2] = {8, 20}; static int g_calView, g_calWs, g_calWkn, g_calPanel = 1, g_calWin[5], g_calAlarm = 10, g_calPopSec, g_calAdTod = 9 * 3600; static BOOL g_calDemo, g_calHid, g_calRem = TRUE, g_calSound = TRUE; static wchar_t g_calDefSrc[24];   // [Calendar] в ini: вид (0 месяц, 1 неделя, 2 день, 3 список), рабочие часы (начало, конец), первый день недели (0 пн, 1 вс), номера недель, мини-панель, окно x,y,w,h,развёрнуто, тестовые события, напоминание по умолчанию (минут, 0 - без), источник по умолчанию, показывать скрытые; напоминания: включены, звук, автозакрытие (с, 0 - нет), час целодневных (секунды от полуночи)
 
 static wchar_t g_editor[MAX_PATH];                                                      // [General] Editor: свой редактор (иначе Notepad++ / Блокнот)
 static int g_histOn, g_histMax = 50, g_pasteDelay = 300, g_copyTimeout = 600, g_pyPause = 1, g_toasts = 1;
@@ -293,6 +293,13 @@ X(L_CAL_CALS, "cal.calendars", L"Календари") \
 X(L_CAL_LOCAL, "cal.local", L"Локально") \
 X(L_CAL_NOTITLE, "cal.untitled", L"(без названия)") \
 X(L_CAL_ADD, "cal.add", L"+ Событие") \
+X(L_CAL_V_MONTH, "cal.view_month", L"Месяц") \
+X(L_CAL_V_WEEK, "cal.view_week", L"Неделя") \
+X(L_CAL_V_DAY, "cal.view_day", L"День") \
+X(L_CAL_V_LIST, "cal.view_list", L"Список") \
+X(L_CAL_V_ALLDAY, "cal.view_allday", L"весь день") \
+X(L_CAL_V_TOMORROW, "cal.view_tomorrow", L"Завтра") \
+X(L_CAL_V_NONE, "cal.view_none", L"Нет событий") \
 X(L_CAL_QUICK, "cal.quick", L"Быстро:") \
 X(L_CAL_QHINT, "cal.quick_hint", L"завтра 15:00 встреча, каждый понедельник 10:00 летучка") \
 X(L_CAL_SHOWHID, "cal.show_hidden", L"Показывать скрытые") \
@@ -1074,8 +1081,11 @@ PowerShell=powershell.exe
 
 [Calendar]
 ; Календарь (действие calendar, пункт меню значка). Локальные события лежат в memory\calendar\local.ics
-; View: month | week - вид при открытии (неделя пока показывается как месяц)
+; View: month | week | day | list - вид (запоминается при переключении в окне; клавиши M W D L)
 ;View=month
+; WorkStart, WorkEnd: рабочие часы - к ним прокручиваются виды «неделя» и «день»
+;WorkStart=8
+;WorkEnd=20
 ; WeekStart: mon | sun - первый день недели
 ;WeekStart=mon
 ; WeekNumbers: 1 - показывать номера недель (ISO)
@@ -1396,7 +1406,7 @@ static void CfgDefaults(void) {
     g_tmCurrent = g_tmMenuSlot = 0;
     g_mHover = 300; g_mPos[0] = g_mPos[1] = -99999;
     g_cfgCamDev[0] = 0; g_cfgCamW = g_cfgCamH = 0; memset(g_cfgWin, 0, sizeof g_cfgWin);
-    g_calView = g_calWs = g_calWkn = 0; g_calPanel = 1; g_calDemo = g_calHid = FALSE; g_calAlarm = 10; g_calDefSrc[0] = 0; memset(g_calWin, 0, sizeof g_calWin);
+    g_calView = g_calWs = g_calWkn = 0; g_calWk[0] = 8; g_calWk[1] = 20; g_calPanel = 1; g_calDemo = g_calHid = FALSE; g_calAlarm = 10; g_calDefSrc[0] = 0; memset(g_calWin, 0, sizeof g_calWin);
     g_calRem = g_calSound = TRUE; g_calPopSec = 0; g_calAdTod = 9 * 3600;
     memset(g_calSrc, 0, sizeof g_calSrc); g_ncalSrc = 1; lstrcpyW(g_calSrc[0].id, L"local"); g_calSrc[0].col = RGB(66, 133, 244); g_calSrc[0].show = TRUE;
     g_calSyncMin = 15; CalDiscover();
@@ -1534,7 +1544,9 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
             for (int i = 0; i < 4; i++) { g_cfgWin[i] = ToInt(q); while (*q && *q != L',') q++; if (*q) q++; }
         }
     } else if (!lstrcmpiW(s, L"Calendar")) {
-        if (!lstrcmpiW(k, L"View")) g_calView = !lstrcmpiW(v, L"week");
+        if (!lstrcmpiW(k, L"View")) g_calView = !lstrcmpiW(v, L"week") ? 1 : !lstrcmpiW(v, L"day") ? 2 : !lstrcmpiW(v, L"list") ? 3 : 0;
+        else if (!lstrcmpiW(k, L"WorkStart")) { g_calWk[0] = ToInt(v); if (g_calWk[0] < 0 || g_calWk[0] > 23) g_calWk[0] = 8; }
+        else if (!lstrcmpiW(k, L"WorkEnd")) { g_calWk[1] = ToInt(v); if (g_calWk[1] < 1 || g_calWk[1] > 24) g_calWk[1] = 20; }
         else if (!lstrcmpiW(k, L"WeekStart")) g_calWs = !lstrcmpiW(v, L"sun") || !lstrcmpiW(v, L"sunday");
         else if (!lstrcmpiW(k, L"WeekNumbers")) g_calWkn = ToInt(v) != 0;
         else if (!lstrcmpiW(k, L"Panel")) g_calPanel = ToInt(v) != 0;
@@ -8383,11 +8395,16 @@ static void NavRun(void) {                                      // клавиш�
 // Любое изменение: Cal::Touch, сразу запись файла источника (SaveSrc), перестройка вида. Диалоги (редактор, удаление) - свои, модальные, только из главного потока.
 namespace CalNs {
 using namespace CalView;
-struct Geo { RECT panel, head, tgl, prev, next, tod, add, title, wd, grid, qbox, qlab, qedit, mPrev, mNext, mTitle, mWd, mGrid, srcHdr, src[8], hid, rem, sst, sbtn, cbtn; int wnW, mcw, mrh; };
+struct Geo { RECT vw[4], panel, head, tgl, prev, next, tod, add, title, wd, grid, qbox, qlab, qedit, mPrev, mNext, mTitle, mWd, mGrid, srcHdr, src[8], hid, rem, sst, sbtn, cbtn; int wnW, mcw, mrh; };
 static HWND hw, hQuick; static WNDPROC quickOld; static HBRUSH hbrQ; static RECT lastQ;
 static Cal::Store st; static Cal::OccList ol; static DayLists dl; static I64 *locStart;      // locStart[i] - начало вхождения i в местном времени
 static int dpi = 96, mY, mM, wheelAcc, selEv = -1; static BOOL dark, placing; static HFONT fN, fB, fT, fS;     // selEv - выбранное событие (индекс в st) в выбранном дне
 static I64 sel, today, first; static Geo G;
+static I64 *locEnd;                                           // locEnd[i] - конец вхождения i в местном времени
+struct TG { int gx, gw, ncol, tTop, tBot, hh, adTop, adBot; };      // геометрия видов «неделя» и «день»
+struct TB { RECT r; int occ, day; BOOL ad; };                        // блок на экране (occ -1 - заголовок дня списка); day - номер дня от first
+static TB *tb; static int ntb, tbCap, tsc, lsc; static BOOL needScroll = TRUE;      // tsc, lsc - прокрутка сетки и списка, пикс.
+static int dOcc = -1, dMode; static BOOL dMoved; static I64 dRaw0, dS0, dE0, dS, dE; static POINT dP0;      // перетаскивание блока: вхождение, 0 перенос / 1 длительность, исходные и новые местные секунды
 
 static int Sc(int v) { return MulDiv(v, dpi, 96); }
 static RECT Mk(int l, int t, int r, int b) { RECT x = {l, t, r, b}; return x; }
@@ -8425,7 +8442,7 @@ static void DarkTitle(HWND h) {                               // тёмный з
 static void MakeQBrush(void) { if (hbrQ) DeleteObject(hbrQ); hbrQ = CreateSolidBrush((dark ? ::kDark : ::kLight).hdr); }
 
 /* данные */
-static void Cleanup(void) { Cal::StoreFree(&st); Cal::OccFree(&ol); DaysFree(&dl); Free(locStart); locStart = NULL; selEv = -1; }
+static void Cleanup(void) { Cal::StoreFree(&st); Cal::OccFree(&ol); DaysFree(&dl); Free(locStart); locStart = NULL; Free(locEnd); locEnd = NULL; Free(tb); tb = NULL; ntb = tbCap = 0; dOcc = -1; selEv = -1; }
 static void SrcFile(const wchar_t *id, const wchar_t *ext, wchar_t *p) {      // memory\calendar\<источник><ext>; двоеточие профиля в имени файла - тильда
     wchar_t rel[64]; lstrcpyW(rel, L"calendar\\"); int n = lstrlenW(rel);
     for (int i = 0; id[i] && n < 50; i++) rel[n++] = id[i] == L':' ? L'~' : id[i];
@@ -8446,17 +8463,31 @@ static void Load(void) {
     if (g_calDemo) DemoFill(&st, today);                      // [Calendar] Demo=1: тестовые события (источник demo) только в памяти
 }
 static void Rebuild(void) {                                   // события видимой сетки по дням
-    Cal::OccFree(&ol); DaysFree(&dl); Free(locStart); locStart = NULL;
+    Cal::OccFree(&ol); DaysFree(&dl); Free(locStart); locStart = NULL; Free(locEnd); locEnd = NULL;
+    if (dOcc >= 0) { dOcc = -1; dMoved = FALSE; if (GetCapture() == hw) ReleaseCapture(); }
     int y, m, d; Cal::CivilFromDays(sel, &y, &m, &d);
-    first = GridStart(y, m, g_calWs);
+    if (g_calView == 0) first = GridStart(y, m, g_calWs);
+    else if (g_calView == 1) { int wd = Cal::Weekday(sel); first = sel - (g_calWs ? (wd + 1) % 7 : wd); }
+    else first = sel;
     I64 a, b; Range(first, GRID, &a, &b);
     Cal::Query(&st, a, b, &ol, g_calHid);
     BuildDays(&st, &ol, first, ShowEv, &dl);
     locStart = (I64 *)Alloc((ol.n + 1) * sizeof(I64));
-    for (int i = 0; i < ol.n; i++) locStart[i] = ol.a[i].allDay ? ol.a[i].wall : Cal::UtcToWall(ol.a[i].s, L"");
+    locEnd = (I64 *)Alloc((ol.n + 1) * sizeof(I64));
+    for (int i = 0; i < ol.n; i++) { locStart[i] = ol.a[i].allDay ? ol.a[i].wall : Cal::UtcToWall(ol.a[i].s, L""); locEnd[i] = ol.a[i].allDay ? ol.a[i].wall + 86400 : Cal::UtcToWall(ol.a[i].e, L""); }
 }
 static void SetSel(I64 d) { sel = d; selEv = -1; int y, m, dd; Cal::CivilFromDays(d, &y, &m, &dd); mY = y; mM = m; Rebuild(); Inv(); }
 static void GoMonth(int n) { SetSel(ShiftMonths(sel, n)); }
+static void SelDay(I64 d) {                                   // выбрать день без перестройки (в пределах показанного)
+    if (g_calView == 3) return;
+    sel = d; selEv = -1; int y, m, dd; Cal::CivilFromDays(d, &y, &m, &dd); mY = y; mM = m; Inv();
+}
+static void GoNav(int dir) { if (g_calView == 0) GoMonth(dir); else SetSel(sel + dir * (g_calView == 2 ? 1 : 7)); }
+static void SetView(int v) {
+    static const wchar_t *const nm[4] = {L"month", L"week", L"day", L"list"};
+    if (v < 0 || v > 3 || v == g_calView) return;
+    g_calView = v; IniSet(L"Calendar", L"View", nm[v]); needScroll = TRUE; lsc = 0; SetSel(sel);
+}
 static void GoToday(void) { today = TodayLocal(); SetSel(today); }
 static I64 LocalDay(const Cal::Event &e) {                    // день начала события в местном времени
     if (e.allDay) return Cal::FloorDiv(e.start, 86400);
@@ -8680,10 +8711,11 @@ static void Layout(int W, int H) {
     G.panel = Mk(0, 0, pw, H); G.head = Mk(mx, 0, W, hh);
     G.tgl = Mk(mx + pad, by, mx + pad + bs, by + bs);
     G.prev = Mk(G.tgl.right + Sc(12), by, G.tgl.right + Sc(12) + bs, by + bs);
-    G.tod = Mk(G.prev.right + Sc(4), by, G.prev.right + Sc(4) + Sc(92), by + bs);
+    G.tod = Mk(G.prev.right + Sc(4), by, G.prev.right + Sc(4) + Sc(80), by + bs);
     G.next = Mk(G.tod.right + Sc(4), by, G.tod.right + Sc(4) + bs, by + bs);
-    G.add = Mk(W - pad - Sc(116), by, W - pad, by + bs);
-    G.title = Mk(G.next.right + Sc(16), 0, G.add.left - Sc(8), hh);
+    G.add = Mk(W - pad - Sc(104), by, W - pad, by + bs);
+    for (int i = 0; i < 4; i++) G.vw[i] = Mk(G.add.left - Sc(12) - (4 - i) * Sc(58), by, G.add.left - Sc(12) - (3 - i) * Sc(58), by + bs);
+    G.title = Mk(G.next.right + Sc(16), 0, G.vw[0].left - Sc(8), hh);
     G.wnW = g_calWkn ? Sc(34) : 0;
     G.qbox = Mk(mx + pad, H - pad - Sc(34), W - pad, H - pad);
     G.qlab = Mk(G.qbox.left + Sc(10), G.qbox.top, G.qbox.left + Sc(10) + Sc(64), G.qbox.bottom);
@@ -8767,7 +8799,8 @@ static void PaintMini(HDC dc, const Pal &P) {
         RECT r = Mk(G.mGrid.left + (i % 7) * G.mcw, G.mGrid.top + (i / 7) * G.mrh, G.mGrid.left + (i % 7 + 1) * G.mcw, G.mGrid.top + (i / 7 + 1) * G.mrh);
         RECT c = r; InflateRect(&c, -Sc(2), -Sc(1));
         COLORREF fg = m != mM ? P.dim : P.fg;
-        if (day == sel) Round(dc, c, P.sel, Sc(8), FALSE);
+        if (g_calView == 1 && day >= first && day < first + 7) { RECT wr = r; if (day == first) wr.left += Sc(2); if (day == first + 6) wr.right -= Sc(2); InflateRect(&wr, 0, -Sc(1)); Fill(dc, wr, P.sel); }
+        if (day == sel && g_calView != 1) Round(dc, c, P.sel, Sc(8), FALSE);
         if (day == today) { int s = c.bottom - c.top, cx = (c.left + c.right) / 2; RECT e = Mk(cx - s / 2, c.top, cx - s / 2 + s, c.bottom); Round(dc, e, P.acc, 0, TRUE); fg = RGB(255, 255, 255); }
         wsprintfW(t, L"%d", d); SelectObject(dc, day == today ? fB : fN); Txt(dc, t, r, fg, DT_CENTER | DT_VCENTER);
     }
@@ -8800,8 +8833,21 @@ static void PaintHead(HDC dc, const Pal &P) {
     Button(dc, P, G.next); Chev(dc, G.next, 1, P.fg);
     Button(dc, P, G.tod); SelectObject(dc, fB); Txt(dc, Tr(L_CAL_TODAY), G.tod, P.fg, DT_CENTER | DT_VCENTER);
     Button(dc, P, G.add); Txt(dc, Tr(L_CAL_ADD), G.add, P.fg, DT_CENTER | DT_VCENTER);
-    int y, m, d; Cal::CivilFromDays(sel, &y, &m, &d); wchar_t t[48]; MonthTitle(t, y, m);
-    SelectObject(dc, fT); Txt(dc, t, G.title, P.fg, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+    static const int vid[4] = {L_CAL_V_MONTH, L_CAL_V_WEEK, L_CAL_V_DAY, L_CAL_V_LIST};
+    SelectObject(dc, fB);
+    for (int i = 0; i < 4; i++) {
+        if (i == g_calView) { Round(dc, G.vw[i], P.acc, Sc(8), FALSE); Txt(dc, Tr(vid[i]), G.vw[i], OnCol(P.acc), DT_CENTER | DT_VCENTER); }
+        else { Button(dc, P, G.vw[i]); Txt(dc, Tr(vid[i]), G.vw[i], P.fg, DT_CENTER | DT_VCENTER); }
+    }
+    int y, m, d; Cal::CivilFromDays(sel, &y, &m, &d); wchar_t t[64]; MonthTitle(t, y, m);
+    if (g_calView == 2) { wchar_t dn[16], mn[24]; Item(Tr(L_CAL_DAYS), Cal::Weekday(sel), dn, 16); Item(Tr(L_CAL_MONTHS), m - 1, mn, 24); wsprintfW(t, L"%s, %d %s %d", dn, d, mn, y); }
+    else if (g_calView == 1) {
+        int y2, m2, d2; wchar_t m1n[24], m2n[24]; Cal::CivilFromDays(first + 6, &y2, &m2, &d2); Cal::CivilFromDays(first, &y, &m, &d);
+        Item(Tr(L_CAL_MONTHS), m - 1, m1n, 24); Item(Tr(L_CAL_MONTHS), m2 - 1, m2n, 24);
+        if (m == m2) wsprintfW(t, L"%d\u2013%d %s %d", d, d2, m2n, y2); else wsprintfW(t, L"%d %s \u2013 %d %s %d", d, m1n, d2, m2n, y2);
+    }
+    SelectObject(dc, fT); RECT cr = G.title; DrawTextW(dc, t, -1, &cr, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX); if (cr.right - cr.left > G.title.right - G.title.left) SelectObject(dc, fB);      // длинный заголовок - шрифтом поменьше
+    Txt(dc, t, G.title, P.fg, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
 }
 static void Plate(HDC dc, const Pal &P, int occ, I64 day, int x0, int y0, int x1, int ph, BOOL other) {      // плашка события в клетке дня
     const Cal::Occ &o = ol.a[occ]; const Cal::Event &e = st.ev[o.ev]; COLORREF col = ColOf(&e); BOOL hid = e.hidden;
@@ -8855,6 +8901,143 @@ static void PaintGrid(HDC dc, const Pal &P) {
         }
     }
 }
+/* виды «неделя», «день» и «список» */
+static void TimeGeo(TG *g) {
+    g->ncol = g_calView == 1 ? 7 : 1; g->gx = G.wd.left + Sc(56); g->gw = G.wd.right - g->gx; if (g->gw < g->ncol) g->gw = g->ncol;
+    g->hh = Sc(44); int nad = 0;
+    for (int c = 0; c < g->ncol; c++) { int n = 0; for (int k = dl.off[c]; k < dl.off[c + 1]; k++) if (ol.a[dl.items[k]].allDay) n++; if (n > nad) nad = n; }
+    if (nad > 4) nad = 4;
+    g->adTop = G.grid.top; g->adBot = g->adTop + (nad ? nad * Sc(20) + Sc(6) : Sc(26));
+    g->tTop = g->adBot + 1; g->tBot = G.grid.bottom; if (g->tBot < g->tTop + Sc(40)) g->tBot = g->tTop + Sc(40);
+}
+static int ColX(const TG &g, int c) { return g.gx + c * g.gw / g.ncol; }
+static int ColAt(const TG &g, int x) { if (x < g.gx || x >= g.gx + g.gw) return -1; return (x - g.gx) * g.ncol / g.gw; }
+static void AddTB(int l, int t, int r, int b, int occ, int day, BOOL ad) { TB &x = tb[ntb++]; x.r = Mk(l, t, r, b); x.occ = occ; x.day = day; x.ad = ad; }
+static void BuildBlocks(void) {                                // блоки событий на экране для видов 1-3 (с учётом прокрутки)
+    ntb = 0; if (g_calView == 0 || !dl.items) return;
+    int need = dl.off[GRID] + GRID + 4; if (need > tbCap) { Free(tb); tbCap = need + 64; tb = (TB *)Alloc(tbCap * sizeof(TB)); }
+    if (g_calView == 3) {
+        int top = G.wd.top, bot = G.grid.bottom, y = top, hdrH = Sc(30), rowH = Sc(28);
+        for (int k = 0; k < 30; k++) {
+            int a = dl.off[k], b = dl.off[k + 1]; if (a == b) continue;
+            AddTB(G.wd.left, y, G.wd.right, y + hdrH, -1, k, FALSE); y += hdrH;
+            for (int i = a; i < b; i++) { AddTB(G.wd.left, y, G.wd.right, y + rowH, dl.items[i], k, FALSE); y += rowH; }
+            y += Sc(6);
+        }
+        int mx = y - top - (bot - top); if (mx < 0) mx = 0; if (lsc > mx) lsc = mx; if (lsc < 0) lsc = 0;
+        for (int i = 0; i < ntb; i++) { tb[i].r.top -= lsc; tb[i].r.bottom -= lsc; }
+        return;
+    }
+    TG g; TimeGeo(&g);
+    int mx = 24 * g.hh - (g.tBot - g.tTop); if (mx < 0) mx = 0;
+    if (needScroll) {                                          // при открытии: к началу рабочего дня, а если сейчас вне рабочих часов - к текущему часу
+        needScroll = FALSE; int h = g_calWk[0]; I64 nw = Cal::UtcToWall(Cal::NowUtc(), L""), td = Cal::FloorDiv(nw, 86400);
+        if (td >= first && td < first + g.ncol) { int nh = (int)((nw - td * 86400) / 3600); if (nh < g_calWk[0] || nh >= g_calWk[1]) h = nh > 0 ? nh - 1 : 0; }
+        tsc = h * g.hh;
+    }
+    if (tsc > mx) tsc = mx; if (tsc < 0) tsc = 0;
+    for (int c = 0; c < g.ncol; c++) {
+        I64 day = first + c; int x0 = ColX(g, c), x1 = ColX(g, c + 1), k = 0, nb = 0; Blk bl[MAXBLK]; int ix[MAXBLK];
+        for (int i = dl.off[c]; i < dl.off[c + 1]; i++) {
+            int oc = dl.items[i];
+            if (ol.a[oc].allDay) { if (k < 4) AddTB(x0 + Sc(2), g.adTop + Sc(3) + k * Sc(20), x1 - Sc(2), g.adTop + Sc(21) + k * Sc(20), oc, c, TRUE); k++; continue; }
+            if ((dMoved && oc == dOcc) || nb >= MAXBLK) continue;
+            I64 s = (locStart[oc] - day * 86400) / 60, e = (locEnd[oc] - day * 86400 + 59) / 60;
+            if (s < 0) s = 0; if (s > 1420) s = 1420; if (e > 1440) e = 1440; if (e < s + 20) e = s + 20; if (e > 1440) { e = 1440; s = 1420; }
+            bl[nb].s = (int)s; bl[nb].e = (int)e; ix[nb++] = oc;
+        }
+        LayoutBlocks(bl, nb);
+        for (int j = 0; j < nb; j++) {
+            int cw = x1 - x0 - Sc(4), l = x0 + Sc(2) + bl[j].col * cw / bl[j].ncol, r = x0 + Sc(2) + (bl[j].col + 1) * cw / bl[j].ncol - 1;
+            AddTB(l, g.tTop + bl[j].s * g.hh / 60 - tsc, r, g.tTop + bl[j].e * g.hh / 60 - tsc, ix[j], c, FALSE);
+        }
+    }
+}
+static int HitTB(int x, int y) {                               // индекс блока под курсором или -1 (заголовки дней списка не считаются)
+    TG g; if (g_calView != 3) TimeGeo(&g);
+    POINT p = {x, y};
+    for (int i = ntb - 1; i >= 0; i--) {
+        if (tb[i].occ < 0 || !PtInRect(&tb[i].r, p)) continue;
+        if (g_calView == 3 || tb[i].ad || (y >= g.tTop && y < g.tBot)) return i;
+    }
+    return -1;
+}
+static void Outline(HDC dc, const RECT &r, COLORREF c) {
+    RECT a = Mk(r.left - 1, r.top - 1, r.right + 1, r.top + 1), b = Mk(r.left - 1, r.bottom - 1, r.right + 1, r.bottom + 1), l = Mk(r.left - 1, r.top, r.left + 1, r.bottom), q = Mk(r.right - 1, r.top, r.right + 1, r.bottom);
+    Fill(dc, a, c); Fill(dc, b, c); Fill(dc, l, c); Fill(dc, q, c);
+}
+static void Block(HDC dc, const Pal &P, const RECT &r, int occ, BOOL ad) {
+    const Cal::Event &e = st.ev[ol.a[occ].ev]; COLORREF col = ColOf(&e); BOOL hid = e.hidden;
+    const wchar_t *s = e.summary && *e.summary ? e.summary : Tr(L_CAL_NOTITLE);
+    Round(dc, r, hid ? Mix(col, P.bg, 30) : col, Sc(5), FALSE);
+    RECT tr = r; tr.left += Sc(5); tr.top += ad ? 0 : Sc(2); tr.right -= Sc(3); SelectObject(dc, fN);
+    COLORREF fg = hid ? P.dim : OnCol(col);
+    if (ad) { Txt(dc, s, tr, fg, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS | DT_SINGLELINE); return; }
+    Cal::Tm tm = Cal::SecToTm(locStart[occ]); wchar_t t[200]; wsprintfW(t, L"%02d:%02d %s", tm.h, tm.mi, s);
+    SetTextColor(dc, fg); DrawTextW(dc, t, -1, &tr, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_END_ELLIPSIS | DT_NOPREFIX);
+}
+static void PaintTime(HDC dc, const Pal &P) {                  // вид «неделя» / «день»
+    TG g; TimeGeo(&g); wchar_t t[48];
+    for (int c = 0; c < g.ncol; c++) {                         // заголовки дней
+        I64 day = first + c; int y, m, d; Cal::CivilFromDays(day, &y, &m, &d); wchar_t n[16]; Item(Tr(L_CAL_DAYS), Cal::Weekday(day), n, 16);
+        wsprintfW(t, L"%s %d", n, d); RECT r = Mk(ColX(g, c), G.wd.top, ColX(g, c + 1), G.wd.bottom);
+        if (day == today) { SelectObject(dc, fB); Txt(dc, t, r, P.acc, DT_CENTER | DT_VCENTER); } else { SelectObject(dc, fN); Txt(dc, t, r, day == sel ? P.fg : P.dim, DT_CENTER | DT_VCENTER); }
+    }
+    SelectObject(dc, fS); RECT al = Mk(G.wd.left, g.adTop, g.gx - Sc(6), g.adTop + Sc(26)); Txt(dc, Tr(L_CAL_V_ALLDAY), al, P.dim, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+    for (int i = 0; i < ntb; i++) if (tb[i].ad) Block(dc, P, tb[i].r, tb[i].occ, TRUE);
+    int sv = SaveDC(dc); IntersectClipRect(dc, G.wd.left, g.tTop, G.wd.right, g.tBot);
+    for (int h = 0; h <= 24; h++) {
+        int y = g.tTop + h * g.hh - tsc; if (y < g.tTop - Sc(16) || y > g.tBot) continue;
+        RECT ln = Mk(g.gx, y, g.gx + g.gw, y + 1); Fill(dc, ln, P.bd);
+        if (h < 24) { wsprintfW(t, L"%02d:00", h); RECT lr = Mk(G.wd.left, y + Sc(1), g.gx - Sc(6), y + Sc(16)); SelectObject(dc, fS); Txt(dc, t, lr, P.dim, DT_RIGHT | DT_TOP | DT_SINGLELINE); }
+    }
+    for (int i = 0; i < ntb; i++) if (!tb[i].ad) { Block(dc, P, tb[i].r, tb[i].occ, FALSE); }
+    if (selEv >= 0) for (int i = 0; i < ntb; i++) if (ol.a[tb[i].occ].ev == selEv) Outline(dc, tb[i].r, P.fg);
+    if (dOcc >= 0 && dMoved) {                                 // предварительный вид перетаскиваемого блока
+        const Cal::Event &e = st.ev[ol.a[dOcc].ev]; COLORREF col = ColOf(&e);
+        for (int c = 0; c < g.ncol; c++) {
+            I64 d0 = (first + c) * 86400, a = dS > d0 ? dS : d0, b = dE < d0 + 86400 ? dE : d0 + 86400; if (b <= a) continue;
+            RECT r = Mk(ColX(g, c) + Sc(2), g.tTop + (int)(a - d0) * g.hh / 3600 - tsc, ColX(g, c + 1) - Sc(2), g.tTop + (int)(b - d0) * g.hh / 3600 - tsc);
+            Round(dc, r, col, Sc(5), FALSE); Outline(dc, r, P.fg);
+            Cal::Tm t1 = Cal::SecToTm(dS), t2 = Cal::SecToTm(dE); wsprintfW(t, L"%02d:%02d–%02d:%02d", t1.h, t1.mi, t2.h, t2.mi);
+            RECT tr = r; tr.left += Sc(5); tr.top += Sc(2); SelectObject(dc, fN); Txt(dc, t, tr, OnCol(col), DT_LEFT | DT_TOP | DT_SINGLELINE);
+        }
+    }
+    I64 nw = Cal::UtcToWall(Cal::NowUtc(), L""), td = Cal::FloorDiv(nw, 86400);
+    if (td >= first && td < first + g.ncol) {                  // линия «сейчас»
+        int y = g.tTop + (int)(nw - td * 86400) * g.hh / 3600 - tsc, c = (int)(td - first); COLORREF red = RGB(230, 60, 60);
+        RECT l1 = Mk(g.gx, y, g.gx + g.gw, y + 1), l2 = Mk(ColX(g, c), y - 1, ColX(g, c + 1), y + 1), dot = Mk(ColX(g, c) - Sc(4), y - Sc(4), ColX(g, c) + Sc(4), y + Sc(4));
+        Fill(dc, l1, Mix(red, P.bg, 45)); Fill(dc, l2, red); Round(dc, dot, red, 0, TRUE);
+    }
+    RestoreDC(dc, sv);
+    for (int c = 0; c <= g.ncol; c++) { RECT l = Mk(ColX(g, c), g.adTop, ColX(g, c) + 1, g.tBot); Fill(dc, l, P.bd); }
+    RECT hl = Mk(G.wd.left, g.adBot, g.gx + g.gw, g.adBot + 1); Fill(dc, hl, P.bd);
+}
+static void PaintList(HDC dc, const Pal &P) {                  // вид «список»: ближайшие 30 дней, по дням
+    int top = G.wd.top, bot = G.grid.bottom;
+    if (!ntb) { RECT r = Mk(G.wd.left, top + Sc(20), G.wd.right, top + Sc(60)); SelectObject(dc, fN); Txt(dc, Tr(L_CAL_V_NONE), r, P.dim, DT_CENTER | DT_VCENTER); return; }
+    int sv = SaveDC(dc); IntersectClipRect(dc, G.wd.left, top, G.wd.right, bot); wchar_t t[160];
+    for (int i = 0; i < ntb; i++) {
+        const RECT &r = tb[i].r; if (r.bottom < top || r.top > bot) continue;
+        I64 day = first + tb[i].day;
+        if (tb[i].occ < 0) {
+            int y, m, d; Cal::CivilFromDays(day, &y, &m, &d); wchar_t dn[16], mn[24]; Item(Tr(L_CAL_DAYS), Cal::Weekday(day), dn, 16); Item(Tr(L_CAL_MONTHS), m - 1, mn, 24);
+            if (day == today) wsprintfW(t, L"%s — %s, %d %s", Tr(L_CAL_TODAY), dn, d, mn); else if (day == today + 1) wsprintfW(t, L"%s — %s, %d %s", Tr(L_CAL_V_TOMORROW), dn, d, mn); else wsprintfW(t, L"%s, %d %s", dn, d, mn);
+            RECT hr = r; hr.left += Sc(8); SelectObject(dc, fB); Txt(dc, t, hr, day == today ? P.acc : P.fg, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            RECT ln = Mk(r.left, r.bottom - 1, r.right, r.bottom); Fill(dc, ln, P.bd); continue;
+        }
+        const Cal::Occ &o = ol.a[tb[i].occ]; const Cal::Event &e = st.ev[o.ev]; COLORREF col = ColOf(&e); BOOL hid = e.hidden;
+        if (o.ev == selEv) Fill(dc, r, P.sel);
+        int dd = Sc(10); RECT dot = Mk(r.left + Sc(12), (r.top + r.bottom - dd) / 2, r.left + Sc(12) + dd, (r.top + r.bottom - dd) / 2 + dd); Round(dc, dot, hid ? Mix(col, P.bg, 30) : col, 0, TRUE);
+        if (o.allDay) lstrcpyW(t, Tr(L_CAL_V_ALLDAY));
+        else { Cal::Tm a = Cal::SecToTm(locStart[tb[i].occ]), b = Cal::SecToTm(locEnd[tb[i].occ]); wsprintfW(t, L"%02d:%02d–%02d:%02d", a.h, a.mi, b.h, b.mi); }
+        RECT tr = Mk(dot.right + Sc(10), r.top, dot.right + Sc(10) + Sc(110), r.bottom); SelectObject(dc, fN); Txt(dc, t, tr, P.dim, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        const wchar_t *s = e.summary && *e.summary ? e.summary : Tr(L_CAL_NOTITLE); wchar_t t2[260]; lstrcpynW(t2, s, 200);
+        if (e.loc && *e.loc) { Cat(t2, 260, L"  ·  "); Cat(t2, 260, e.loc); }
+        RECT sr = Mk(tr.right, r.top, r.right - Sc(8), r.bottom); Txt(dc, t2, sr, hid ? P.dim : P.fg, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS | DT_SINGLELINE);
+    }
+    RestoreDC(dc, sv);
+}
 static void PaintQuick(HDC dc, const Pal &P) {                              // строка быстрого ввода внизу (сам ввод - поле hQuick)
     Round(dc, G.qbox, P.bd, Sc(8), FALSE); RECT i = G.qbox; InflateRect(&i, -1, -1); Round(dc, i, P.hdr, Sc(8), FALSE);
     SelectObject(dc, fB); Txt(dc, Tr(L_CAL_QUICK), G.qlab, P.dim, DT_LEFT | DT_VCENTER);
@@ -8864,7 +9047,9 @@ static void Paint(HDC dc, int W, int H) {
     RECT all = Mk(0, 0, W, H); Fill(dc, all, P.bg); SetBkMode(dc, TRANSPARENT);
     Layout(W, H);
     if (g_calPanel) PaintMini(dc, P);
-    PaintHead(dc, P); PaintGrid(dc, P); PaintQuick(dc, P);
+    PaintHead(dc, P);
+    if (g_calView == 0) PaintGrid(dc, P); else { BuildBlocks(); if (g_calView == 3) PaintList(dc, P); else PaintTime(dc, P); }
+    PaintQuick(dc, P);
 }
 /* ---------- диалоги: редактор события и удаление (свои, GDI; кнопки, галочки, радио и выпадающие списки рисуются сами - тёмная/светлая тема) ---------- */
 enum { R_NONE, R_SAVE, R_DELETE, R_DALL, R_DHID };
@@ -9261,13 +9446,16 @@ static void EnsureShown(int si) {                             // событие 
 }
 static void Focus(int idx) {                                  // перейти к событию idx и выделить его
     if (idx < 0 || idx >= st.n) { Rebuild(); Inv(); return; }
-    SetSel(LocalDay(st.ev[idx])); selEv = idx; Inv();
+    I64 d = LocalDay(st.ev[idx]);
+    if (g_calView == 3 && d >= first && d < first + 30) { Rebuild(); selEv = idx; Inv(); return; }      // список не прыгает к началу события
+    SetSel(d); selEv = idx; Inv();
 }
-static void NewEvent(I64 day) {
+static void NewEvent(I64 day, int hour = -1) {
     if (Busy()) return;
     Cal::Event w; memset(&w, 0, sizeof w); wchar_t u[80], tz[80]; Cal::NewUid(u, 80); Cal::SetStr(&w.uid, u);
     Cal::LocalTzid(tz, 80); Cal::SetStr(&w.tzid, tz[0] ? tz : NULL);
     int h = 9; if (day == today) { h = (int)((Cal::UtcToWall(Cal::NowUtc(), L"") - today * 86400) / 3600) + 1; if (h > 22) h = 22; }
+    if (hour >= 0 && hour < 24) h = hour;
     w.start = day * 86400 + h * 3600; w.end = w.start + 3600; if (g_calAlarm > 0) Cal::AddAlarm(&w, g_calAlarm);
     int si = DefSrc(), os = si; BOOL keep = FALSE;
     if (EditDlg(&w, TRUE, si, &os, &keep) == R_SAVE) {
@@ -9342,11 +9530,72 @@ static void CycleSel(int dir) {                                // Tab / Shift+Ta
     int k = cur < 0 ? (dir > 0 ? 0 : n - 1) : (cur + dir + n) % n;
     selEv = ol.a[dl.items[a + k]].ev; Inv();
 }
+/* ввод в видах «неделя», «день», «список» */
+static I64 CurSec(const TG &g, int x, int y) {                 // местные секунды под курсором (колонка зажата в видимые)
+    int c = (x - g.gx) * g.ncol / g.gw; if (c < 0) c = 0; if (c >= g.ncol) c = g.ncol - 1;
+    I64 s = (I64)(y - g.tTop + tsc) * 3600 / g.hh; if (s < 0) s = 0; if (s > 86399) s = 86399;
+    return (first + c) * 86400 + s;
+}
+static void DragMove(int x, int y) {
+    if (dOcc < 0) return;
+    if (!dMoved && (x - dP0.x < Sc(4) && dP0.x - x < Sc(4)) && (y - dP0.y < Sc(4) && dP0.y - y < Sc(4))) return;
+    TG g; TimeGeo(&g); const Cal::Event &e = st.ev[ol.a[dOcc].ev];
+    DragApply(dMode, dS0, dE0, CurSec(g, x, y) - dRaw0, e.rrule && *e.rrule != 0, &dS, &dE);   // у повторяющегося день менять нельзя (правило задаёт дни)
+    dMoved = TRUE; BuildBlocks(); Inv();
+}
+static void DragEnd(BOOL apply) {
+    if (dOcc < 0) return;
+    int oc = dOcc, mv = dMoved; dOcc = -1; dMoved = FALSE; if (GetCapture() == hw) ReleaseCapture();
+    if (apply && mv && (dS != dS0 || dE != dE0)) {
+        int ev = ol.a[oc].ev; Cal::Event *e = &st.ev[ev]; int s = SrcOf(e); wchar_t id[24]; lstrcpynW(id, s >= 0 ? g_calSrc[s].id : L"", 24);
+        e->start += dS - dS0; e->end += dE - dE0; Cal::Touch(e);
+        SaveSrc(id); Rebuild(); selEv = ev;
+    }
+    Inv();
+}
+static void ListStep(int dir) {                                // список: выбрать следующее / предыдущее событие
+    BuildBlocks(); int cur = -1;
+    for (int i = 0; i < ntb; i++) if (tb[i].occ >= 0 && ol.a[tb[i].occ].ev == selEv) { cur = i; break; }
+    int i = cur; do { i += dir; } while (i >= 0 && i < ntb && tb[i].occ < 0);
+    if (i < 0 || i >= ntb) { if (cur >= 0) return; for (i = 0; i < ntb && tb[i].occ < 0; i++); if (i >= ntb) return; }
+    selEv = ol.a[tb[i].occ].ev; int top = G.wd.top, bot = G.grid.bottom;
+    if (tb[i].r.top < top) lsc -= top - tb[i].r.top; else if (tb[i].r.bottom > bot) lsc += tb[i].r.bottom - bot;
+    Inv();
+}
+static void ClickTime(int x, int y, BOOL dbl) {
+    BuildBlocks(); TG g; if (g_calView != 3) TimeGeo(&g);
+    int i = HitTB(x, y);
+    if (i >= 0) {
+        int ev = ol.a[tb[i].occ].ev;
+        if (g_calView != 3) SelDay(first + tb[i].day);
+        selEv = ev; Inv();
+        if (dbl) { EditEvent(ev); return; }
+        if (g_calView != 3 && !tb[i].ad) {                     // начать перетаскивание; у нижнего края - растягивание
+            dOcc = tb[i].occ; dMode = y >= tb[i].r.bottom - Sc(6) ? 1 : 0; dS0 = dS = locStart[dOcc]; dE0 = dE = locEnd[dOcc];
+            dP0.x = x; dP0.y = y; dMoved = FALSE; dRaw0 = CurSec(g, x, y); SetCapture(hw);
+        }
+        return;
+    }
+    if (g_calView == 3) return;
+    int c = ColAt(g, x); if (c < 0) return;
+    if (y >= G.wd.top && y < G.wd.bottom) { SelDay(first + c); return; }
+    if (y >= g.adTop && y < g.adBot) { NewEvent(first + c); return; }
+    if (y >= g.tTop && y < g.tBot) NewEvent(first + c, (y - g.tTop + tsc) / g.hh);
+}
 static void Context(int x, int y) {                            // правая кнопка: меню события или «новое событие»
     Lay(); POINT pp = {x, y};
     if (g_calPanel && PtInRect(&G.panel, pp)) { for (int i = 0; i < g_ncalSrc && i < 8; i++) if (PtInRect(&G.src[i], pp)) { SrcMenu(i, x, y); return; } return; }
-    int c, ev = PlateAt(x, y, &c); if (c < 0) return;
-    SetSel(first + c); if (ev >= 0) selEv = ev; Inv();
+    int c, ev = -1, hr = -1;
+    if (g_calView == 0) { ev = PlateAt(x, y, &c); if (c < 0) return; }
+    else {
+        BuildBlocks(); int i = HitTB(x, y); c = -1;
+        if (i >= 0) { ev = ol.a[tb[i].occ].ev; c = tb[i].day; }
+        else if (g_calView != 3) { TG g; TimeGeo(&g); c = ColAt(g, x); if (y >= g.tTop && y < g.tBot) hr = (y - g.tTop + tsc) / g.hh; }
+        if (c < 0 && g_calView != 3) return;
+        if (g_calView == 3 && ev < 0) return;
+    }
+    if (g_calView == 0) SetSel(first + c); else SelDay(first + c);
+    if (ev >= 0) selEv = ev; Inv();
     HMENU m = CreatePopupMenu(), mv = NULL; int ns = g_ncalSrc < 8 ? g_ncalSrc : 8;
     if (ev >= 0) {
         int s0 = SrcOf(&st.ev[ev]); BOOL hid = st.ev[ev].hidden;
@@ -9359,7 +9608,7 @@ static void Context(int x, int y) {                            // правая �
     int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, p.x, p.y, 0, hw, NULL);
     g_menuOpen = FALSE; DestroyMenu(m);
     if (cmd == 1) EditEvent(ev); else if (cmd == 2) DupEv(ev); else if (cmd == 3) DeleteFlow(ev); else if (cmd == 4) Unhide(ev);
-    else if (cmd == 5) NewEvent(sel); else if (cmd >= 10) MoveEv(ev, cmd - 10);
+    else if (cmd == 5) NewEvent(sel, hr); else if (cmd >= 10) MoveEv(ev, cmd - 10);
 }
 
 /* ввод и окно */
@@ -9382,10 +9631,12 @@ static void Click(int x, int y, BOOL dbl) {
         return;
     }
     if (PtInRect(&G.tgl, p)) { g_calPanel = !g_calPanel; Inv(); }
-    else if (PtInRect(&G.prev, p)) GoMonth(-1);
-    else if (PtInRect(&G.next, p)) GoMonth(1);
+    else if (PtInRect(&G.prev, p)) GoNav(-1);
+    else if (PtInRect(&G.next, p)) GoNav(1);
     else if (PtInRect(&G.tod, p)) GoToday();
     else if (PtInRect(&G.add, p)) NewEvent(sel);
+    else if (PtInRect(&G.vw[0], p) || PtInRect(&G.vw[1], p) || PtInRect(&G.vw[2], p) || PtInRect(&G.vw[3], p)) { for (int i = 0; i < 4; i++) if (PtInRect(&G.vw[i], p)) SetView(i); }
+    else if (g_calView != 0) ClickTime(x, y, dbl);
     else if (dbl) { if (CellAt(x, y) >= 0) { if (selEv >= 0) EditEvent(selEv); else NewEvent(sel); } }      // первый щелчок уже выбрал день и событие под курсором
     else { int c, ev = PlateAt(x, y, &c); if (c >= 0) { SetSel(first + c); selEv = ev; Inv(); } }
 }
@@ -9403,18 +9654,19 @@ static void Close(void) { if (hw && !ed) { Save(); DestroyWindow(hw); } }
 static void Key(UINT vk) {
     BOOL ctl = GetKeyState(VK_CONTROL) < 0, shf = GetKeyState(VK_SHIFT) < 0;
     switch (vk) {
-    case VK_ESCAPE: if (selEv >= 0) { selEv = -1; Inv(); } else Close(); break;
-    case VK_LEFT: SetSel(sel - 1); break;
-    case VK_RIGHT: SetSel(sel + 1); break;
-    case VK_UP: SetSel(sel - 7); break;
-    case VK_DOWN: SetSel(sel + 7); break;
-    case VK_PRIOR: GoMonth(ctl ? -12 : -1); break;
-    case VK_NEXT: GoMonth(ctl ? 12 : 1); break;
+    case VK_ESCAPE: if (dOcc >= 0) { DragEnd(FALSE); break; } if (selEv >= 0) { selEv = -1; Inv(); } else Close(); break;
+    case VK_LEFT: if (g_calView == 3) GoNav(-1); else SetSel(sel - 1); break;
+    case VK_RIGHT: if (g_calView == 3) GoNav(1); else SetSel(sel + 1); break;
+    case VK_UP: if (g_calView == 0) SetSel(sel - 7); else if (g_calView == 3) ListStep(-1); else { tsc -= Sc(44); Inv(); } break;
+    case VK_DOWN: if (g_calView == 0) SetSel(sel + 7); else if (g_calView == 3) ListStep(1); else { tsc += Sc(44); Inv(); } break;
+    case VK_PRIOR: if (g_calView == 0) GoMonth(ctl ? -12 : -1); else GoNav(-1); break;
+    case VK_NEXT: if (g_calView == 0) GoMonth(ctl ? 12 : 1); else GoNav(1); break;
     case VK_HOME: GoToday(); break;
-    case VK_TAB: CycleSel(shf ? -1 : 1); break;
+    case VK_TAB: if (g_calView == 3) ListStep(shf ? -1 : 1); else CycleSel(shf ? -1 : 1); break;
     case VK_RETURN: if (selEv >= 0) EditEvent(selEv); break;
     case VK_DELETE: if (selEv >= 0) DeleteFlow(selEv); break;
     case VK_INSERT: SetFocus(hQuick); break;
+    case 'M': case 'W': case 'D': case 'L': if (!ctl) SetView(vk == 'M' ? 0 : vk == 'W' ? 1 : vk == 'D' ? 2 : 3); break;
     case 'N': if (ctl) NewEvent(sel); else SetFocus(hQuick); break;
     }
 }
@@ -9458,11 +9710,15 @@ static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if ((HWND)l == hQuick) { const Pal &P = dark ? ::kDark : ::kLight; SetTextColor((HDC)w, P.fg); SetBkColor((HDC)w, P.hdr); return (LRESULT)hbrQ; }
         break;
     case WM_SIZE: Inv(); return 0;
-    case WM_GETMINMAXINFO: { MINMAXINFO *mi = (MINMAXINFO *)l; mi->ptMinTrackSize.x = Sc(560); mi->ptMinTrackSize.y = Sc(420); return 0; }
+    case WM_GETMINMAXINFO: { MINMAXINFO *mi = (MINMAXINFO *)l; mi->ptMinTrackSize.x = Sc(900); mi->ptMinTrackSize.y = Sc(420); return 0; }
     case WM_LBUTTONDOWN: Click((short)LOWORD(l), (short)HIWORD(l), FALSE); return 0;
     case WM_LBUTTONDBLCLK: Click((short)LOWORD(l), (short)HIWORD(l), TRUE); return 0;
     case WM_RBUTTONUP: Context((short)LOWORD(l), (short)HIWORD(l)); return 0;
+    case WM_MOUSEMOVE: if (dOcc >= 0 && (w & MK_LBUTTON)) DragMove((short)LOWORD(l), (short)HIWORD(l)); return 0;
+    case WM_LBUTTONUP: DragEnd(TRUE); return 0;
+    case WM_CAPTURECHANGED: if (dOcc >= 0 && (HWND)l != h) { dOcc = -1; dMoved = FALSE; Inv(); } return 0;
     case WM_MOUSEWHEEL:
+        if (g_calView != 0) { int dy = GET_WHEEL_DELTA_WPARAM(w) * Sc(60) / WHEEL_DELTA; if (g_calView == 3) lsc -= dy; else tsc -= dy; if (dOcc >= 0) { POINT q; GetCursorPos(&q); ScreenToClient(h, &q); DragMove(q.x, q.y); } Inv(); return 0; }
         wheelAcc += GET_WHEEL_DELTA_WPARAM(w);
         while (wheelAcc >= WHEEL_DELTA) { wheelAcc -= WHEEL_DELTA; GoMonth(-1); }
         while (wheelAcc <= -WHEEL_DELTA) { wheelAcc += WHEEL_DELTA; GoMonth(1); }
@@ -9493,7 +9749,7 @@ static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
 static void Open(void) {
     if (hw) { if (IsIconic(hw)) ShowWindow(hw, SW_RESTORE); SetForegroundWindow(hw); return; }
     static BOOL reg; if (!reg) { RegClass(L"DKCal", Proc, CS_DBLCLKS); reg = TRUE; }
-    today = TodayLocal(); Load(); SetSel(today);                            // сразу на текущем месяце; View=week пока тоже показывается как месяц (вид «неделя» - этап 7)
+    today = TodayLocal(); Load(); needScroll = TRUE; lsc = 0; SetSel(today);       // сразу на сегодня, вид из [Calendar] View
     placing = TRUE;
     HWND h = CreateWindowExW(0, L"DKCal", Tr(L_CAL_WND), WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, 0, 0, 100, 100, NULL, NULL, g_inst, NULL);
     if (!h) { placing = FALSE; Cleanup(); return; }

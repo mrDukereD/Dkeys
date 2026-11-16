@@ -660,11 +660,26 @@ static void TestReminders(void) {
     SeenFree(&sn); FireFree(&fl); StoreFree(&st);
 }
 
+static void TestWeekLogic() {
+    using namespace CalView;
+    CHECK(SnapSec(0) == 0 && SnapSec(449) == 0 && SnapSec(450) == 900 && SnapSec(86400 + 1000) == 86400 + 900 && SnapSec(-440) == 0 && SnapSec(-460) == -900);
+    Blk b[5] = {{600, 660, 0, 0}, {630, 700, 0, 0}, {640, 650, 0, 0}, {700, 760, 0, 0}, {900, 960, 0, 0}};
+    LayoutBlocks(b, 5);
+    CHECK(b[0].col == 0 && b[1].col == 1 && b[2].col == 2 && b[0].ncol == 3 && b[1].ncol == 3 && b[2].ncol == 3);
+    CHECK(b[3].col == 0 && b[3].ncol == 1 && b[4].col == 0 && b[4].ncol == 1);
+    I64 ns, ne, D = 20000LL * 86400;
+    DragApply(0, D + 36000, D + 39600, 4000, FALSE, &ns, &ne); CHECK(ns == D + 39600 && ne == ns + 3600);
+    DragApply(0, D + 36000, D + 39600, 86400 + 100, TRUE, &ns, &ne); CHECK(ns == D + 36000 + 0 && ne == ns + 3600);
+    DragApply(0, D + 36000, D + 39600, 86400 + 3600, FALSE, &ns, &ne); CHECK(ns == D + 86400 + 39600);
+    DragApply(1, D + 36000, D + 39600, 1000, FALSE, &ns, &ne); CHECK(ns == D + 36000 && ne == D + 40500);
+    DragApply(1, D + 36000, D + 39600, -9000, FALSE, &ns, &ne); CHECK(ne == D + 36900);
+}
+
 #include "caltest_sync.h"
 
 int main() {
     g_heap = GetProcessHeap(); CoInitialize(NULL); setvbuf(stdout, NULL, _IONBF, 0);
-    TestDates(); TestZones(); TestParse(); TestRules(); TestStoreFile(); TestView(); TestEdit(); TestRuleSpec(); TestFields(); TestQuick(); TestReminders(); TestSync(); TestSyncStub();
+    TestDates(); TestZones(); TestParse(); TestRules(); TestStoreFile(); TestView(); TestWeekLogic(); TestEdit(); TestRuleSpec(); TestFields(); TestQuick(); TestReminders(); TestSync(); TestSyncStub();
     printf("%d checks, %d failed\n", g_tests, g_fail);
     return g_fail ? 1 : 0;
 }
