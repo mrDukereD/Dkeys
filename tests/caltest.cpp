@@ -675,11 +675,35 @@ static void TestWeekLogic() {
     DragApply(1, D + 36000, D + 39600, -9000, FALSE, &ns, &ne); CHECK(ne == D + 36900);
 }
 
+static void TestStage8() {
+    const wchar_t *r = NULL;
+    CHECK(CalCmdParse(L"", &r) == CC_OPEN && CalCmdParse(L"  sync", &r) == CC_SYNC && !*r && CalCmdParse(L"ADD завтра 15:00 тест", &r) == CC_ADD && !lstrcmpW(r, L"завтра 15:00 тест"));
+    CHECK(CalCmdParse(L"remind  через час  позвонить ", &r) == CC_REMIND && !lstrcmpW(r, L"через час  позвонить ") && CalCmdParse(L"Tomorrow", &r) == CC_TOMORROW && CalCmdParse(L"week", &r) == CC_WEEK);
+    CHECK(CalCmdParse(L"agenda tomorrow", &r) == CC_AGENDA && CalCmdParse(r, &r) == CC_TOMORROW && CalCmdParse(L"next", &r) == CC_NEXT && CalCmdParse(L"неделя", &r) == CC_WEEK && CalCmdParse(L"абракадабра x", &r) == CC_OPEN && !lstrcmpW(r, L"абракадабра x"));
+    Store st; memset(&st, 0, sizeof st);
+    const wchar_t *nm[4] = {L"Встреча", L"Обед", L"", L"Отпуск"}; I64 h[4] = {15, 13, 18, 0};
+    for (int i = 0; i < 4; i++) {
+        Event *e = StoreNew(&st); wchar_t u[8]; wsprintfW(u, L"u%d", i); SetStr(&e->uid, u); SetStr(&e->summary, nm[i]); SetStr(&e->tzid, L"");
+        e->allDay = i == 3; e->start = DaysFromCivil(2026, 11, 17) * 86400 + h[i] * 3600; e->end = e->allDay ? e->start + 86400 : e->start + 3600;
+    }
+    I64 now = WallToUtc(DaysFromCivil(2026, 11, 17) * 86400 + 12 * 3600, L"");
+    Occ o; CHECK(NextOcc(&st, now, 30, &o) && !lstrcmpW(st.ev[o.ev].summary, L"Обед") && !NextOcc(&st, now + 40 * 86400, 30, &o));
+    OccList ol; Query(&st, WallToUtc(DaysFromCivil(2026, 11, 17) * 86400, L""), WallToUtc(DaysFromCivil(2026, 11, 18) * 86400, L""), &ol);
+    AgLbl lb = {L"весь день", L"+%d ещё", L"(без названия)"}; Buf b = {0}; AgendaFormat(&st, &ol, 6, FALSE, lb, &b);
+    CHECK(b.p && wcsstr(b.p, L"весь день  Отпуск") && wcsstr(b.p, L"13:00  Обед\n15:00  Встреча\n18:00  (без названия)") && !wcsstr(b.p, L"ещё")); Free(b.p);
+    memset(&b, 0, sizeof b); AgendaFormat(&st, &ol, 2, TRUE, lb, &b);
+    CHECK(b.p && wcsstr(b.p, L"17.11 весь день  Отпуск\n17.11 13:00  Обед\n+2 ещё")); Free(b.p); OccFree(&ol); StoreFree(&st);
+    I64 sw = DaysFromCivil(2026, 11, 17) * 86400 + 15 * 3600; wchar_t *pk = HookPack(L"py x.dpy", L"A\x01 B", sw, sw + 3600, FALSE, L"Офис", L"local", L"u1"), *f[7];
+    CHECK(HookUnpack(pk, f) == 7 && !lstrcmpW(f[0], L"py x.dpy") && !lstrcmpW(f[1], L"A  B") && !lstrcmpW(f[2], L"2026-11-17 15:00") && !lstrcmpW(f[3], L"2026-11-17 16:00") && !lstrcmpW(f[4], L"Офис") && !lstrcmpW(f[6], L"u1")); Free(pk);
+    pk = HookPack(L"run a", NULL, sw - 15 * 3600, sw - 15 * 3600 + 3 * 86400, TRUE, NULL, NULL, NULL);
+    CHECK(HookUnpack(pk, f) == 7 && !*f[1] && !lstrcmpW(f[2], L"2026-11-17") && !lstrcmpW(f[3], L"2026-11-19") && !*f[6]); Free(pk);
+}
+
 #include "caltest_sync.h"
 
 int main() {
     g_heap = GetProcessHeap(); CoInitialize(NULL); setvbuf(stdout, NULL, _IONBF, 0);
-    TestDates(); TestZones(); TestParse(); TestRules(); TestStoreFile(); TestView(); TestWeekLogic(); TestEdit(); TestRuleSpec(); TestFields(); TestQuick(); TestReminders(); TestSync(); TestSyncStub();
+    TestDates(); TestZones(); TestParse(); TestRules(); TestStoreFile(); TestView(); TestWeekLogic(); TestEdit(); TestRuleSpec(); TestFields(); TestQuick(); TestReminders(); TestSync(); TestSyncStub(); TestStage8();
     printf("%d checks, %d failed\n", g_tests, g_fail);
     return g_fail ? 1 : 0;
 }

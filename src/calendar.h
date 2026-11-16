@@ -1146,5 +1146,69 @@ static BOOL QuickParse(const wchar_t *text, I64 nowWall, I64 defDay, Quick *q) {
     Free(p.lc); Free(p.t); return TRUE;
 }
 
+/* ---------- этап 8: действие «calendar <подкоманда>», ответы «что у меня…», данные события для скриптов (OnReminder/OnCreate/OnChange) ---------- */
+enum { CC_OPEN, CC_ADD, CC_REMIND, CC_TODAY, CC_TOMORROW, CC_WEEK, CC_NEXT, CC_SYNC, CC_AGENDA };
+// Подкоманда в начале arg (add, remind, today, tomorrow, week, next, sync, agenda; по-русски тоже); остаток без пробелов по краям - в *rest. Неизвестное слово и пусто - CC_OPEN.
+static int CalCmdParse(const wchar_t *arg, const wchar_t **rest) {
+    static const struct { const wchar_t *w; int c; } k[] = {
+        {L"add", CC_ADD}, {L"добавить", CC_ADD}, {L"remind", CC_REMIND}, {L"напомнить", CC_REMIND}, {L"today", CC_TODAY}, {L"сегодня", CC_TODAY},
+        {L"tomorrow", CC_TOMORROW}, {L"завтра", CC_TOMORROW}, {L"week", CC_WEEK}, {L"неделя", CC_WEEK}, {L"next", CC_NEXT}, {L"следующее", CC_NEXT},
+        {L"sync", CC_SYNC}, {L"синхронизация", CC_SYNC}, {L"agenda", CC_AGENDA}, {L"повестка", CC_AGENDA}, {L"open", CC_OPEN}, {L"открыть", CC_OPEN}};
+    const wchar_t *p = arg ? arg : L""; while (*p == L' ' || *p == L'\t') p++;
+    const wchar_t *e = p; while (*e && *e != L' ' && *e != L'\t') e++;
+    int n = (int)(e - p), c = CC_OPEN; BOOL known = FALSE;
+    for (int i = 0; n && i < (int)(sizeof k / sizeof k[0]); i++) if (n == lstrlenW(k[i].w) && CompareStringOrdinal(p, n, k[i].w, n, TRUE) == CSTR_EQUAL) { c = k[i].c; known = TRUE; break; }
+    if (!known) { if (rest) *rest = p; return CC_OPEN; }
+    while (*e == L' ' || *e == L'\t') e++;
+    if (rest) *rest = e; return c;
+}
+// Следующее начавшееся после nowUtc событие со временем (целодневные пропускаются) в пределах days суток.
+static BOOL NextOcc(const Store *st, I64 nowUtc, int days, Occ *out) {
+    OccList l; Query(st, nowUtc, nowUtc + (I64)days * 86400, &l); BOOL f = FALSE;
+    for (int i = 0; i < l.n && !f; i++) if (!l.a[i].allDay && l.a[i].s > nowUtc) { *out = l.a[i]; f = TRUE; }
+    OccFree(&l); return f;
+}
+struct AgLbl { const wchar_t *allDay, *more, *untitled; };      // подписи: «весь день», «+%d ещё», «(без названия)»
+// Строки ответа «что у меня…»: «15:00 Название» (целодневное - «<подпись> Название», showDate - с «дд.мм»); не больше maxLines строк, остаток - «+N ещё».
+static void AgendaFormat(const Store *st, const OccList *ol, int maxLines, BOOL showDate, const AgLbl &lb, Buf *out) {
+    int shown = 0;
+    for (int i = 0; i < ol->n && shown < maxLines; i++) {
+        const Occ &o = ol->a[i]; const Event *e = &st->ev[o.ev]; wchar_t tm[48], dt[16]; dt[0] = 0;
+        I64 w = o.allDay ? o.wall : UtcToWall(o.s, L""); Tm t = SecToTm(w);
+        if (showDate) wsprintfW(dt, L"%02d.%02d ", t.d, t.mo);
+        if (o.allDay) wsprintfW(tm, L"%s%s", dt, lb.allDay); else wsprintfW(tm, L"%s%02d:%02d", dt, t.h, t.mi);
+        if (out->n) BufAdd(out, L"\n");
+        BufAdd(out, tm); BufAdd(out, L"  "); BufAdd(out, e->summary && *e->summary ? e->summary : lb.untitled); shown++;
+    }
+    if (ol->n > shown) { wchar_t m[48]; wsprintfW(m, lb.more, ol->n - shown); BufAdd(out, L"\n"); BufAdd(out, m); }
+}
+// Местное время события (для скрипта): целодневное - как есть, остальное из пояса события в местный.
+static void HookTimes(const Event *e, I64 *sw, I64 *ew) {
+    if (e->allDay) { *sw = e->start; *ew = e->end; return; }
+    const wchar_t *tz = e->tzid ? e->tzid : L"";
+    *sw = UtcToWall(WallToUtc(e->start, tz), L""); *ew = UtcToWall(WallToUtc(e->end, tz), L"");
+}
+static void HookWallStr(I64 wall, BOOL allDay, wchar_t *o) {   // «2026-11-17 15:00» / «2026-11-17»
+    Tm t = SecToTm(wall);
+    if (allDay) wsprintfW(o, L"%04d-%02d-%02d", t.y, t.mo, t.d); else wsprintfW(o, L"%04d-%02d-%02d %02d:%02d", t.y, t.mo, t.d, t.h, t.mi);
+}
+// Посылка для главного потока: «действие\1название\1начало\1конец\1место\1источник\1uid» (\1 в полях заменяется пробелом); целодневное: конец - последний день включительно.
+static wchar_t *HookPack(const wchar_t *spec, const wchar_t *title, I64 sw, I64 ew, BOOL allDay, const wchar_t *place, const wchar_t *source, const wchar_t *uid) {
+    wchar_t a[24], b[24]; if (allDay && ew > sw + 86400) ew -= 86400; else if (allDay) ew = sw;
+    HookWallStr(sw, allDay, a); HookWallStr(ew, allDay, b);
+    const wchar_t *f[7] = {spec, title, a, b, place, source, uid}; Buf o = {0};
+    for (int i = 0; i < 7; i++) {
+        if (i) BufAdd(&o, L"\x01");
+        int s = o.n; BufAdd(&o, f[i] ? f[i] : L""); for (int k = s; k < o.n; k++) if (o.p[k] == 1) o.p[k] = L' ';
+    }
+    return o.p ? o.p : Dup(L"");
+}
+static int HookUnpack(wchar_t *s, wchar_t **f) {                // разбирает на месте, f[7]; возвращает число полей
+    int n = 0; f[n++] = s;
+    for (; *s && n < 7; s++) if (*s == 1) { *s = 0; f[n++] = s + 1; }
+    for (int i = n; i < 7; i++) f[i] = s;
+    return n;
+}
+
 } // namespace Cal
 #endif

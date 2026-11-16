@@ -85,7 +85,7 @@ enum { A_NONE, ACTION_LIST(ACT_ID) A_COUNT };
 #undef ACT_ID
 enum { PM_BUF, PM_HIST, PM_LAUNCH, PM_SCRIPTS, PM_RECORDS, PM_COUNT };   // режимы окна; новый режим - перед PM_COUNT и имя вкладки в kModeTab
 enum {
-    WM_APP_HOT = WM_APP + 1, WM_APP_KEY, WM_APP_CLOSE, WM_APP_PCLICK, WM_APP_PTAB, WM_APP_PIMG, WM_APP_MACRO, WM_APP_DPY, WM_APP_SPEC, WM_TRAY, WM_APP_RENDERED, WM_APP_VCMD, WM_APP_SYNC, WM_APP_SETUP,
+    WM_APP_HOT = WM_APP + 1, WM_APP_KEY, WM_APP_CLOSE, WM_APP_PCLICK, WM_APP_PTAB, WM_APP_PIMG, WM_APP_MACRO, WM_APP_DPY, WM_APP_SPEC, WM_TRAY, WM_APP_RENDERED, WM_APP_VCMD, WM_APP_SYNC, WM_APP_SETUP, WM_APP_CALHOOK,
     TM_MOUSE = WM_APP + 20, TM_REHOOK
 };
 #define TID_RESTORE 1
@@ -110,7 +110,7 @@ struct Snap { UINT fmt[64]; HGLOBAL h[64]; int n; };
 struct Buf { wchar_t *p; int n, cap; };
 static void CamOpen(void);
 static void CalOpen(void), CalRefresh(void), CalClose(void), RemDirty(void), RemSync(void), RemPoke(void), RemStart(void);
-static void CalSyncNow(void), CalSyncStart(void), CalSyncTimer(UINT id), CalSyncDone(void *job), CalSetupDone(void), CalDiscover(void);
+static void CalAction(const wchar_t *arg), CalHookRun(wchar_t *t), CalSyncNow(void), CalSyncStart(void), CalSyncTimer(UINT id), CalSyncDone(void *job), CalSetupDone(void), CalDiscover(void);
 static IUnknown *CamObj(int k);
 static void TmToggle(int mode);
 static void DrawOpen(void);
@@ -180,7 +180,7 @@ static DWORD g_ignoreSeq, g_ownSeq;
 struct CalSrc { wchar_t id[24]; COLORREF col; BOOL show, sync, prov; };             // источник календаря: id (local | имя | имя:профиль), цвет плашек, показывать, синхронизируется ли (подключён - тогда удаление надгробие, пока не отправлено), prov - есть скрипт в папке calendars
 static int g_calSyncMin = 15;                                                       // [Calendar] SyncMinutes: период синхронизации, минут (0 - только вручную)
 static CalSrc g_calSrc[8]; static int g_ncalSrc = 1;
-static int g_calWk[2] = {8, 20}; static int g_calView, g_calWs, g_calWkn, g_calPanel = 1, g_calWin[5], g_calAlarm = 10, g_calPopSec, g_calAdTod = 9 * 3600; static BOOL g_calDemo, g_calHid, g_calRem = TRUE, g_calSound = TRUE; static wchar_t g_calDefSrc[24];   // [Calendar] в ini: вид (0 месяц, 1 неделя, 2 день, 3 список), рабочие часы (начало, конец), первый день недели (0 пн, 1 вс), номера недель, мини-панель, окно x,y,w,h,развёрнуто, тестовые события, напоминание по умолчанию (минут, 0 - без), источник по умолчанию, показывать скрытые; напоминания: включены, звук, автозакрытие (с, 0 - нет), час целодневных (секунды от полуночи)
+static int g_calWk[2] = {8, 20}; static int g_calView, g_calWs, g_calWkn, g_calPanel = 1, g_calWin[5], g_calAlarm = 10, g_calPopSec, g_calAdTod = 9 * 3600; static BOOL g_calDemo, g_calHid, g_calRem = TRUE, g_calSound = TRUE; static wchar_t g_calDefSrc[24], g_calOn[3][260]; static BOOL g_calFromHook;   // g_calOn - OnReminder, OnCreate, OnChange (действие DKeys для скрипта события); g_calFromHook - выполняется действие, пришедшее из скрипта события (DKeys.exe do из него): OnCreate для созданного так не вызывается (защита от зацикливания)   // [Calendar] в ini: вид (0 месяц, 1 неделя, 2 день, 3 список), рабочие часы (начало, конец), первый день недели (0 пн, 1 вс), номера недель, мини-панель, окно x,y,w,h,развёрнуто, тестовые события, напоминание по умолчанию (минут, 0 - без), источник по умолчанию, показывать скрытые; напоминания: включены, звук, автозакрытие (с, 0 - нет), час целодневных (секунды от полуночи)
 
 static wchar_t g_editor[MAX_PATH];                                                      // [General] Editor: свой редактор (иначе Notepad++ / Блокнот)
 static int g_histOn, g_histMax = 50, g_pasteDelay = 300, g_copyTimeout = 600, g_pyPause = 1, g_toasts = 1;
@@ -376,6 +376,12 @@ X(L_CAL_E_OFF, "cal.err_off", L"источник не подключён - на�
 X(L_CAL_T_OK, "cal.sync_done", L"Календарь синхронизирован") \
 X(L_CAL_T_NONE, "cal.sync_nothing", L"Нет подключённых источников календаря") \
 X(L_TRAY_CALSYNC, "tray.calendar_sync", L"Синхронизировать календарь") \
+X(L_CAL_A_ADDED, "cal.act_added", L"Добавлено: «%s» · %s") \
+X(L_CAL_A_EMPTY, "cal.act_empty", L"Не получилось добавить событие: нет текста") \
+X(L_CAL_A_HEAD, "cal.act_head", L"Сегодня,Завтра,На неделе") \
+X(L_CAL_A_NONE, "cal.act_none", L"событий нет") \
+X(L_CAL_A_NEXT, "cal.act_next", L"Следующее: «%s» · %s · %s") \
+X(L_CAL_A_NONEXT, "cal.act_nonext", L"Ближайших событий нет") \
 X(L_TRAY_HISTON, "tray.history_on", L"Своя история буфера") \
 X(L_TRAY_SELCOPY, "tray.selcopy", L"Автокопирование выделенного мышью") \
 X(L_TRAY_AUTO, "tray.autostart", L"Автозапуск") \
@@ -656,7 +662,7 @@ static void Log(const wchar_t *fmt, ...) {
 #endif
 
 /* ---------- toast ---------- */
-static wchar_t g_toastText[200];
+static wchar_t g_toastText[600]; static BOOL g_toastMulti;       // g_toastMulti: текст из нескольких строк (список событий) - слева, показывается дольше
 static HFONT g_toastFont;
 static BOOL g_toastDark;
 
@@ -672,7 +678,8 @@ static LRESULT CALLBACK ToastProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, g_toastDark ? RGB(235, 235, 235) : RGB(30, 30, 30));
         SelectObject(dc, g_toastFont);
-        DrawTextW(dc, g_toastText, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+        if (g_toastMulti) { RECT t = rc; int pad = MulDiv(14, GetDpiForSystem(), 96); t.left += pad; t.right -= pad; DrawTextW(dc, g_toastText, -1, &t, DT_LEFT | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS); }
+        else DrawTextW(dc, g_toastText, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
         EndPaint(h, &ps); return 0;
     }
     case WM_TIMER: KillTimer(h, 1); ShowWindow(h, SW_HIDE); return 0;
@@ -687,10 +694,11 @@ static void Toast(const wchar_t *t) {
     if (!g_toastFont) g_toastFont = CreateFontW(-MulDiv(11, dpi, 72), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
     if (!g_hwndToast)
         g_hwndToast = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"DKToast", L"", WS_POPUP, 0, 0, 10, 10, NULL, NULL, g_inst, NULL);
-    lstrcpynW(g_toastText, t, 200);
+    int nl = 0; for (const wchar_t *q = t; *q; q++) if (*q == L'\n') nl++;
+    g_toastMulti = nl > 0; lstrcpynW(g_toastText, t, g_toastMulti ? 600 : 200);
     g_toastDark = IsDark();
     HDC dc = GetDC(NULL); HGDIOBJ o = SelectObject(dc, g_toastFont);
-    SIZE sz; GetTextExtentPoint32W(dc, g_toastText, lstrlenW(g_toastText), &sz);
+    SIZE sz; if (g_toastMulti) { RECT cr = {0, 0, 0, 0}; DrawTextW(dc, g_toastText, -1, &cr, DT_CALCRECT | DT_NOPREFIX); sz.cx = cr.right; sz.cy = cr.bottom; } else GetTextExtentPoint32W(dc, g_toastText, lstrlenW(g_toastText), &sz);
     SelectObject(dc, o); ReleaseDC(NULL, dc);
     int w = sz.cx + MulDiv(36, dpi, 96), h = sz.cy + MulDiv(18, dpi, 96);
     POINT pt; GetCursorPos(&pt);
@@ -699,7 +707,7 @@ static void Toast(const wchar_t *t) {
     int x = (mi.rcWork.left + mi.rcWork.right - w) / 2, y = mi.rcWork.bottom - h - MulDiv(60, dpi, 96);
     SetWindowPos(g_hwndToast, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     InvalidateRect(g_hwndToast, NULL, TRUE);
-    SetTimer(g_hwndToast, 1, 1100, NULL);
+    SetTimer(g_hwndToast, 1, g_toastMulti ? 3500 + 600 * nl : 1100, NULL);
 }
 
 /* ---------- INI ---------- */
@@ -831,7 +839,9 @@ Language=ru
 ;     pause                     пауза/продолжить хоткеи
 ;     webcam                    окно предпросмотра веб-камеры (секция [Camera])
 ;     stopwatch / timer         секундомер / таймер: старт-пауза (секция [Timer])
-;     calendar [sync]           окно календаря (секция [Calendar]); с sync - синхронизировать источники без окна
+;     calendar [подкоманда]     календарь (секция [Calendar]); без подкоманды - окно. Подкоманды: add ФРАЗА (событие по быстрому вводу в источнике по умолчанию:
+;                               «calendar add завтра 15:00 встреча»), remind ФРАЗА (то же с напоминанием в момент начала), today | tomorrow | week (окно на этом дне / неделе),
+;                               agenda [today|tomorrow|week] (список событий тостом), next (ближайшее событие тостом), sync (синхронизировать без окна)
 ;     colorpicker / picker      пипетка: клик - цвет пикселя (#RRGGBB) в буфер, стрелки - сдвиг на 1 пиксель, Esc - отмена
 ;     draw                      рисовалка на экране (секция [Draw])
 ;     record                    запись экрана в mp4 (секции [Record] и [Overlay])
@@ -1098,6 +1108,12 @@ PowerShell=powershell.exe
 ; DefaultSource: источник для быстрого ввода (id, по умолчанию local) | DefaultAlarm: напоминание по умолчанию в минутах (0 или пусто - без)
 ;DefaultSource=local
 ;DefaultAlarm=10
+; OnReminder, OnCreate, OnChange: действие DKeys (run, py, .dpy ... как в хоткеях), которое запускается, когда сработало напоминание / событие создано / событие изменено в окне
+; (правка и перетаскивание). В окружение передаются DKEYS_EVENT_TITLE, _START, _END (ГГГГ-ММ-ДД чч:мм, местное; целодневное - только дата), _PLACE, _SOURCE, _UID.
+; Событие, которое скрипт сам добавил через DKeys.exe do "calendar add ..." ([Remote] Enabled=1), OnCreate не вызывает (защита от зацикливания).
+;OnReminder=py onreminder.py
+;OnCreate=
+;OnChange=
 ; Reminders: 1 - показывать напоминания (всплывают в углу экрана; в игре на весь экран и при блокировке копятся) | Sound: 1 - со звуком
 ; PopupSeconds: закрывать напоминание само через N секунд (0 - висит, пока не нажмёшь) | AllDayTime: во сколько напоминать о целодневных (чч:мм)
 ;Reminders=1
@@ -1406,7 +1422,7 @@ static void CfgDefaults(void) {
     g_tmCurrent = g_tmMenuSlot = 0;
     g_mHover = 300; g_mPos[0] = g_mPos[1] = -99999;
     g_cfgCamDev[0] = 0; g_cfgCamW = g_cfgCamH = 0; memset(g_cfgWin, 0, sizeof g_cfgWin);
-    g_calView = g_calWs = g_calWkn = 0; g_calWk[0] = 8; g_calWk[1] = 20; g_calPanel = 1; g_calDemo = g_calHid = FALSE; g_calAlarm = 10; g_calDefSrc[0] = 0; memset(g_calWin, 0, sizeof g_calWin);
+    g_calView = g_calWs = g_calWkn = 0; g_calWk[0] = 8; g_calWk[1] = 20; g_calPanel = 1; g_calDemo = g_calHid = FALSE; g_calAlarm = 10; g_calDefSrc[0] = 0; memset(g_calOn, 0, sizeof g_calOn); memset(g_calWin, 0, sizeof g_calWin);
     g_calRem = g_calSound = TRUE; g_calPopSec = 0; g_calAdTod = 9 * 3600;
     memset(g_calSrc, 0, sizeof g_calSrc); g_ncalSrc = 1; lstrcpyW(g_calSrc[0].id, L"local"); g_calSrc[0].col = RGB(66, 133, 244); g_calSrc[0].show = TRUE;
     g_calSyncMin = 15; CalDiscover();
@@ -1554,6 +1570,9 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
         else if (!lstrcmpiW(k, L"ShowHidden")) g_calHid = ToInt(v) != 0;
         else if (!lstrcmpiW(k, L"DefaultAlarm")) g_calAlarm = ToInt(v) > 0 ? ToInt(v) : 0;
         else if (!lstrcmpiW(k, L"DefaultSource")) lstrcpynW(g_calDefSrc, v, 24);
+        else if (!lstrcmpiW(k, L"OnReminder")) lstrcpynW(g_calOn[0], v, 260);
+        else if (!lstrcmpiW(k, L"OnCreate")) lstrcpynW(g_calOn[1], v, 260);
+        else if (!lstrcmpiW(k, L"OnChange")) lstrcpynW(g_calOn[2], v, 260);
         else if (!lstrcmpiW(k, L"SyncMinutes")) g_calSyncMin = ToInt(v) > 0 ? ToInt(v) : 0;
         else if (!lstrcmpiW(k, L"Reminders")) g_calRem = ToInt(v) != 0;
         else if (!lstrcmpiW(k, L"Sound")) g_calSound = ToInt(v) != 0;
@@ -2909,7 +2928,7 @@ static void RunProc(wchar_t *cmd, const wchar_t *dir, wchar_t *env, BOOL hidden 
         wchar_t m[200]; wsprintfW(m, Tr(L_T_PYFAIL), g_python); Toast(m);
     }
 }
-struct DpyJob { wchar_t *cmd, *dir, *cap, *yes, *no; BOOL notify; };
+struct DpyJob { wchar_t *cmd, *dir, *cap, *yes, *no, *env; BOOL notify; };       // env - окружение на момент запуска (в нём DKEYS_EVENT_* скрипта события)
 static DWORD WINAPI DpyThread(void *a) {                                              // .dpy: скрипт печатает результат в stdout, DKeys вставляет его в место курсора
     DpyJob *j = (DpyJob *)a;
     SECURITY_ATTRIBUTES sa; sa.nLength = sizeof sa; sa.lpSecurityDescriptor = NULL; sa.bInheritHandle = TRUE;
@@ -2919,7 +2938,7 @@ static DWORD WINAPI DpyThread(void *a) {                                        
         HANDLE nul = CreateFileW(L"NUL", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, NULL);
         STARTUPINFOW si; PROCESS_INFORMATION pi; memset(&si, 0, sizeof si); si.cb = sizeof si;
         si.dwFlags = STARTF_USESTDHANDLES; si.hStdInput = nul; si.hStdOutput = wr; si.hStdError = nul;
-        if (CreateProcessW(NULL, j->cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, (j->dir && *j->dir) ? j->dir : g_pyDir, &si, &pi)) {
+        if (CreateProcessW(NULL, j->cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, j->env, (j->dir && *j->dir) ? j->dir : g_pyDir, &si, &pi)) {
             CloseHandle(wr); wr = NULL; CloseHandle(pi.hThread);
             char *buf = (char *)Alloc(1 << 20); int n = 0; DWORD t0 = GetTickCount(); BOOL done = FALSE;
             while (!done && GetTickCount() - t0 < 15000) {
@@ -2947,7 +2966,7 @@ static DWORD WINAPI DpyThread(void *a) {                                        
         if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
         CloseHandle(rd);
     }
-    Free(j->cmd); Free(j->dir); Free(j->cap); Free(j->yes); Free(j->no); Free(j);
+    Free(j->cmd); Free(j->dir); Free(j->cap); Free(j->yes); Free(j->no); Free(j->env); Free(j);
     return 0;
 }
 static void RunDpy(const wchar_t *script, const wchar_t *par0, const wchar_t *dir, BOOL notify) {
@@ -2975,12 +2994,12 @@ static void RunDpy(const wchar_t *script, const wchar_t *par0, const wchar_t *di
     if (*par) { BufAdd(&c, L" "); BufAdd(&c, par); }
     DpyJob *j = (DpyJob *)Alloc(sizeof(DpyJob)); j->cmd = c.p; j->dir = Dup(dir ? dir : L"");
     const wchar_t *nm = script; for (const wchar_t *q = script; *q; q++) if (*q == L'\\' || *q == L'/') nm = q + 1;
-    j->cap = Dup(nm); j->notify = notify;
+    j->cap = Dup(nm); j->notify = notify; j->env = BuildEnv(NULL, NULL);
     if (yes && *yes) j->yes = Dup(yes);
     if (no && *no) j->no = Dup(no);
     Free(par);
     HANDLE h = CreateThread(NULL, 0, DpyThread, j, 0, NULL);
-    if (h) CloseHandle(h); else { Free(j->cmd); Free(j->dir); Free(j); }
+    if (h) CloseHandle(h); else { Free(j->cmd); Free(j->dir); Free(j->cap); Free(j->yes); Free(j->no); Free(j->env); Free(j); }
 }
 static void RunPy(const wchar_t *arg, const wchar_t *dir, BOOL hold = FALSE) {   // hold: окно консоли остаётся открытым (pause)
     wchar_t *s = Dup(arg), *file, *par;
@@ -3258,7 +3277,7 @@ static void ExecBind(const Bind *b) {
     case A_AUDIO: RecAudioOpen(); break;
     case A_VOICE: VoiceToggle(); break;
     case A_VOICECMD: VoiceCmdToggle(); break;
-    case A_CALENDAR: if (b->arg && !lstrcmpiW(b->arg, L"sync")) CalSyncNow(); else CalOpen(); break;
+    case A_CALENDAR: CalAction(b->arg); break;
     case A_TRAYMENU: g_trayAlign = TPM_CENTERALIGN | TPM_VCENTERALIGN; TrayMenu(); break;
     case A_EXIT: DestroyWindow(g_hwnd); break;
     case A_SCRIPTN: RunScriptN(b->n); break;
@@ -7616,7 +7635,7 @@ static BOOL WriteWav(const wchar_t *path, const short *pcm, SIZE_T n) {
 // ---- голосовые команды: словарь langs\<язык>.commands.ini, нечёткое сопоставление фразы ----
 static const char kCmdRu[] = u8R"CMD(; DKeys: голосовые команды (хоткей voicecmd: сказать команду, запись закончится после паузы). Сказали фразу - выполнилось действие справа от =.
 ; Вариантов фразы у одного действия может быть несколько через |. Знак ! в начале - перед выполнением спросить подтверждение.
-; Подстановки: {N} - число (цифрами или словами из [Numbers]), {U} - единица из [Units], {NAME} - название из меню запуска ([Launcher]), только в конце фразы.
+; Подстановки: {N} - число (цифрами или словами из [Numbers]), {U} - единица из [Units], {NAME} - название из меню запуска ([Launcher]), {TEXT} - всё, что сказано дальше (как есть), только в конце фразы.
 ; Действие - любая строка, как в хоткеях ini: audio, record, timer 3h, script 2, run notepad.exe ... ({N}, {U}, {NAME} в ней подставляются).
 ; Распознанная речь сравнивается с фразами нечётко (опечатки Whisper прощаются), лишние слова вокруг фразы допустимы.
 ; Другой язык: скопируйте файл в <язык>.commands.ini (язык - Language в [General]) и переведите слова. Файл сам не перезаписывается.
@@ -7689,15 +7708,28 @@ static const char kCmdRu[] = u8R"CMD(; DKeys: голосовые команды 
 пятьсот = 500
 полтора | полторы = 1.5
 )CMD";
-struct CmdPat { int nw; wchar_t w[10][32]; char ty[10]; wchar_t *act; BOOL conf; };       // ty: 0 слово, 1 {N}, 2 {U}, 3 {NAME}
+// Фразы календаря: дописываются в конец русского файла, если в нём ещё нет ни одной команды calendar (правки пользователя не затрагиваются).
+static const char kCmdCal[] = u8R"CMD(
+; Календарь: {TEXT} - всё, что сказано дальше (фраза быстрого ввода: «завтра в 15 с Иваном», «через час позвонить»). Действие calendar - в шаблоне DKeys.ini
+[Commands]
+добавь встречу {TEXT} | добавь событие {TEXT} | создай встречу {TEXT} | запиши в календарь {TEXT} | добавь в календарь {TEXT} = calendar add {TEXT}
+напомни мне {TEXT} | напомни {TEXT} = calendar remind {TEXT}
+что у меня сегодня | что сегодня в календаре | события на сегодня = calendar agenda today
+что у меня завтра | что завтра в календаре | события на завтра = calendar agenda tomorrow
+что у меня на неделе | что на этой неделе | события на неделю = calendar agenda week
+следующее событие | какое следующее событие | что дальше в календаре = calendar next
+открой календарь | покажи календарь | календарь = calendar
+синхронизируй календарь | обнови календарь | синхронизация календаря = calendar sync
+)CMD";
+struct CmdPat { int nw; wchar_t w[10][32]; char ty[10]; wchar_t *act; BOOL conf; };       // ty: 0 слово, 1 {N}, 2 {U}, 3 {NAME}, 4 {TEXT}
 struct CmdWord { wchar_t w[32]; wchar_t code[16]; int val; };
 static CmdPat *g_cmd; static int g_ncmd; static CmdWord *g_unit, *g_num; static int g_nunit, g_nnum;
-static int Tok(const wchar_t *s, wchar_t (*t)[32], int max) {                                // слова: нижний регистр, ё=е, цифры с точкой (3,5 -> 3.5)
+static int Tok(const wchar_t *s, wchar_t (*t)[32], int max, int *off = NULL) {                                // слова: нижний регистр, ё=е, цифры с точкой (3,5 -> 3.5)
     int n = 0, l = 0; wchar_t cur[32];
     for (const wchar_t *p = s;; p++) {
         wchar_t c = *p;
         BOOL keep = c && (IsCharAlphaNumericW(c) || ((c == L'.' || c == L',') && l && cur[l - 1] >= L'0' && cur[l - 1] <= L'9' && p[1] >= L'0' && p[1] <= L'9'));
-        if (keep) { if (l < 31) { wchar_t lc = c; CharLowerBuffW(&lc, 1); if (lc == 0x451) lc = 0x435; if (lc == L',') lc = L'.'; cur[l++] = lc; } }
+        if (keep) { if (l == 0 && off && n < max) off[n] = (int)(p - s); if (l < 31) { wchar_t lc = c; CharLowerBuffW(&lc, 1); if (lc == 0x451) lc = 0x435; if (lc == L',') lc = L'.'; cur[l++] = lc; } }
         else { if (l && n < max) { cur[l] = 0; lstrcpyW(t[n++], cur); } l = 0; }
         if (!c) break;
     }
@@ -7734,6 +7766,7 @@ static void CmdCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
                 if (wl == 3 && CompareStringOrdinal(w, 3, L"{N}", 3, TRUE) == CSTR_EQUAL) c->ty[c->nw++] = 1;
                 else if (wl == 3 && CompareStringOrdinal(w, 3, L"{U}", 3, TRUE) == CSTR_EQUAL) c->ty[c->nw++] = 2;
                 else if (wl == 6 && CompareStringOrdinal(w, 6, L"{NAME}", 6, TRUE) == CSTR_EQUAL) c->ty[c->nw++] = 3;
+                else if (wl == 6 && CompareStringOrdinal(w, 6, L"{TEXT}", 6, TRUE) == CSTR_EQUAL) c->ty[c->nw++] = 4;
                 else { wchar_t one[40]; int ol = wl > 38 ? 38 : wl; memcpy(one, w, ol * sizeof(wchar_t)); one[ol] = 0; wchar_t tt[3][32]; int nt = Tok(one, tt, 3); for (int z = 0; z < nt && c->nw < 10; z++) { lstrcpyW(c->w[c->nw], tt[z]); c->ty[c->nw++] = 0; } }
             }
             (void)nw; (void)wd;
@@ -7761,6 +7794,13 @@ static void CmdLoad(void) {
     DWORD sz = 0; BYTE *raw = ReadAll(path, &sz);
     if (!raw) { CreateDirectoryW(dir, NULL); WriteAtomic(path, kCmdRu, (DWORD)(sizeof kCmdRu - 1)); raw = ReadAll(path, &sz); }
     if (!raw) return;
+    if (!lstrcmpiW(g_lang, L"ru")) {                                                           // старый файл без календаря: дописать блок, остальное не трогаем
+        BOOL has = FALSE; for (DWORD i = 0; i + 9 <= sz && !has; i++) { static const char k[] = "calendar "; DWORD j = 0; while (j < 9 && raw[i + j] == (BYTE)k[j]) j++; has = j == 9; }
+        if (!has) {
+            DWORD add = (DWORD)(sizeof kCmdCal - 1); BYTE *nb = (BYTE *)Alloc(sz + add + 2); memcpy(nb, raw, sz); DWORD o = sz; if (o && nb[o - 1] != '\n') nb[o++] = '\n';
+            memcpy(nb + o, kCmdCal, add); o += add; WriteAtomic(path, nb, o); Free(raw); raw = nb; sz = o;
+        }
+    }
     wchar_t *t = FromUtf8((char *)raw, sz); Free(raw);
     IniParse(t, CmdCb); Free(t);
 }
@@ -7775,9 +7815,9 @@ static int NumAt(wchar_t (*t)[32], int nt, int p, int *tenths) {                
     }
     *tenths = sum; return cnt;
 }
-struct Res { int cost, pat, nameIdx, tenths; wchar_t ucode[16]; };
+struct Res { int cost, pat, nameIdx, tenths, textTok; const wchar_t *tail; wchar_t ucode[16]; };
 static BOOL MatchPat(const CmdPat *c, wchar_t (*t)[32], int nt, int start, Res *r) {
-    int pos = start, cost = start * 2; r->nameIdx = -1; r->tenths = 0; r->ucode[0] = 0;
+    int pos = start, cost = start * 2; r->nameIdx = -1; r->tenths = 0; r->ucode[0] = 0; r->textTok = -1; r->tail = NULL;
     for (int i = 0; i < c->nw; i++) {
         if (pos >= nt) return FALSE;
         if (c->ty[i] == 0) { int dd = Lev(t[pos], c->w[i]); if (dd > Allow(lstrlenW(c->w[i]))) return FALSE; cost += dd * 2; pos++; }
@@ -7786,7 +7826,8 @@ static BOOL MatchPat(const CmdPat *c, wchar_t (*t)[32], int nt, int start, Res *
             int f = -1; for (int j = 0; j < g_nunit; j++) if (Lev(t[pos], g_unit[j].w) <= Allow(lstrlenW(g_unit[j].w))) { f = j; break; }
             if (f < 0) return FALSE;
             lstrcpyW(r->ucode, g_unit[f].code); pos++;
-        } else {                                                                              // {NAME}: остаток фразы сравниваем с названиями из [Launcher]
+        } else if (c->ty[i] == 4) { r->textTok = pos; pos = nt; }                          // {TEXT}: остаток фразы как есть (хотя бы одно слово)
+        else {                                                                                // {NAME}: остаток фразы сравниваем с названиями из [Launcher]
             wchar_t rest[64]; int o = 0; rest[0] = 0;
             for (int k = pos; k < nt; k++) { int l = lstrlenW(t[k]); if (o + l + 1 > 63) break; if (o) rest[o++] = L' '; memcpy(rest + o, t[k], l * sizeof(wchar_t)); o += l; }
             rest[o] = 0;
@@ -7810,7 +7851,11 @@ static void Subst(const wchar_t *act, const Res *r, wchar_t *out, int cap) {
     for (const wchar_t *p = act; *p && o < cap - 40;) {
         if (CompareStringOrdinal(p, 3, L"{N}", 3, TRUE) == CSTR_EQUAL) { o += wsprintfW(out + o, r->tenths % 10 ? L"%d.%d" : L"%d", r->tenths / 10, r->tenths % 10); p += 3; }
         else if (CompareStringOrdinal(p, 3, L"{U}", 3, TRUE) == CSTR_EQUAL) { lstrcpyW(out + o, r->ucode); o += lstrlenW(r->ucode); p += 3; }
-        else if (CompareStringOrdinal(p, 6, L"{NAME}", 6, TRUE) == CSTR_EQUAL) {
+        else if (CompareStringOrdinal(p, 6, L"{TEXT}", 6, TRUE) == CSTR_EQUAL) {
+            for (const wchar_t *q = r->tail; q && *q && o < cap - 2; q++) out[o++] = *q;
+            while (o > 0 && (out[o - 1] == L' ' || out[o - 1] == L'.' || out[o - 1] == L'!' || out[o - 1] == L'?' || out[o - 1] == L',')) o--;   // точка и пробелы в конце распознанной речи не нужны
+            p += 6;
+        } else if (CompareStringOrdinal(p, 6, L"{NAME}", 6, TRUE) == CSTR_EQUAL) {
             if (r->nameIdx >= 0) { UINT lm, lk; const wchar_t *lc = LauncherSplit(g_launch[r->nameIdx].v, &lm, &lk); int l = lstrlenW(lc); if (o + l < cap - 4) { memcpy(out + o, lc, l * sizeof(wchar_t)); o += l; } }
             p += 6;
         } else out[o++] = *p++;
@@ -7820,7 +7865,7 @@ static void Subst(const wchar_t *act, const Res *r, wchar_t *out, int cap) {
 static void VLog(const char *msg, const char *txt, int tl);
 static void RunCmdText(const wchar_t *text) {                                                // главный поток: сопоставить, подтвердить, выполнить
     CmdLoad();
-    wchar_t (*t)[32] = (wchar_t (*)[32])Alloc(sizeof(wchar_t[32]) * 40); int nt = Tok(text, t, 40);
+    wchar_t (*t)[32] = (wchar_t (*)[32])Alloc(sizeof(wchar_t[32]) * 40); int offs[40], nt = Tok(text, t, 40, offs);
     Res best, second; best.cost = second.cost = 1000; best.pat = second.pat = -1;
     for (int pidx = 0; pidx < g_ncmd; pidx++) {
         Res r; r.cost = 1000;
@@ -7835,7 +7880,8 @@ static void RunCmdText(const wchar_t *text) {                                   
     if (g_vcDebug) { char lm[160]; wsprintfA(lm, "cmd tokens=%d patterns=%d best=%d cost=%d second=%d:", nt, g_ncmd, best.pat, best.cost, second.cost); char u8[300]; int ul = WideCharToMultiByte(CP_UTF8, 0, shown, -1, u8, 299, NULL, NULL); VLog(lm, u8, ul > 0 ? ul - 1 : 0); }
     if (best.pat < 0 || best.cost > 5) { wsprintfW(m, Tr(L_VOICE_NOCMD), shown); Toast(m); return; }
     if (second.pat >= 0 && second.cost - best.cost < 2 && lstrcmpW(g_cmd[second.pat].act, g_cmd[best.pat].act)) { wsprintfW(m, Tr(L_VOICE_AMBIG), shown); Toast(m); return; }
-    wchar_t act[400]; Subst(g_cmd[best.pat].act, &best, act, 400);
+    if (best.textTok >= 0) best.tail = text + offs[best.textTok];
+    wchar_t act[600]; Subst(g_cmd[best.pat].act, &best, act, 600);
     wsprintfW(m, Tr(L_VOICE_CMD), shown); Toast(m);
     if (g_cmd[best.pat].conf) {
         wchar_t q[260]; wsprintfW(q, Tr(L_VOICE_CONFIRM), shown);
@@ -8393,6 +8439,8 @@ static void NavRun(void) {                                      // клавиш�
 // Одно окно на программу, всё рисуется самим DKeys (GDI, буфер в памяти). События - memory\calendar\<источник>.ics (источник local - local.ics).
 // Выбранный день sel задаёт и показанный месяц; мини-месяц слева листается отдельно и возвращается к основному при любой навигации.
 // Любое изменение: Cal::Touch, сразу запись файла источника (SaveSrc), перестройка вида. Диалоги (редактор, удаление) - свои, модальные, только из главного потока.
+static void CalHookEv(int kind, const Cal::Event *e);                           // скрипты по событию (0 OnReminder, 1 OnCreate, 2 OnChange), см. CalAct
+static void CalHookAt(int kind, const Cal::Event *e, Cal::I64 sw, Cal::I64 ew);
 namespace CalNs {
 using namespace CalView;
 struct Geo { RECT vw[4], panel, head, tgl, prev, next, tod, add, title, wd, grid, qbox, qlab, qedit, mPrev, mNext, mTitle, mWd, mGrid, srcHdr, src[8], hid, rem, sst, sbtn, cbtn; int wnW, mcw, mrh; };
@@ -8450,13 +8498,14 @@ static void SrcFile(const wchar_t *id, const wchar_t *ext, wchar_t *p) {      //
 }
 static void SrcPath(const wchar_t *id, wchar_t *p) { SrcFile(id, L".ics", p); }
 static void SyncSoon(int si);
-static void SaveSrc(const wchar_t *id) {                       // записать файл источника (неизвестные источники, в том числе demo, не пишутся)
+static void SaveSrcS(const Cal::Store *S, const wchar_t *id) { // записать файл источника из хранилища S (неизвестные источники, в том числе demo, не пишутся)
     if (!id || SrcIdx(id) < 0) return;
     wchar_t p[MAX_PATH]; SrcPath(id, p);
-    if (!Cal::SaveFile(&st, p, id)) Toast(Tr(L_CAL_SAVEFAIL));
+    if (!Cal::SaveFile(S, p, id)) Toast(Tr(L_CAL_SAVEFAIL));
     RemDirty();                                                // напоминания перечитают файлы
     SyncSoon(SrcIdx(id));                                      // подключённый источник - отправить правку через 3 с
 }
+static void SaveSrc(const wchar_t *id) { SaveSrcS(&st, id); }
 static void Load(void) {
     Cal::StoreFree(&st); selEv = -1;
     for (int i = 0; i < g_ncalSrc; i++) { wchar_t p[MAX_PATH]; SrcPath(g_calSrc[i].id, p); Cal::LoadFile(&st, p, g_calSrc[i].id); }
@@ -9462,7 +9511,7 @@ static void NewEvent(I64 day, int hour = -1) {
         if (os < 0) os = si;
         Cal::SetStr(&w.source, g_calSrc[os].id); Cal::Touch(&w); EnsureShown(os);
         Cal::Event *e = Cal::StoreNew(&st); *e = w; int k = (int)(e - st.ev); memset(&w, 0, sizeof w);
-        SaveSrc(g_calSrc[os].id); Focus(k);
+        SaveSrc(g_calSrc[os].id); Focus(k); CalHookEv(1, &st.ev[k]);
     } else Cal::EventFree(&w);
     Settle();
 }
@@ -9488,7 +9537,7 @@ static void EditEvent(int idx) {
         EnsureShown(os); k = Cal::MoveEvent(&st, idx, g_calSrc[os].id, keep, SrcSyncs(s0));
         if (s0 >= 0) SaveSrc(g_calSrc[s0].id);
     }
-    SaveSrc(g_calSrc[os].id); Focus(k);
+    SaveSrc(g_calSrc[os].id); Focus(k); if (k >= 0 && k < st.n) CalHookEv(2, &st.ev[k]);
 }
 static void DupEv(int idx) {
     if (idx < 0 || idx >= st.n) return;
@@ -9519,9 +9568,29 @@ static void QuickAdd(void) {                                   // строка �
         e->allDay = q.allDay; e->start = q.start; e->end = q.end;
         if (!q.allDay) { Cal::LocalTzid(tz, 80); Cal::SetStr(&e->tzid, tz[0] ? tz : NULL); if (g_calAlarm > 0) Cal::AddAlarm(e, g_calAlarm); }
         Cal::RuleBuild(q.rule, q.allDay, q.allDay ? L"" : (e->tzid ? e->tzid : L""), rr, 200); if (rr[0]) Cal::SetStr(&e->rrule, rr);
-        Cal::Touch(e); SaveSrc(g_calSrc[si].id); SetWindowTextW(hQuick, L""); Focus(k);
+        Cal::Touch(e); SaveSrc(g_calSrc[si].id); SetWindowTextW(hQuick, L""); Focus(k); CalHookEv(1, &st.ev[k]);
     }
     Free(q.summary);
+}
+struct AddRes { wchar_t title[100]; I64 wall; BOOL allDay; };     // wall - местное начало
+// Действие «calendar add|remind ФРАЗА»: событие по быстрому вводу в источнике по умолчанию (remind - напоминание в момент начала, иначе DefaultAlarm).
+// Окно открыто - добавляется в его хранилище, закрыто - во временное (файл источника читается и пишется целиком).
+static BOOL AddText(const wchar_t *text, BOOL remind, AddRes *r) {
+    Cal::Quick q; I64 now = Cal::UtcToWall(Cal::NowUtc(), L"");
+    if (!text || !*text || !Cal::QuickParse(text, now, Cal::FloorDiv(now, 86400), &q)) return FALSE;
+    Cal::Store tmp; memset(&tmp, 0, sizeof tmp); int si = DefSrc(); Cal::Store *S = &st;
+    if (!hw) { wchar_t p[MAX_PATH]; SrcPath(g_calSrc[si].id, p); Cal::LoadFile(&tmp, p, g_calSrc[si].id); S = &tmp; } else EnsureShown(si);
+    Cal::Event *e = Cal::StoreNew(S); int k = (int)(e - S->ev); wchar_t u[80], tz[80], rr[200];
+    Cal::NewUid(u, 80); Cal::SetStr(&e->uid, u); Cal::SetStr(&e->summary, q.summary); Cal::SetStr(&e->source, g_calSrc[si].id);
+    e->allDay = q.allDay; e->start = q.start; e->end = q.end;
+    if (!q.allDay) { Cal::LocalTzid(tz, 80); Cal::SetStr(&e->tzid, tz[0] ? tz : NULL); }
+    if (remind) Cal::AddAlarm(e, 0); else if (!q.allDay && g_calAlarm > 0) Cal::AddAlarm(e, g_calAlarm);
+    Cal::RuleBuild(q.rule, q.allDay, q.allDay ? L"" : (e->tzid ? e->tzid : L""), rr, 200); if (rr[0]) Cal::SetStr(&e->rrule, rr);
+    Cal::Touch(e); SaveSrcS(S, g_calSrc[si].id);
+    lstrcpynW(r->title, q.summary, 100); r->wall = q.start; r->allDay = q.allDay;
+    if (!g_calFromHook) CalHookEv(1, e);                                  // событие, добавленное скриптом из OnCreate/OnChange/OnReminder, OnCreate не вызывает
+    if (hw) Focus(k);
+    Cal::StoreFree(&tmp); Free(q.summary); return TRUE;
 }
 static void CycleSel(int dir) {                                // Tab / Shift+Tab: следующее событие выбранного дня
     int c = (int)(sel - first); if (c < 0 || c >= GRID) return;
@@ -9549,7 +9618,7 @@ static void DragEnd(BOOL apply) {
     if (apply && mv && (dS != dS0 || dE != dE0)) {
         int ev = ol.a[oc].ev; Cal::Event *e = &st.ev[ev]; int s = SrcOf(e); wchar_t id[24]; lstrcpynW(id, s >= 0 ? g_calSrc[s].id : L"", 24);
         e->start += dS - dS0; e->end += dE - dE0; Cal::Touch(e);
-        SaveSrc(id); Rebuild(); selEv = ev;
+        SaveSrc(id); Rebuild(); selEv = ev; CalHookEv(2, &st.ev[ev]);
     }
     Inv();
 }
@@ -9775,6 +9844,11 @@ static void OpenOn(I64 day, const wchar_t *uid) {              // из напо�
     if (idx >= 0) EnsureShown(SrcOf(&st.ev[idx]));
     SetSel(day); if (idx >= 0) selEv = idx;
     Inv();
+}
+static void OpenView(I64 day, int view) {                      // действия calendar today|tomorrow|week: окно на дне в нужном виде (0 месяц, 1 неделя, 2 день)
+    Open(); if (!hw) return;
+    if (Busy()) { SetForegroundWindow(hw); return; }
+    SetView(view); SetSel(day); Inv();
 }
 } // namespace CalNs
 static void CalOpenOn(Cal::I64 day, const wchar_t *uid) { CalNs::OpenOn(day, uid); }
@@ -10038,6 +10112,11 @@ static void ShowPicks(const Cal::PickList &pk) {
     for (int i = 0; i < pk.n; i++) if (pk.a[i].late) late[nlate++] = pk.a[i].fire;
     if (nlate >= 2) AddSummary(late, nlate);                                // много пропущенного (после сна, игры, блокировки) - одной карточкой
     for (int i = 0; i < pk.n; i++) if (nlate < 2 || !pk.a[i].late) AddFire(pk.a[i].fire);
+    for (int i = 0; i < pk.n && i < 8; i++) {                             // скрипт OnReminder: по разу на каждое сработавшее напоминание (не больше 8 за раз)
+        const Cal::Fire &f = fl.a[pk.a[i].fire]; const Cal::Event &e = st.ev[f.ev];
+        I64 sw = f.allDay ? f.wall : Cal::UtcToWall(f.occ, L""), ew = f.allDay ? f.wall + (e.end - e.start) : Cal::UtcToWall(f.end, L"");
+        CalHookAt(0, &e, sw, ew);
+    }
     Free(late);
     if (nc > before) { if (g_calSound) TmAlarmPlay(1); Relayout(); }
 }
@@ -10059,6 +10138,70 @@ static void Dirty(void) { dirty = TRUE; At(1500); }
 static void Poke(void) { dirty = TRUE; At(2500); }                          // после сна и разблокировки: пересчитать и показать накопленное
 static void Sync(void) { dirty = TRUE; At(1000); }                         // настройки перечитаны или напоминания включили/выключили
 } // namespace RemNs
+/* ---------- действия календаря (calendar add|remind|today|tomorrow|week|agenda|next|sync) и скрипты по событию ---------- */
+// Разбор подкоманд и формат ответов - calendar.h (CalCmdParse, AgendaFormat, NextOcc, HookPack; проверка: tests\run.cmd).
+namespace CalAct {
+using Cal::I64;
+static I64 Today(void) { return Cal::FloorDiv(Cal::UtcToWall(Cal::NowUtc(), L""), 86400); }
+static void LoadShown(Cal::Store *s) { for (int i = 0; i < g_ncalSrc; i++) if (g_calSrc[i].show) { wchar_t p[MAX_PATH]; CalNs::SrcPath(g_calSrc[i].id, p); Cal::LoadFile(s, p, g_calSrc[i].id); } }
+static void Add(const wchar_t *text, BOOL remind) {
+    CalNs::AddRes r;
+    if (!CalNs::AddText(text, remind, &r)) { Toast(Tr(L_CAL_A_EMPTY)); return; }
+    wchar_t pre[24], when[64], m[260]; RemNs::DayPrefix(Cal::FloorDiv(r.wall, 86400), Today(), pre);
+    if (r.allDay) { wchar_t ad[24]; CalNs::Item(Tr(L_CAL_R_DAYS), 2, ad, 24); wsprintfW(when, L"%s%s", pre, ad); }
+    else { Cal::Tm t = Cal::SecToTm(r.wall); wsprintfW(when, L"%s%02d:%02d", pre, t.h, t.mi); }
+    wsprintfW(m, Tr(L_CAL_A_ADDED), r.title[0] ? r.title : Tr(L_CAL_NOTITLE), when); Toast(m);
+}
+static void Agenda(int which) {                                // 0 сегодня, 1 завтра, 2 неделя: тост со списком до 6 строк
+    I64 d0 = Today() + (which == 1), d1 = d0 + (which == 2 ? 7 : 1); Cal::Store s; memset(&s, 0, sizeof s); LoadShown(&s);
+    Cal::OccList ol; Cal::Query(&s, Cal::WallToUtc(d0 * 86400, L""), Cal::WallToUtc(d1 * 86400, L""), &ol);
+    wchar_t hd[40], m[100]; CalNs::Item(Tr(L_CAL_A_HEAD), which, hd, 40);
+    if (!ol.n) { wsprintfW(m, L"%s: %s", hd, Tr(L_CAL_A_NONE)); Toast(m); }
+    else {
+        wchar_t ad[24]; CalNs::Item(Tr(L_CAL_R_DAYS), 2, ad, 24); Cal::AgLbl lb = {ad, Tr(L_CAL_MORE), Tr(L_CAL_NOTITLE)};
+        Buf b = {0}; BufAdd(&b, hd); BufAdd(&b, L":\n"); Cal::AgendaFormat(&s, &ol, 6, which == 2, lb, &b); Toast(b.p); Free(b.p);
+    }
+    Cal::OccFree(&ol); Cal::StoreFree(&s);
+}
+static void Next(void) {
+    Cal::Store s; memset(&s, 0, sizeof s); LoadShown(&s); I64 now = Cal::NowUtc(); Cal::Occ o; wchar_t m[300];
+    if (!Cal::NextOcc(&s, now, 60, &o)) Toast(Tr(L_CAL_A_NONEXT));
+    else {
+        const Cal::Event &e = s.ev[o.ev]; wchar_t sp[40], rel[60], pre[24]; RemNs::Span(o.s - now, sp); wsprintfW(rel, Tr(L_CAL_R_IN), sp);
+        I64 w = Cal::UtcToWall(o.s, L""); Cal::Tm t = Cal::SecToTm(w); RemNs::DayPrefix(Cal::FloorDiv(w, 86400), Today(), pre);
+        wchar_t tm[40]; wsprintfW(tm, L"%s%02d:%02d", pre, t.h, t.mi);
+        wsprintfW(m, Tr(L_CAL_A_NEXT), e.summary && *e.summary ? e.summary : Tr(L_CAL_NOTITLE), rel, tm); Toast(m);
+    }
+    Cal::StoreFree(&s);
+}
+} // namespace CalAct
+static void CalAction(const wchar_t *arg) {
+    const wchar_t *rest; int c = Cal::CalCmdParse(arg, &rest);
+    switch (c) {
+    case Cal::CC_ADD: case Cal::CC_REMIND: CalAct::Add(rest, c == Cal::CC_REMIND); break;
+    case Cal::CC_TODAY: CalNs::OpenView(CalAct::Today(), 2); break;
+    case Cal::CC_TOMORROW: CalNs::OpenView(CalAct::Today() + 1, 2); break;
+    case Cal::CC_WEEK: CalNs::OpenView(CalAct::Today(), 1); break;
+    case Cal::CC_AGENDA: { const wchar_t *r2; int d = Cal::CalCmdParse(rest, &r2); CalAct::Agenda(d == Cal::CC_TOMORROW ? 1 : d == Cal::CC_WEEK ? 2 : 0); break; }
+    case Cal::CC_NEXT: CalAct::Next(); break;
+    case Cal::CC_SYNC: CalSyncNow(); break;
+    default: CalOpen();
+    }
+}
+// Скрипты по событию: посылка (calendar.h HookPack) уходит в главный поток, где выполняется как обычное действие, пока не открыт диалог или меню (Defer).
+static void CalHookAt(int kind, const Cal::Event *e, Cal::I64 sw, Cal::I64 ew) {
+    if (kind < 0 || kind > 2 || !g_calOn[kind][0] || !g_hwnd) return;
+    wchar_t *p = Cal::HookPack(g_calOn[kind], e->summary, sw, ew, e->allDay, e->loc, e->source ? e->source : L"local", e->uid);
+    if (!PostMessageW(g_hwnd, WM_APP_CALHOOK, 0, (LPARAM)p)) Free(p);
+}
+static void CalHookEv(int kind, const Cal::Event *e) { Cal::I64 sw, ew; Cal::HookTimes(e, &sw, &ew); CalHookAt(kind, e, sw, ew); }
+static void CalHookRun(wchar_t *t) {
+    static const wchar_t *const nm[6] = {L"DKEYS_EVENT_TITLE", L"DKEYS_EVENT_START", L"DKEYS_EVENT_END", L"DKEYS_EVENT_PLACE", L"DKEYS_EVENT_SOURCE", L"DKEYS_EVENT_UID"};
+    wchar_t *f[7]; Cal::HookUnpack(t, f);
+    for (int i = 0; i < 6; i++) SetEnvironmentVariableW(nm[i], f[i + 1]);       // скрипты получают их в окружении (RunPy и RunDpy копируют окружение при запуске)
+    g_noGrab = TRUE; ExecSpec(f[0]); g_noGrab = FALSE;
+    for (int i = 0; i < 6; i++) SetEnvironmentVariableW(nm[i], NULL);
+}
 static void RemDirty(void) { RemNs::Dirty(); }
 static void RemSync(void) { RemNs::Sync(); }
 static void RemPoke(void) { RemNs::Poke(); }
@@ -10201,8 +10344,8 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
     case WM_COPYDATA: {                                                                // DKeys.exe do "действие"
         COPYDATASTRUCT *cd = (COPYDATASTRUCT *)l;
-        if (!g_remote || !cd || cd->dwData != 0x444B || !cd->lpData || cd->cbData < 2 || cd->cbData > 2000) return FALSE;
-        wchar_t *t = (wchar_t *)Alloc(cd->cbData + 2); memcpy(t, cd->lpData, cd->cbData & ~1u);
+        if (!g_remote || !cd || (cd->dwData != 0x444B && cd->dwData != 0x444C) || !cd->lpData || cd->cbData < 2 || cd->cbData > 2000) return FALSE;
+        wchar_t *t = (wchar_t *)Alloc(cd->cbData + 4); int sh = cd->dwData == 0x444C; if (sh) t[0] = 2; memcpy(t + sh, cd->lpData, cd->cbData & ~1u);       // 0x444C - вызов из скрипта события (в окружении DKEYS_EVENT_UID): метка  в начале
         PostMessageW(g_hwnd, WM_APP_SPEC, 0, (LPARAM)t); return TRUE;
     }
     case WM_APP_HOT: {
@@ -10217,9 +10360,10 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_APP_PCLICK: PopupChoose((int)w); return 0;
     case WM_APP_PTAB: PopupTab((int)w); return 0;
     case WM_APP_PIMG: PopupImg((int)w); return 0;
-    case WM_APP_SPEC: { wchar_t *t = (wchar_t *)l; if (t && !Defer(m, t)) { g_noGrab = TRUE; ExecSpec(t); g_noGrab = FALSE; Free(t); } return 0; }
+    case WM_APP_SPEC: { wchar_t *t = (wchar_t *)l; if (t && !Defer(m, t)) { BOOL fh = t[0] == 2; g_calFromHook = fh; g_noGrab = TRUE; ExecSpec(t + fh); g_noGrab = FALSE; g_calFromHook = FALSE; Free(t); } return 0; }
     case WM_APP_DPY: { wchar_t *t = (wchar_t *)l; if (t && !Defer(m, t)) { PasteText(t); Free(t); } return 0; }
     case WM_APP_MACRO: { wchar_t *t = (wchar_t *)l; if (t) { Toast(t); Free(t); } return 0; }
+    case WM_APP_CALHOOK: { wchar_t *t = (wchar_t *)l; if (t && !Defer(m, t)) { CalHookRun(t); Free(t); } return 0; }
     case WM_APP_SYNC: CalSyncDone((void *)l); return 0;
     case WM_APP_SETUP: CalSetupDone(); return 0;
     case WM_TRAY:
@@ -10320,7 +10464,7 @@ static int Run(void) {
             int n = lstrlenW(c); wchar_t *a = (wchar_t *)Alloc((n + 2) * sizeof(wchar_t)); lstrcpyW(a, c);
             if (n >= 2 && a[0] == L'"' && a[n - 1] == L'"') { a[n - 1] = 0; MoveMemory(a, a + 1, n * sizeof(wchar_t)); }
             HWND tw = FindWindowW(L"DKMain", L"DKeys"); int rc = 2;
-            if (tw && *a) { COPYDATASTRUCT cd; cd.dwData = 0x444B; cd.cbData = (lstrlenW(a) + 1) * sizeof(wchar_t); cd.lpData = a; rc = SendMessageW(tw, WM_COPYDATA, 0, (LPARAM)&cd) ? 0 : 3; }
+            if (tw && *a) { COPYDATASTRUCT cd; cd.dwData = GetEnvironmentVariableW(L"DKEYS_EVENT_UID", NULL, 0) ? 0x444C : 0x444B; cd.cbData = (lstrlenW(a) + 1) * sizeof(wchar_t); cd.lpData = a; rc = SendMessageW(tw, WM_COPYDATA, 0, (LPARAM)&cd) ? 0 : 3; }
             return rc;
         }
     }
