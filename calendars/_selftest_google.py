@@ -219,6 +219,8 @@ def base64_sha(v):
 
 
 def run(G):
+    import _appkey
+    _appkey.CLIENT_ID = ""                                                      # проверка ввода своего ключа: встроенный ключ DKeys отключён
     n = [0]
 
     def ok(cond, msg):

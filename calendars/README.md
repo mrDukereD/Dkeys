@@ -155,3 +155,10 @@ Microsoft Graph (Outlook.com, Hotmail, Microsoft 365), **только станд
 Выполненная - заголовок `✓ название`: меню события «Отметить выполненной» (или дописать/убрать `✓ ` вручную) в Google становится статусом completed/needsAction.
 Нужен `google.py` (тот же ключ приложения `google.state\client.json`) и включённый в проекте Google Cloud **Google Tasks API**; вход - отдельный (scope `tasks`).
 «Подключить…» -> gtasks, затем отметьте списки задач; настройки - `gtasks.ini` (account, list, name, readonly), токен - `gtasks.state\`. Курсор - время запроса (`updatedMin`).
+
+## Ключ приложения Google
+
+В DKeys встроен ключ приложения (`calendars\_appkey.py`, тип «Desktop app»): пользователю не нужно заводить проект в Google Cloud, достаточно «Подключить…» и входа в свой аккаунт.
+Для приложений ПК Google не считает client_secret секретом; доступ к данным даёт только вход самого пользователя (токены - у него на диске, в `*.state\`).
+Свой ключ главнее встроенного: `google.state\client.json` или переменные `DKEYS_GOOGLE_CLIENT_ID`/`DKEYS_GOOGLE_CLIENT_SECRET`.
+Пока приложение не прошло проверку Google, при входе показывается «приложение не проверено» (Advanced -> Go to ...), а число пользователей ограничено (режим Testing: их e-mail надо внести в «Test users»).

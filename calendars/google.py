@@ -53,6 +53,9 @@ def load_client():
             d = d.get("installed") or d.get("web") or d
             if d.get("client_id"):
                 return {"client_id": d["client_id"], "client_secret": d.get("client_secret", "")}
+    import _appkey
+    if _appkey.CLIENT_ID:                                                    # ключ приложения DKeys (общий для всех пользователей)
+        return {"client_id": _appkey.CLIENT_ID, "client_secret": _appkey.CLIENT_SECRET}
     return None
 
 
