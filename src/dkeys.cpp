@@ -10379,7 +10379,7 @@ static void TrayMenuAt(POINT pt, int again) {
     case 13: ShellExecuteW(NULL, L"open", g_memDir, NULL, NULL, SW_SHOWNORMAL); break;
     case 14: Reload(); break;
     case 18: {
-        wchar_t t[1200]; wsprintfW(t, Tr(L_ABOUT_TXT), L"1.6"); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_BODY)); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_AUTH)); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_ASK));
+        wchar_t t[1200]; wsprintfW(t, Tr(L_ABOUT_TXT), L"1.7"); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_BODY)); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_AUTH)); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_ASK));
         MSGBOXPARAMSW mp; memset(&mp, 0, sizeof mp);                                  // со значком программы (ресурс 1)
         mp.cbSize = sizeof mp; mp.hwndOwner = g_hwnd; mp.hInstance = GetModuleHandleW(NULL); mp.lpszText = t; mp.lpszCaption = Tr(L_TRAY_ABOUT);
         mp.dwStyle = MB_YESNO | MB_USERICON | MB_SETFOREGROUND | MB_TOPMOST; mp.lpszIcon = MAKEINTRESOURCEW(1);
