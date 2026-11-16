@@ -105,7 +105,7 @@ enum {
 
 struct Bind { UINT mods, key; int act, n, n2; wchar_t *arg, *dir; int lau; };      // lau: хоткей задан строкой меню запуска [Launcher]
 struct KV { wchar_t *k, *v; };
-struct Row { wchar_t *label, *title, *text, *hk, *dir; int ref, act; };      // act != 0: строка из хоткея ini (run/admin/py), hk - его имя
+struct Row { wchar_t *label, *title, *text, *hk, *dir; int ref, act, fav; };      // act != 0: строка из хоткея ini (run/admin/py), hk - его имя
 struct Snap { UINT fmt[64]; HGLOBAL h[64]; int n; };
 struct Buf { wchar_t *p; int n, cap; };
 static void CamOpen(void);
@@ -191,6 +191,7 @@ static int g_bufMax = 10, g_curBuf = 1;
 static int g_layoutWord, g_layoutSwitch = 1;
 static wchar_t **g_hist; static int g_nhist, g_histCap;
 static KV *g_launch; static int g_nlaunch;
+static KV g_qr[64]; static int g_nqr;                                                   // [QuickRun]: Название=команда
 struct ScrEnt { wchar_t *title, *arg, *dir, *hk; };                                       // строка секции [Scripts]: title может быть NULL, hk - имя хоткея или ""
 static ScrEnt *g_scrIni; static int g_nscrIni;
 
@@ -206,7 +207,13 @@ static wchar_t *g_pasteTxt; static SRWLOCK g_pasteLock = SRWLOCK_INIT;   // те
 #define LANG_LIST(X) \
 X(L_TRAY_BUF, "tray.buffers", L"Буферы…") \
 X(L_TRAY_HIST, "tray.history", L"История…") \
-X(L_TRAY_LAUNCH, "tray.launcher", L"Быстрый запуск…") \
+X(L_TRAY_LAUNCH, "tray.launcher2", L"Запуск…") \
+X(L_TRAY_QUICK, "tray.quickrun", L"Быстрый запуск") \
+X(L_QR_EMPTY, "tray.quickrun_empty", L"(пусто: Num+ на пункте в списках)") \
+X(L_T_QRADD, "toast.qr_add", L"Добавлено в быстрый запуск") \
+X(L_T_QRDEL, "toast.qr_del", L"Убрано из быстрого запуска") \
+X(L_T_QRGONE, "toast.qr_gone", L"Пункт быстрого запуска не найден: %s") \
+X(L_T_QRNO, "toast.qr_no", L"В быстрый запуск добавляются пункты запуска, скриптов и записей (до 64)") \
 X(L_TRAY_CAM, "tray.webcam", L"Вебкамеры…") \
 X(L_TRAY_DRAW, "tray.draw", L"Рисовалка на экране…") \
 X(L_TRAY_PICK, "tray.picker", L"Пипетка (цвет в буфер)…") \
@@ -412,7 +419,7 @@ X(L_TAB_HIST, "popup.tab_history", L"История") \
 X(L_TAB_LAUNCH, "popup.tab_launch", L"Запуск") \
 X(L_TAB_SCR, "popup.tab_scripts", L"Скрипты") \
 X(L_TAB_REC, "popup.tab_records", L"Записи") \
-X(L_INFO_REC, "popup.info_records", L"Enter - запустить   Ctrl+Enter - править   Shift+Enter - папка   Tab - режим   Esc - закрыть") \
+X(L_INFO_REC, "popup.info_records2", L"Enter - запустить   Ctrl+Enter - править   Shift+Enter - папка   Num+ - \u2605   Tab - режим   Esc - закрыть") \
 X(L_EMPTY_REC, "popup.records_empty", L"В папке records нет записей. Win+Shift+M - записать действия клавиатуры и мыши") \
 X(L_TRAY_MACRO, "tray.macro", L"Запись действий") \
 X(L_TRAY_RECS, "tray.records", L"Записи…") \
@@ -425,11 +432,11 @@ X(L_M_UIA, "macro.uia_install", L"Ставлю python-пакет uiautomation (�
 X(L_M_UIAOK, "macro.uia_ok", L"uiautomation установлен") \
 X(L_M_UIAFAIL, "macro.uia_fail", L"Не удалось установить uiautomation: pip install uiautomation") \
 X(L_NOEDIT, "toast.not_editable", L"Редактировать можно скрипты и текстовые файлы") \
-X(L_INFO_SCR, "popup.info_scripts3", L"T - tmp.py, 1-9 - остальные, Enter - запустить   Ctrl+Enter - править   Shift+Enter - папка   Tab - режим   Esc - закрыть") \
+X(L_INFO_SCR, "popup.info_scripts4", L"T - tmp.py, 1-9 - остальные, Enter - запустить   Ctrl+Enter - править   Shift+Enter - папка   Num+ - \u2605   Tab - режим   Esc - закрыть") \
 X(L_EMPTY_SCR, "popup.scripts_empty3", L"В папке scripts нет скриптов (*.py, *.bat, *.cmd, *.ps1, *.vbs)") \
 X(L_TRAY_SCR, "tray.scripts", L"Скрипты…") \
 X(L_SEARCH, "popup.search", L"Введите для поиска…") \
-X(L_INFO_LAUNCH, "popup.info_launch3", L"Enter - запустить   Ctrl+Enter - править скрипт   Shift+Enter - папка   Tab - режим   Esc - закрыть") \
+X(L_INFO_LAUNCH, "popup.info_launch4", L"Enter - запустить   Ctrl+Enter - править скрипт   Shift+Enter - папка   Num+ - \u2605   Tab - режим   Esc - закрыть") \
 X(L_INFO_BUF, "popup.info_buffer2", L"%d симв.   цифра/Enter - вставить   Ctrl+цифра - картинка   Del - удалить   F2 - правка   Ins - новая") \
 X(L_INFO_HIST, "popup.info_history", L"%d симв.   Enter - вставить   Del - удалить   F2 - правка   Ctrl+1..9 - в буфер") \
 X(L_EMPTY_NF, "popup.not_found", L"Ничего не найдено") \
@@ -756,7 +763,7 @@ static void IniSet(const wchar_t *sect, const wchar_t *key, const wchar_t *val) 
         wchar_t *ce = le; if (ce > ls && ce[-1] == L'\r') ce--;
         wchar_t *a = ls; while (a < ce && (*a == L' ' || *a == L'\t')) a++;
         if (a < ce && *a == L'[') {
-            if (inSect && !done) { BufAdd(&out, key); BufAdd(&out, L"="); BufAdd(&out, val); BufAdd(&out, L"\r\n"); done = TRUE; }
+            if (inSect && !done) { if (val) { BufAdd(&out, key); BufAdd(&out, L"="); BufAdd(&out, val); BufAdd(&out, L"\r\n"); } done = TRUE; }
             wchar_t *r = a + 1; wchar_t *rs = r;
             while (r < ce && *r != L']') r++;
             inSect = ((r - rs) == slen && CompareStringOrdinal(rs, slen, sect, slen, TRUE) == CSTR_EQUAL);
@@ -768,15 +775,15 @@ static void IniSet(const wchar_t *sect, const wchar_t *key, const wchar_t *val) 
             if (eq < ce) {
                 wchar_t *ke = eq; while (ke > a && (ke[-1] == L' ' || ke[-1] == L'\t')) ke--;
                 if ((ke - a) == klen && CompareStringOrdinal(a, klen, key, klen, TRUE) == CSTR_EQUAL) {
-                    BufAdd(&out, key); BufAdd(&out, L"="); BufAdd(&out, val);
-                    if (hasNl) BufAdd(&out, L"\r\n");
+                    if (val) { BufAdd(&out, key); BufAdd(&out, L"="); BufAdd(&out, val); if (hasNl) BufAdd(&out, L"\r\n"); }          // val == NULL: строка удаляется
                     done = TRUE; continue;
                 }
             }
         }
         BufAdd(&out, ls, (int)(p - ls));
     }
-    if (inSect && !done) {
+    if (!val) {}
+    else if (inSect && !done) {
         if (out.n && out.p[out.n - 1] != L'\n') BufAdd(&out, L"\r\n");
         BufAdd(&out, key); BufAdd(&out, L"="); BufAdd(&out, val); BufAdd(&out, L"\r\n");
     } else if (!found) {
@@ -1033,6 +1040,15 @@ PowerShell=powershell.exe
 Параметры: Обновление Windows=ms-settings:windowsupdate
 Автозагрузка (папка)=shell:startup
 Папка SendTo=shell:sendto
+
+[QuickRun]
+; Быстрый запуск - подменю в меню значка в трее (перед «Открыть DKeys.ini»): Название=команда (те же команды, что в run / admin / py).
+; Строки добавляются и убираются клавишей Num+ (плюс на цифровой клавиатуре) на выбранном пункте в окне «Запуск», «Скрипты» или «Записи»;
+; такие пункты в списках помечены звёздочкой. В строке - не копия команды, а ссылка на пункт, поэтому правка команды в [Launcher] действует и здесь:
+;   Калькулятор=launcher:Калькулятор   (по названию строки [Launcher])    Мой скрипт=script:myscript.py   (из папки scripts)
+;   Запись=record:rec1.py   (из папки records)    Документ=run:doc.pdf   (из папки runs)
+;   Сборка=scripts:Название   (строка секции [Scripts])    Что-то=hotkey:Win+W   (действие хоткея из [Hotkeys])
+; Можно написать и обычную команду, как в [Launcher]:  Блокнот=notepad.exe   (хоткеи из [Hotkeys] добавляются именно так - командой)
 
 [Draw]
 ; Рисовалка на экране (действие draw). Закомментированные строки - параметры со значением по умолчанию, уберите ; чтобы изменить.
@@ -1602,6 +1618,8 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
         if (!b.key) { Free(b.arg); Free(b.dir); return; }
         b.lau = 1;
         BindPush(&b);
+    } else if (!lstrcmpiW(s, L"QuickRun")) {
+        if (g_nqr < 64 && *k && *v) { g_qr[g_nqr].k = Dup(k); g_qr[g_nqr].v = Dup(v); g_nqr++; }
     } else if (!lstrcmpiW(s, L"Launcher")) {
         g_launch = (KV *)Realloc(g_launch, (g_nlaunch + 1) * sizeof(KV));
         g_launch[g_nlaunch].k = Dup(k); g_launch[g_nlaunch].v = Dup(v); g_nlaunch++;
@@ -1655,6 +1673,8 @@ static void LoadConfig(void) {
     wchar_t *t = FromUtf8((char *)raw, sz); Free(raw);
     for (int i = 0; i < g_nlaunch; i++) { Free(g_launch[i].k); Free(g_launch[i].v); }
     Free(g_launch); g_launch = NULL; g_nlaunch = 0;
+    for (int i = 0; i < g_nqr; i++) { Free(g_qr[i].k); Free(g_qr[i].v); }
+    g_nqr = 0;
     for (int i = 0; i < g_nscrIni; i++) { Free(g_scrIni[i].title); Free(g_scrIni[i].arg); Free(g_scrIni[i].dir); Free(g_scrIni[i].hk); }
     Free(g_scrIni); g_scrIni = NULL; g_nscrIni = 0;
     g_bnew = NULL; g_nbnew = g_bnewCap = 0;
@@ -2448,6 +2468,52 @@ static void ScrRow(Row *r, const wchar_t *file, const wchar_t *label, const wcha
     wchar_t nm[100]; ScrName(txt, nm, 100, EndsI(titlePath, L".bat") || EndsI(titlePath, L".cmd"), EndsI(titlePath, L".vbs"));
     r->label = Dup(label); r->title = Dup(nm[0] ? nm : file); r->text = txt;
 }
+/* ---------- быстрый запуск ([QuickRun]) ---------- */
+static void QrNorm(const wchar_t *s, wchar_t *o, int n) {                             // для сравнения: без кавычек и крайних пробелов, без регистра
+    int m = 0; while (*s == L' ') s++;
+    for (; *s && m < n - 1; s++) if (*s != L'"') o[m++] = *s;
+    while (m > 0 && o[m - 1] == L' ') m--;
+    o[m] = 0; CharLowerW(o);
+}
+static wchar_t *RowLit(const Row *r) {                                                // команда строки из хоткея ini (так записывали раньше; нужна для поиска старых строк)
+    Buf b = {0};
+    BufAdd(&b, r->act == A_ADMIN ? L"admin " : r->act == A_PY ? L"py " : L"run "); BufAdd(&b, r->text);
+    if (r->dir && *r->dir) { BufAdd(&b, L" @ "); BufAdd(&b, r->dir); }
+    return b.p;
+}
+static wchar_t *RowSpec(const Row *r) {                                               // значение строки для [QuickRun] (NULL - добавить нельзя): ссылка на пункт списка, а у строк из хоткеев ini - сама команда
+    Buf b = {0};
+    if (r->act) {
+        if (r->act == A_PY) for (int i = 0; i < g_nscrIni; i++) {                     // строка секции [Scripts]: ссылка на неё по названию (или по хоткею, если названия нет)
+            const ScrEnt *e = &g_scrIni[i]; const wchar_t *ed = e->dir ? e->dir : L"", *rd = r->dir ? r->dir : L"";
+            const wchar_t *nm = e->title && *e->title ? e->title : e->hk;
+            if (*nm && !lstrcmpiW(e->arg, r->text) && !lstrcmpiW(ed, rd)) { BufAdd(&b, L"scripts:"); BufAdd(&b, nm); return b.p; }
+        }
+        if (r->hk && *r->hk) { BufAdd(&b, L"hotkey:"); BufAdd(&b, r->hk); return b.p; }      // хоткей из [Hotkeys]: ссылка на него
+        return RowLit(r);
+    }
+    else if (g_pmode == PM_LAUNCH) {
+        if (r->ref < g_nlaunch) { BufAdd(&b, L"launcher:"); BufAdd(&b, g_launch[r->ref].k); }        // ссылка на строку [Launcher] по названию
+        else { const wchar_t *fn = r->text, *q = fn; for (; *q; q++) if (*q == L'\\') fn = q + 1; BufAdd(&b, L"run:"); BufAdd(&b, fn); }   // файл папки runs
+    }
+    else if (g_pmode == PM_SCRIPTS) { BufAdd(&b, L"script:"); BufAdd(&b, g_scrNames[r->ref]); }
+    else if (g_pmode == PM_RECORDS) { BufAdd(&b, L"record:"); BufAdd(&b, g_scrNames[r->ref]); }
+    else return NULL;
+    return b.p;
+}
+static int QrFind(const wchar_t *spec) {
+    wchar_t a[400], c[400]; QrNorm(spec, a, 400);
+    for (int i = 0; i < g_nqr; i++) {
+        UINT m, k; QrNorm(LauncherSplit(g_qr[i].v, &m, &k), c, 400);
+        if (!lstrcmpW(a, c)) return i;
+    }
+    return -1;
+}
+static int QrFindRow(const Row *r) {                                                  // номер строки [QuickRun] для строки списка или -1
+    wchar_t *sp = RowSpec(r); int i = sp ? QrFind(sp) : -1; Free(sp);
+    if (i < 0 && r->act) { sp = RowLit(r); i = sp ? QrFind(sp) : -1; Free(sp); }
+    return i;
+}
 static void BuildRows(void) {
     FreeRows();
     wchar_t **sf = NULL; int ns = 0;
@@ -2487,6 +2553,7 @@ static void BuildRows(void) {
     Free(rf);
     g_nrows = n;
     DedupRows();
+    for (int i = 0; i < g_nrows; i++) g_rows[i].fav = QrFindRow(&g_rows[i]) >= 0;     // звёздочка у пунктов из [QuickRun]
     Refilter();
 }
 
@@ -2539,6 +2606,10 @@ static void PopupPaint(HWND h) {
             SelectObject(dc, g_fnt);
         }
         RECT tr = rr; tr.left += g_pad + lw; tr.right -= g_pad + Sc(6);
+        if (g_pmode == PM_LAUNCH || g_pmode == PM_SCRIPTS || g_pmode == PM_RECORDS) {      // колонка под звёздочку: пункт в быстром запуске
+            if (r->fav) { RECT sr2 = {tr.left, rr.top, tr.left + Sc(16), rr.bottom}; SetTextColor(dc, P.acc); DrawTextW(dc, L"\u2605", 1, &sr2, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX); }
+            tr.left += Sc(16);
+        }
         if (r->hk && *r->hk) {
             SIZE hs; GetTextExtentPoint32W(dc, r->hk, lstrlenW(r->hk), &hs);
             RECT hr2 = tr; hr2.left = tr.right - hs.cx; SetTextColor(dc, P.dim);
@@ -3797,6 +3868,95 @@ static void PopupImg(int slot) {                                                
 static void PopupTab(int i) {
     int m = ModeOfTab(i); PopupSetMode(m, m == PM_BUF ? i + 1 : 0);
 }
+static void QrToggle(void) {                                                          // Num+: пункт в быстрый запуск / из него
+    if (g_nvis <= 0) return;
+    Row *r = &g_rows[g_vis[g_sel]];
+    wchar_t *spec = RowSpec(r);
+    if (!spec) { Toast(Tr(L_T_QRNO)); return; }
+    int i = QrFindRow(r);
+    if (i >= 0) {
+        IniSet(L"QuickRun", g_qr[i].k, NULL); Free(g_qr[i].k); Free(g_qr[i].v);
+        memmove(g_qr + i, g_qr + i + 1, (g_nqr - i - 1) * sizeof(KV)); g_nqr--;
+        Toast(Tr(L_T_QRDEL));
+    } else if (g_nqr >= 64) Toast(Tr(L_T_QRNO));
+    else {
+        wchar_t key[110]; const wchar_t *t = r->title;
+        while (*t == L' ' || *t == L';' || *t == L'#' || *t == L'[') t++;
+        int n = 0; for (; *t && n < 90; t++) key[n++] = *t == L'=' ? L'-' : *t;
+        while (n > 0 && key[n - 1] == L' ') n--;
+        if (!n) { lstrcpyW(key, L"item"); n = 4; }
+        key[n] = 0;
+        for (int dup = 2, again = 1; again; dup++) {                                  // имя уникально: по нему строку потом удаляем
+            again = 0;
+            for (int j = 0; j < g_nqr; j++) if (!lstrcmpiW(g_qr[j].k, key)) { again = 1; wsprintfW(key + n, L" (%d)", dup); break; }
+        }
+        IniSet(L"QuickRun", key, spec);
+        g_qr[g_nqr].k = Dup(key); g_qr[g_nqr].v = Dup(spec); g_nqr++;
+        Toast(Tr(L_T_QRADD));
+    }
+    Free(spec);
+    PopupReselect(g_sel);
+}
+static void QrHk(int i, wchar_t *hk);
+static HMENU QrMenu(void) {                                                           // подменю трея: команды 1000 + номер строки; справа - хоткей пункта, если он есть
+    HMENU h = CreatePopupMenu();
+    if (!g_nqr) AppendMenuW(h, MF_STRING | MF_GRAYED, 0, Tr(L_QR_EMPTY));
+    for (int i = 0; i < g_nqr; i++) {
+        wchar_t e[140]; int o = 0;
+        for (const wchar_t *q = g_qr[i].k; *q && o < 130; q++) { if (*q == L'&') e[o++] = L'&'; e[o++] = *q; }
+        e[o] = 0; wchar_t hk[48]; QrHk(i, hk);
+        if (*hk) { lstrcatW(e, L"\t"); lstrcatW(e, hk); }
+        AppendMenuW(h, MF_STRING, 1000 + i, e);
+    }
+    return h;
+}
+static BOOL QrPrefix(const wchar_t *v, const wchar_t *pre, const wchar_t **rest) {
+    int n = lstrlenW(pre);
+    if (CompareStringOrdinal(v, n, pre, n, TRUE) != CSTR_EQUAL) return FALSE;
+    *rest = v + n; return TRUE;
+}
+static void QrHk(int i, wchar_t *hk) {                                               // хоткей, который уже назначен на пункт (из [Launcher], [Scripts] или [Hotkeys]); иначе пустая строка
+    UINT m, k; const wchar_t *v = LauncherSplit(g_qr[i].v, &m, &k), *rest; hk[0] = 0;
+    if (QrPrefix(v, L"launcher:", &rest)) {
+        for (int j = 0; j < g_nlaunch; j++) if (!lstrcmpiW(g_launch[j].k, rest)) { LauncherSplit(g_launch[j].v, &m, &k); break; }
+    } else if (QrPrefix(v, L"scripts:", &rest)) {
+        for (int j = 0; j < g_nscrIni; j++) {
+            const ScrEnt *e = &g_scrIni[j];
+            if ((e->title && !lstrcmpiW(e->title, rest)) || !lstrcmpiW(e->hk, rest)) { lstrcpynW(hk, e->hk, 48); return; }
+        }
+        return;
+    } else if (QrPrefix(v, L"hotkey:", &rest)) { if (!ParseHotkey(rest, &m, &k)) k = 0; }
+    if (k) HkName(m, k, hk);
+}
+static int FindBind(UINT mods, UINT key);
+static void QrCmd(int c) {                                                            // значение: launcher:Название | script:файл | record:файл | run:файл | либо сама команда
+    int i = c - 1000; if (i < 0 || i >= g_nqr) return;
+    UINT m, k; const wchar_t *v = LauncherSplit(g_qr[i].v, &m, &k), *rest;
+    wchar_t *s = NULL;
+    if (QrPrefix(v, L"launcher:", &rest)) {
+        for (int j = 0; j < g_nlaunch && !s; j++) if (!lstrcmpiW(g_launch[j].k, rest)) s = Dup(LauncherSplit(g_launch[j].v, &m, &k));
+        if (!s) { wchar_t t[200]; wsprintfW(t, Tr(L_T_QRGONE), rest); Toast(t); return; }
+    } else if (QrPrefix(v, L"scripts:", &rest)) {                                       // строка [Scripts] по названию или хоткею
+        for (int j = 0; j < g_nscrIni; j++) {
+            const ScrEnt *e = &g_scrIni[j];
+            if (!((e->title && !lstrcmpiW(e->title, rest)) || !lstrcmpiW(e->hk, rest))) continue;
+            Bind b; memset(&b, 0, sizeof b); b.act = A_PY; b.arg = Dup(e->arg); b.dir = e->dir ? Dup(e->dir) : NULL;
+            ExecBind(&b); Free(b.arg); Free(b.dir); return;
+        }
+        wchar_t t[200]; wsprintfW(t, Tr(L_T_QRGONE), rest); Toast(t); return;
+    } else if (QrPrefix(v, L"hotkey:", &rest)) {                                        // действие, назначенное на хоткей в [Hotkeys]
+        UINT hm, hk; int bi = ParseHotkey(rest, &hm, &hk) ? FindBind(hm, hk) : -1;
+        if (bi < 0) { wchar_t t[200]; wsprintfW(t, Tr(L_T_QRGONE), rest); Toast(t); return; }
+        Bind b = g_bind[bi]; ExecBind(&b); return;
+    } else if (QrPrefix(v, L"script:", &rest)) { s = (wchar_t *)Alloc((lstrlenW(rest) + 8) * sizeof(wchar_t)); wsprintfW(s, L"py \"%s\"", rest); }
+    else if (QrPrefix(v, L"record:", &rest)) { s = (wchar_t *)Alloc((lstrlenW(rest) + lstrlenW(g_recDir) + 8) * sizeof(wchar_t)); wsprintfW(s, L"py \"%s%s\"", g_recDir, rest); }
+    else if (QrPrefix(v, L"run:", &rest)) {
+        wchar_t path[MAX_PATH]; lstrcpynW(path, g_runDir, MAX_PATH); Cat(path, MAX_PATH, rest);
+        if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) { wchar_t t[200]; wsprintfW(t, Tr(L_T_QRGONE), rest); Toast(t); return; }
+        RunFile(path); return;
+    } else s = Dup(v);
+    ExecSpec(s); Free(s);
+}
 static void PopupKey(UINT key, UINT mods, WCHAR ch) {
     Log(L"PopupKey key=%x mods=%x ch=%x", key, mods, (int)ch);
     if (!g_hwndPop) return;
@@ -3830,6 +3990,7 @@ static void PopupKey(UINT key, UINT mods, WCHAR ch) {
     case VK_END: g_sel = g_nvis ? g_nvis - 1 : 0; PopupEnsureVisible(); PopupRedraw(); return;
     case VK_TAB: { int m = g_pmode; do m = (m + 1) % PM_COUNT; while (m == PM_HIST && !g_histOn); PopupSetMode(m, 0); return; }
     case VK_DELETE: PopupDelete(); return;
+    case VK_ADD: QrToggle(); return;
     case VK_F2: PopupEdit(FALSE); return;
     case VK_INSERT: if (buf) PopupEdit(TRUE); return;
     case VK_BACK:
@@ -10284,7 +10445,7 @@ static BOOL TmKeep(int) { return FALSE; }
 static void HidCmd(int c) { ShowHidden(c - 200); }
 static const struct MenuMod { int lo, hi; void (*cmd)(int); BOOL (*keep)(int); } kMenuMods[] = {
     {20, 67, RecNs::Cmd, RecKeep}, {300, 500, RecNs::Cmd, RecKeep},                // запись: настройки, микрофоны 30..47, мониторы 50..57, оверлеи
-    {200, 232, HidCmd, KeepNone},                                                   // скрытые окна (g_hid[32])
+    {200, 232, HidCmd, KeepNone}, {1000, 1064, QrCmd, KeepNone},          // скрытые окна; быстрый запуск ([QuickRun], до 64)                                                   // скрытые окна (g_hid[32])
     {600, 700, VolNs::Cmd, VolKeep}, {700, 760, DupNs::Cmd, KeepAll},
     {899, 964, SchCmd, KeepAll}, {TM_ID, TM_ID + 80, TmCommand, TmKeep},
 };
@@ -10332,6 +10493,8 @@ static void TrayMenuAt(POINT pt, int again) {
         AppendMenuW(m, MF_POPUP, (UINT_PTR)hm, Tr(L_TRAY_HIDDEN));
         AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     }
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)QrMenu(), Tr(L_TRAY_QUICK));
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING, 12, Tr(L_TRAY_INI));
     AppendMenuW(m, MF_STRING, 13, Tr(L_TRAY_MEM));
     AppendMenuW(m, MF_STRING, 14, Tr(L_TRAY_RELOAD));
