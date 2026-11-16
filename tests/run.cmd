@@ -1,6 +1,6 @@
 @echo off
 rem tests\run.cmd: собирает и запускает проверку ядра календаря (src\calendar.h, calview.h, calsync.h; с настоящим calendars\stub.py, если найден python),
-rem затем Python-проверки провайдеров (tests\sync_test.py, calendars\caldav.py --selftest). Результат C++ в %TEMP%\dkeys_caltest\.
+rem затем Python-проверки провайдеров (tests\sync_test.py; в нём --selftest у calendars\caldav.py, google.py, outlook.py). Результат C++ в %TEMP%\dkeys_caltest\.
 setlocal
 set "RC=0"
 set "VCV="

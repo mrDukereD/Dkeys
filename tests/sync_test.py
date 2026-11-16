@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Проверки договора провайдеров календаря (calendars\\README.md) на файловом stub.py и самопроверка caldav.py.
+"""Проверки договора провайдеров календаря (calendars\\README.md) на файловом stub.py и самопроверки caldav.py, google.py, outlook.py (--selftest, info, ненастроенный профиль).
 Движок слияния (конфликты, удаления, hidden, перенос между источниками, серии, сбои, повторная синхронизация) проверяет caltest.cpp
 вместе с настоящим stub.py; здесь - сами скрипты как внешние процессы: команды, коды выхода, формат ответов, режимы сбоев.
 Запуск: python tests\\sync_test.py (из tests\\run.cmd, если найден python)."""
@@ -163,24 +163,50 @@ class StubTest(unittest.TestCase):
         self.assertLess(time.time() - t0, 10)
 
 
-class CaldavTest(unittest.TestCase):
+class ProviderBase:
+    """Общие проверки скрипта-провайдера как внешнего процесса (наследник задаёт SCRIPT)."""
+    SCRIPT = ""
+
+    def run_script(self, *args, timeout=30):
+        return subprocess.run([sys.executable, os.path.join(CAL, self.SCRIPT)] + list(args), capture_output=True, text=True, encoding="utf-8",
+                              env=dict(os.environ, PYTHONIOENCODING="utf-8"), timeout=timeout)
+
     def test_selftest_without_network(self):
-        r = subprocess.run([sys.executable, os.path.join(CAL, "caldav.py"), "--selftest"], capture_output=True, text=True, encoding="utf-8",
-                           env=dict(os.environ, PYTHONIOENCODING="utf-8"), timeout=120)
+        r = self.run_script("--selftest", timeout=180)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("selftest OK", r.stdout)
 
     def test_info(self):
-        r = subprocess.run([sys.executable, os.path.join(CAL, "caldav.py"), "info"], capture_output=True, text=True, encoding="utf-8",
-                           env=dict(os.environ, PYTHONIOENCODING="utf-8"), timeout=30)
+        r = self.run_script("info")
         self.assertEqual(r.returncode, 0)
         self.assertTrue(json.loads(r.stdout.strip().splitlines()[-1])["calendars"])
 
     def test_unconfigured_profile_fails_clearly(self):
-        r = subprocess.run([sys.executable, os.path.join(CAL, "caldav.py"), "pull", "--since", "", "--profile", "no_such_profile_xyz"], capture_output=True, text=True,
-                           encoding="utf-8", env=dict(os.environ, PYTHONIOENCODING="utf-8"), timeout=30)
+        r = self.run_script("pull", "--since", "", "--profile", "no_such_profile_xyz")
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("Подключить", r.stderr)
+
+
+class CaldavTest(ProviderBase, unittest.TestCase):
+    SCRIPT = "caldav.py"
+
+
+class GoogleTest(ProviderBase, unittest.TestCase):
+    SCRIPT = "google.py"
+
+    def test_info_name_and_capabilities(self):
+        i = json.loads(self.run_script("info").stdout.strip().splitlines()[-1])
+        self.assertIn("Google", i["name"])
+        self.assertTrue(i["create"] and i["update"] and i["delete"] and i["series"])
+
+
+class OutlookTest(ProviderBase, unittest.TestCase):
+    SCRIPT = "outlook.py"
+
+    def test_info_name_and_capabilities(self):
+        i = json.loads(self.run_script("info").stdout.strip().splitlines()[-1])
+        self.assertIn("Outlook", i["name"])
+        self.assertTrue(i["create"] and i["update"] and i["delete"] and i["series"])
 
 
 if __name__ == "__main__":

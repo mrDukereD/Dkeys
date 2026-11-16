@@ -1,0 +1,19 @@
+; Пример настроек calendars\outlook.py: обычно писать не нужно - «Подключить…» в окне календаря (setup) создаёт outlook.ini сам.
+; Каждая секция - один календарь; в DKeys он виден источником «outlook:имя_секции». Ключ приложения (client_id) и токены в ini не хранятся:
+; они лежат в outlook.state\client.json и outlook.state\<account>\token.json (папка не попадает в git).
+;
+; account: папка с токеном входа в outlook.state\ (один вход - несколько календарей аккаунта)
+; calendar: id календаря Microsoft Graph (пусто - календарь по умолчанию)
+; name: название для вас (на работу не влияет)
+; readonly: 1 - только читать, изменения в Outlook не отправлять (ставится сам для календарей без права записи)
+
+[ivan]
+account = ivan_outlook_com
+calendar = AAMkAGI2...длинный-id-из-setup...
+name = Calendar
+
+;[work]
+;account = ivan_firma_ru
+;calendar =
+;name = Работа
+;readonly = 1

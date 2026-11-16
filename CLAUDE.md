@@ -8,7 +8,7 @@
 - `build.cmd` — сборка MSVC в `obj\`, затем **убивает работающий DKeys** и копирует exe в `D:\Progs\DKeys` (`DEST`, аргумент `run` — запустить). Пользовательский DKeys работает от админа, а оболочка Claude — нет: `taskkill` и копирование не пройдут. Тогда попросить пользователя закрыть DKeys; чужой процесс по имени не убивать. `build_dbg.cmd` — отладочная сборка с логом `%TEMP%\dkeys.log`.
 - `D:\Progs\DKeys` — рабочая копия пользователя (exe, `DKeys.ini`, `memory\`, `scripts\`, `records\`, …). **Не в git; `memory\` не трогать и не удалять.**
 - `scripts/` — копия пользовательских скриптов из `D:\Progs\DKeys\scripts` (без `tmp.py`); при изменении там — копировать сюда.
-- Вне git (`.gitignore`): `obj/`, `dist/`, `WireKeys/`, `wkbackup.wkb3`, `calendars/*.state/` (токены и пароли источников), `calendars/*.ini` (личные настройки подключений; образец — `caldav.ini.example`).
+- Вне git (`.gitignore`): `obj/`, `dist/`, `WireKeys/`, `wkbackup.wkb3`, `calendars/*.state/` (токены и пароли источников), `calendars/*.ini` и `calendars/client_secret*.json` (личные настройки подключений и ключ Google; образцы — `*.ini.example`).
 
 ## Ограничения
 
@@ -39,7 +39,7 @@
 
 ## Тесты и безопасность
 
-- Ядро календаря проверяет `tests\run.cmd` (отдельная программа с CRT на тех же заголовках `calendar.h`, `calview.h`, `calsync.h`, ~3200 проверок, часть — с настоящим `calendars\stub.py`; затем Python-проверки `tests\sync_test.py` и `caldav.py --selftest`; пишет в `%TEMP%\dkeys_caltest`); после правок этих файлов и скриптов `calendars\` прогонять. Остальное — без автотестов, проверка вручную и скриптами (Python ctypes, `SendInput`) **только на изолированной копии** exe (поменять имя мьютекса `DKeys_single_instance` в копии, свой ini) в scratchpad.
+- Ядро календаря проверяет `tests\run.cmd` (отдельная программа с CRT на тех же заголовках `calendar.h`, `calview.h`, `calsync.h`, ~3200 проверок, часть — с настоящим `calendars\stub.py`; затем Python-проверки `tests\sync_test.py` (в нём `--selftest` у `caldav.py`, `google.py`, `outlook.py`); пишет в `%TEMP%\dkeys_caltest`); после правок этих файлов и скриптов `calendars\` прогонять. Остальное — без автотестов, проверка вручную и скриптами (Python ctypes, `SendInput`) **только на изолированной копии** exe (поменять имя мьютекса `DKeys_single_instance` в копии, свой ini) в scratchpad.
 - Не слать тестовые клавиши в чужие окна (у пользователя открыты Notepad++ и VS Code с несохранённой работой): окно искать по PID запущенного процесса, проверять фокус. Не убивать процессы по имени. Не трогать настоящие `memory\`. Выключение/перезагрузку не тестировать по-настоящему.
 - В скриптах Python для Windows не использовать heredoc с кириллицей и обратными слэшами в Bash — писать файл инструментом Write.
 

@@ -10,4 +10,5 @@ wkbackup.wkb3
 # календарь: токены и пароли источников, личные настройки подключений, кэш python
 calendars/*.state/
 calendars/*.ini
+calendars/client_secret*.json
 __pycache__/

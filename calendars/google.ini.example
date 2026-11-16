@@ -1,0 +1,19 @@
+; Пример настроек calendars\google.py: обычно писать не нужно - «Подключить…» в окне календаря (setup) создаёт google.ini сам.
+; Каждая секция - один календарь; в DKeys он виден источником «google:имя_секции». Ключ приложения (client_id/secret) и токены в ini не хранятся:
+; они лежат в google.state\client.json и google.state\<account>\token.json (папка не попадает в git).
+;
+; account: папка с токеном входа в google.state\ (один вход - несколько календарей аккаунта)
+; calendar: id календаря Google (primary - основной, или адрес вида abc123@group.calendar.google.com)
+; name: название для вас (на работу не влияет)
+; readonly: 1 - только читать, изменения в Google не отправлять (ставится сам для календарей без права записи)
+
+[ivan]
+account = ivan_gmail_com
+calendar = primary
+name = ivan@gmail.com
+
+;[family]
+;account = ivan_gmail_com
+;calendar = abc123def456@group.calendar.google.com
+;name = Семья
+;readonly = 1
