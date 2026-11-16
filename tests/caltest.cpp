@@ -57,6 +57,7 @@ static BOOL WriteAtomic(const wchar_t *path, const void *data, DWORD size) {
     DWORD w = 0; BOOL ok = WriteFile(h, data, size, &w, NULL) && w == size; CloseHandle(h); return ok;
 }
 #include "../src/calendar.h"
+#include "../src/calview.h"
 
 using namespace Cal;
 static int g_tests, g_fail;
@@ -252,9 +253,66 @@ static void TestStoreFile(void) {
     DeleteFileW(path);
 }
 
+// ---- вид «месяц» (src\calview.h): сетка 6x7, номера недель, диапазон запроса, события по дням ----
+static BOOL ShowNotX(const Event *e) { return !e->source || lstrcmpW(e->source, L"x"); }
+static int DayCnt(const CalView::DayLists &dl, I64 first, int y, int m, int d) { int i = (int)(DaysFromCivil(y, m, d) - first); return dl.off[i + 1] - dl.off[i]; }
+static const Occ &DayOcc(const CalView::DayLists &dl, const OccList &ol, I64 first, int y, int m, int d, int k) { int i = (int)(DaysFromCivil(y, m, d) - first); return ol.a[dl.items[dl.off[i] + k]]; }
+static void TestView(void) {
+    using namespace CalView;
+    CHECK(GridStart(2026, 11, 0) == DaysFromCivil(2026, 10, 26) && GridStart(2026, 11, 1) == DaysFromCivil(2026, 11, 1));      // 1 ноября 2026 - воскресенье
+    CHECK(GridStart(2027, 2, 0) == DaysFromCivil(2027, 2, 1) && GridStart(2027, 2, 1) == DaysFromCivil(2027, 1, 31));         // 1 февраля 2027 - понедельник
+    for (int ws = 0; ws < 2; ws++) for (int y = 2024; y <= 2028; y++) for (int m = 1; m <= 12; m++) {                           // месяц всегда целиком в сетке из 6 недель
+        I64 g = GridStart(y, m, ws), f = MonthFirst(y, m);
+        CHECK(g <= f && f - g < 7 && Weekday(g) == (ws ? 6 : 0) && f + DaysInMonth(y, m) - 1 < g + GRID);
+    }
+    CHECK(IsoWeek(DaysFromCivil(2026, 1, 1)) == 1 && IsoWeek(DaysFromCivil(2026, 12, 31)) == 53 && IsoWeek(DaysFromCivil(2021, 1, 3)) == 53);
+    CHECK(IsoWeek(DaysFromCivil(2024, 12, 30)) == 1 && IsoWeek(DaysFromCivil(2026, 11, 16)) == 47 && IsoWeek(DaysFromCivil(2026, 11, 22)) == 47 && IsoWeek(DaysFromCivil(2026, 11, 23)) == 48);
+    CHECK(RowWeek(GridStart(2026, 11, 0), 0) == 44 && RowWeek(GridStart(2026, 11, 1), 1) == 45 && RowWeek(GridStart(2026, 11, 1) + 7, 1) == 46);     // с воскресенья - по четвергу строки
+    int y = 2026, m = 12; AddMonths(&y, &m, 1); CHECK(y == 2027 && m == 1);
+    y = 2026; m = 1; AddMonths(&y, &m, -1); CHECK(y == 2025 && m == 12);
+    y = 2026; m = 11; AddMonths(&y, &m, -23); CHECK(y == 2024 && m == 12);
+    CHECK(ShiftMonths(DaysFromCivil(2026, 1, 31), 1) == DaysFromCivil(2026, 2, 28) && ShiftMonths(DaysFromCivil(2028, 1, 31), 1) == DaysFromCivil(2028, 2, 29));
+    CHECK(ShiftMonths(DaysFromCivil(2026, 3, 31), -1) == DaysFromCivil(2026, 2, 28) && ShiftMonths(DaysFromCivil(2026, 11, 16), 12) == DaysFromCivil(2027, 11, 16));
+    I64 first = GridStart(2026, 11, 0), from, to; Range(first, GRID, &from, &to);
+    CHECK(from == WallToUtc(first * 86400, L"") && to - from >= GRID * 86400LL - 7200 && to - from <= GRID * 86400LL + 7200);
+    CHECK(TodayLocal() == FloorDiv(UtcToWall(NowUtc(), L""), 86400));
+
+    const wchar_t *ics = L"BEGIN:VCALENDAR\r\n"
+        L"BEGIN:VEVENT\r\nUID:trip\r\nDTSTART;VALUE=DATE:20261120\r\nDTEND;VALUE=DATE:20261123\r\nSUMMARY:trip\r\nEND:VEVENT\r\n"
+        L"BEGIN:VEVENT\r\nUID:timed\r\nDTSTART:20261118T100000\r\nDTEND:20261118T110000\r\nSUMMARY:timed\r\nEND:VEVENT\r\n"
+        L"BEGIN:VEVENT\r\nUID:oneday\r\nDTSTART;VALUE=DATE:20261118\r\nSUMMARY:oneday\r\nEND:VEVENT\r\n"
+        L"BEGIN:VEVENT\r\nUID:night\r\nDTSTART:20261124T220000\r\nDTEND:20261125T020000\r\nSUMMARY:night\r\nEND:VEVENT\r\n"
+        L"BEGIN:VEVENT\r\nUID:weekly\r\nDTSTART:20261005T090000\r\nDTEND:20261005T100000\r\nRRULE:FREQ=WEEKLY;BYDAY=MO\r\nSUMMARY:weekly\r\nEND:VEVENT\r\n"
+        L"BEGIN:VEVENT\r\nUID:edge\r\nDTSTART;VALUE=DATE:20261024\r\nDTEND;VALUE=DATE:20261028\r\nSUMMARY:edge\r\nEND:VEVENT\r\n"
+        L"BEGIN:VEVENT\r\nUID:after\r\nDTSTART:20261207T100000\r\nDTEND:20261207T110000\r\nSUMMARY:after\r\nEND:VEVENT\r\n"
+        L"BEGIN:VEVENT\r\nUID:hid\r\nDTSTART:20261118T120000\r\nDTEND:20261118T130000\r\nSUMMARY:hid\r\nEND:VEVENT\r\n"
+        L"END:VCALENDAR\r\n";
+    Store st; memset(&st, 0, sizeof st); CHECK(Parse(&st, ics, L"t") && st.n == 8);
+    for (int i = 0; i < st.n; i++) if (!lstrcmpW(st.ev[i].uid, L"hid")) SetStr(&st.ev[i].source, L"x");
+    OccList ol; Query(&st, from, to, &ol);
+    CHECK(ol.n == 12);                                                           // trip, timed, oneday, night, weekly x6, edge, hid; after - вне сетки
+    DayLists dl; BuildDays(&st, &ol, first, ShowNotX, &dl);
+    CHECK(dl.off[GRID] == 15);                                                   // записей по дням: trip 3 + timed + oneday + night 2 + weekly 6 + edge 2; hid скрыт по источнику
+    CHECK(DayCnt(dl, first, 2026, 11, 18) == 2 && DayOcc(dl, ol, first, 2026, 11, 18, 0).allDay && !DayOcc(dl, ol, first, 2026, 11, 18, 1).allDay);    // целодневное раньше
+    CHECK(DayCnt(dl, first, 2026, 11, 20) == 1 && DayCnt(dl, first, 2026, 11, 21) == 1 && DayCnt(dl, first, 2026, 11, 22) == 1 && DayCnt(dl, first, 2026, 11, 23) == 1);   // trip 20-22 (конец не включается) + weekly 23-го
+    CHECK(DayOcc(dl, ol, first, 2026, 11, 23, 0).allDay == FALSE && DayOcc(dl, ol, first, 2026, 11, 22, 0).allDay);
+    CHECK(DayCnt(dl, first, 2026, 11, 24) == 1 && DayCnt(dl, first, 2026, 11, 25) == 1 && DayCnt(dl, first, 2026, 11, 26) == 0);    // ночное событие на обеих датах
+    CHECK(DayCnt(dl, first, 2026, 10, 26) == 2 && DayCnt(dl, first, 2026, 10, 27) == 1 && DayCnt(dl, first, 2026, 10, 28) == 0);    // edge обрезан границей сетки
+    CHECK(DayCnt(dl, first, 2026, 11, 2) == 1 && DayCnt(dl, first, 2026, 11, 16) == 1 && DayCnt(dl, first, 2026, 11, 30) == 1 && DayCnt(dl, first, 2026, 12, 6) == 0);
+    DaysFree(&dl); BuildDays(&st, &ol, first, NULL, &dl); CHECK(dl.off[GRID] == 16); DaysFree(&dl);
+    OccFree(&ol); StoreFree(&st);
+
+    Store ds; memset(&ds, 0, sizeof ds); DemoFill(&ds, DaysFromCivil(2026, 11, 16)); CHECK(ds.n == 14);
+    Query(&ds, from, to, &ol); CHECK(ol.n >= 14); BuildDays(&ds, &ol, first, NULL, &dl);
+    CHECK(DayCnt(dl, first, 2026, 11, 19) == 8 && DayOcc(dl, ol, first, 2026, 11, 19, 0).allDay && !DayOcc(dl, ol, first, 2026, 11, 19, 1).allDay);     // отпуск + 6 встреч + обед
+    CHECK(DayCnt(dl, first, 2026, 11, 20) == 3 && DayOcc(dl, ol, first, 2026, 11, 20, 1).allDay && !DayOcc(dl, ol, first, 2026, 11, 20, 2).allDay);   // отпуск, день рождения, обед
+    CHECK(DayCnt(dl, first, 2026, 11, 22) == 2 && DayCnt(dl, first, 2026, 11, 23) == 2);     // 22-го: последний обед (COUNT=10 с 13 ноября) и начало ночной смены; 23-го (понедельник): планёрка и конец смены
+    DaysFree(&dl); OccFree(&ol); StoreFree(&ds);
+}
+
 int main() {
     g_heap = GetProcessHeap(); CoInitialize(NULL);
-    TestDates(); TestZones(); TestParse(); TestRules(); TestStoreFile();
+    TestDates(); TestZones(); TestParse(); TestRules(); TestStoreFile(); TestView();
     printf("%d checks, %d failed\n", g_tests, g_fail);
     return g_fail ? 1 : 0;
 }
