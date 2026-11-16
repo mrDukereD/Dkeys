@@ -58,6 +58,7 @@ static BOOL WriteAtomic(const wchar_t *path, const void *data, DWORD size) {
 }
 #include "../src/calendar.h"
 #include "../src/calview.h"
+#include "../src/calsync.h"
 
 using namespace Cal;
 static int g_tests, g_fail;
@@ -659,9 +660,11 @@ static void TestReminders(void) {
     SeenFree(&sn); FireFree(&fl); StoreFree(&st);
 }
 
+#include "caltest_sync.h"
+
 int main() {
-    g_heap = GetProcessHeap(); CoInitialize(NULL);
-    TestDates(); TestZones(); TestParse(); TestRules(); TestStoreFile(); TestView(); TestEdit(); TestRuleSpec(); TestFields(); TestQuick(); TestReminders();
+    g_heap = GetProcessHeap(); CoInitialize(NULL); setvbuf(stdout, NULL, _IONBF, 0);
+    TestDates(); TestZones(); TestParse(); TestRules(); TestStoreFile(); TestView(); TestEdit(); TestRuleSpec(); TestFields(); TestQuick(); TestReminders(); TestSync(); TestSyncStub();
     printf("%d checks, %d failed\n", g_tests, g_fail);
     return g_fail ? 1 : 0;
 }

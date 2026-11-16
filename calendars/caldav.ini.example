@@ -1,0 +1,23 @@
+; Пример настроек calendars\caldav.py: скопировать в caldav.ini (он не попадает в git) или нажать «Подключить…» в окне календаря - setup заполнит сам.
+; Каждая секция - профиль (отдельный аккаунт или календарь); в DKeys он виден источником «caldav:имя_секции». Пароль здесь не хранится:
+; setup кладёт его в caldav.state\<профиль>\secret.txt (или задайте переменную окружения DKEYS_CALDAV_PASSWORD).
+;
+; provider: icloud | yandex | nextcloud | fastmail | custom (для nextcloud и custom нужен url)
+; user: логин (iCloud - Apple ID, Яндекс - полный адрес почты); пароль - ПАРОЛЬ ПРИЛОЖЕНИЯ, не основной
+; calendar: название календаря на сервере (пусто - первый)
+
+[icloud]
+provider = icloud
+user = name@icloud.com
+calendar = Дом
+
+;[work]
+;provider = nextcloud
+;url = https://cloud.example.com
+;user = name
+;calendar = Работа
+
+;[mine]
+;provider = custom
+;url = https://caldav.example.org/dav/
+;user = name

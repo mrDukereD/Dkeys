@@ -6,3 +6,8 @@ dist/
 # чужая программа и личные настройки
 WireKeys/
 wkbackup.wkb3
+
+# календарь: токены и пароли источников, личные настройки подключений, кэш python
+calendars/*.state/
+calendars/*.ini
+__pycache__/

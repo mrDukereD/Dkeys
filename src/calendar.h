@@ -152,6 +152,7 @@ struct Event {
     I64 *exd; int nexd;  // исключённые вхождения (стенное время начала)
     int *alarms; int nal;// напоминания: за сколько минут до начала
     int seq;
+    int synced;          // seq на момент последней синхронизации с источником: seq != synced - есть несинхронизированная правка
     BOOL allDay, hasRec, cancelled, hidden, deleted;   // hidden - скрыто только в DKeys; deleted - удалено, ждёт отправки в источник
 };
 struct Store { Event *ev; int n, cap; };
@@ -357,6 +358,7 @@ static BOOL Parse(Store *st, const wchar_t *text, const wchar_t *source) {
         else if (NameIs(L, L"DTSTAMP")) { if (!e->stamp) { I64 wall; BOOL d, u; if (ParseDt(L.val, &wall, &d, &u)) e->stamp = wall; } }
         else if (NameIs(L, L"X-DKEYS-HIDDEN")) e->hidden = ToInt(L.val) != 0;
         else if (NameIs(L, L"X-DKEYS-DELETED")) e->deleted = ToInt(L.val) != 0;
+        else if (NameIs(L, L"X-DKEYS-SYNCED")) e->synced = ToInt(L.val);
         else if (NameIs(L, L"X-DKEYS-ETAG")) { Free(e->etag); e->etag = Unesc(L.val); }
         else AddExtra(e, s, lstrlenW(s));
     }
@@ -431,6 +433,7 @@ static void AddEvent(Buf *out, const Event *e) {
     if (e->hidden) BufAdd(out, L"X-DKEYS-HIDDEN:1\r\n");
     if (e->deleted) BufAdd(out, L"X-DKEYS-DELETED:1\r\n");
     AddProp(out, L"X-DKEYS-ETAG", e->etag, TRUE);
+    if (e->synced) { wsprintfW(ln, L"X-DKEYS-SYNCED:%d", e->synced); FoldAdd(out, ln); }
     for (int i = 0; i < e->nal; i++) {
         int m = e->alarms[i];
         if (m == 0) wsprintfW(ln, L"TRIGGER:PT0S"); else if (m % 1440 == 0) wsprintfW(ln, L"TRIGGER:-P%dD", m / 1440); else if (m % 60 == 0) wsprintfW(ln, L"TRIGGER:-PT%dH", m / 60); else wsprintfW(ln, L"TRIGGER:-PT%dM", m);
@@ -806,7 +809,7 @@ static int MoveEvent(Store *st, int idx, const wchar_t *newSrc, BOOL keepCopy, B
     for (int i = 0; i < n0; i++) {
         if (!SameSeries(&st->ev[i], uid, old) || st->ev[i].deleted) continue;
         int k = StoreAddClone(st, &st->ev[i]); Event *c = &st->ev[k];
-        SetStr(&c->uid, nu); SetStr(&c->source, newSrc); SetStr(&c->etag, NULL); c->hidden = c->deleted = FALSE; Touch(c);
+        SetStr(&c->uid, nu); SetStr(&c->source, newSrc); SetStr(&c->etag, NULL); c->hidden = c->deleted = FALSE; c->synced = 0; Touch(c);
         if (i == idx) res = k;
     }
     if (!keepCopy) for (int i = n0 - 1; i >= 0; i--) {
