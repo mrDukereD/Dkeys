@@ -943,6 +943,7 @@ static const char *kIni2 = u8R"INI(
 ;   Поздравить=once 2026-12-31 23:59 | run congrats.exe
 ;   Раз в две недели=every 2w on fri at 17:00 catchup | py cleanup.py
 ;   Курс=every 30m from 09:00 to 18:00 on weekdays | notify usd_nbrb.dpy yes run https://myfin.by     (окно с текстом; Да - выполнить yes)
+Проверка обновлений=every 1w at 12:00 catchup delay 2m | py check_update.py
 Enabled=1
 
 [Voice]
@@ -10505,6 +10506,11 @@ except Exception:
     m = re.search(r'kursy_valjut_nbrb/usd[^>]*>[^<]*</a></td><td>([\d.,]+)</td>', html)
     print(m.group(1))
 )PY";
+#include "check_update.inc"
+static void EnsureUpdater(void) {                                                    // скрипт проверки обновлений: кладём, если его нет (в том числе у тех, у кого папка scripts уже была)
+    wchar_t f[MAX_PATH]; lstrcpynW(f, g_pyDir, MAX_PATH); Cat(f, MAX_PATH, L"check_update.py");
+    if (GetFileAttributesW(f) == INVALID_FILE_ATTRIBUTES) WriteText(f, kEx3);
+}
 static void MakeScripts(void) {                                                       // папка scripts создана впервые: кладём два примера .dpy
     wchar_t f[MAX_PATH];
     lstrcpynW(f, g_pyDir, MAX_PATH); Cat(f, MAX_PATH, L"datetime.dpy"); WriteText(f, kEx1);
@@ -10547,6 +10553,7 @@ static int Run(void) {
     }
     CreateDirectoryW(g_memDir, NULL);
     if (CreateDirectoryW(g_pyDir, NULL)) MakeScripts();
+    EnsureUpdater();
     CreateDirectoryW(g_runDir, NULL); CreateDirectoryW(g_recDir, NULL);
     LoadConfig(); BuffersLoad(); HistLoad();
     RegClass(L"DKMain", MainProc, 0); RegClass(L"DKToast", ToastProc, CS_DROPSHADOW);

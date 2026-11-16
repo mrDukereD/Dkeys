@@ -9,6 +9,7 @@ if not defined VCV (echo Visual Studio C++ tools not found & exit /b 1)
 call "%VCV%" >nul 2>&1 || exit /b 1
 cd /d "%~dp0"
 if not exist obj mkdir obj
+where python >nul 2>&1 && python src\mkscripts.py
 rc /nologo /i src /fo obj\dkeys.res src\dkeys.rc || exit /b 1
 cl /nologo /utf-8 /O1 /Os /GS- /Gs1048576 /GR- /W3 /Zl /Fo:obj\ /Fe:obj\DKeys.exe src\dkeys.cpp obj\dkeys.res ^
   /link /SUBSYSTEM:WINDOWS /ENTRY:start /OPT:REF /OPT:ICF /FILEALIGN:512 /MERGE:.rdata=.text /NOLOGO
