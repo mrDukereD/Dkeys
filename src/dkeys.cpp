@@ -293,6 +293,8 @@ X(L_CAL_CALS, "cal.calendars", L"Календари") \
 X(L_CAL_LOCAL, "cal.local", L"Локально") \
 X(L_CAL_NOTITLE, "cal.untitled", L"(без названия)") \
 X(L_CAL_YEARIN, "cal.year_enter", L"Ввести год…") \
+X(L_CAL_M_DONE, "cal.menu_done", L"Отметить выполненной") \
+X(L_CAL_M_UNDONE, "cal.menu_undone", L"Снять отметку выполнения") \
 X(L_CAL_YEARIN_T, "cal.year_title", L"Год (число)") \
 X(L_CAL_ADD, "cal.add", L"+ Событие") \
 X(L_CAL_V_MONTH, "cal.view_month", L"Месяц") \
@@ -377,7 +379,6 @@ X(L_CAL_E_EVT, "cal.err_events", L"часть событий не отправл
 X(L_CAL_E_OFF, "cal.err_off", L"источник не подключён - нажмите «Подключить…»") \
 X(L_CAL_T_OK, "cal.sync_done", L"Календарь синхронизирован") \
 X(L_CAL_T_NONE, "cal.sync_nothing", L"Нет подключённых источников календаря") \
-X(L_TRAY_CALSYNC, "tray.calendar_sync", L"Синхронизировать календарь") \
 X(L_CAL_A_ADDED, "cal.act_added", L"Добавлено: «%s» · %s") \
 X(L_CAL_A_EMPTY, "cal.act_empty", L"Не получилось добавить событие: нет текста") \
 X(L_CAL_A_HEAD, "cal.act_head", L"Сегодня,Завтра,На неделе") \
@@ -8820,6 +8821,7 @@ static void CellRc(int i, RECT *r) {                          // клетка i 
     int gx = G.wd.left + G.wnW, gw = G.wd.right - gx, gh = G.grid.bottom - G.grid.top, c = i % 7, row = i / 7;
     r->left = gx + c * gw / 7; r->right = gx + (c + 1) * gw / 7; r->top = G.grid.top + row * gh / 6; r->bottom = G.grid.top + (row + 1) * gh / 6;
 }
+static RECT PlusRc(const RECT &r) { return Mk(r.right - Sc(26), r.top + Sc(3), r.right - Sc(4), r.top + Sc(3) + Sc(22)); }   // «+» в правом верхнем углу клетки месяца: новое событие
 static int CellAt(int x, int y) { POINT p = {x, y}; for (int i = 0; i < GRID; i++) { RECT r; CellRc(i, &r); if (PtInRect(&r, p)) return i; } return -1; }
 static void CellPlates(int i, const RECT &r, int *y0, int *shown, int *cnt) {      // где начинаются плашки клетки, сколько показано из cnt (остальные - «+N ещё»)
     int ph = Sc(18), gap = Sc(2); *cnt = dl.off[i + 1] - dl.off[i]; *y0 = r.top + Sc(31);
@@ -8972,6 +8974,7 @@ static void PaintGrid(HDC dc, const Pal &P) {
         RECT nr = Mk(cx - s / 2, r.top + Sc(3), cx - s / 2 + s, r.top + Sc(3) + s);
         if (day == today) { Round(dc, nr, P.acc, 0, TRUE); SelectObject(dc, fB); Txt(dc, t, nr, RGB(255, 255, 255), DT_CENTER | DT_VCENTER); }
         else { SelectObject(dc, fN); Txt(dc, t, nr, other ? P.dim : P.fg, DT_CENTER | DT_VCENTER); }
+        { RECT pr = PlusRc(r); SelectObject(dc, fN); Txt(dc, L"+", pr, P.dim, DT_CENTER | DT_VCENTER); }
         int y0, shown, cnt; CellPlates(i, r, &y0, &shown, &cnt);
         for (int k = 0; k < shown; k++) Plate(dc, P, dl.items[dl.off[i] + k], day, r.left + Sc(3), y0 + k * (ph + gap), r.right - Sc(3), ph, other);
         if (cnt > shown && (r.bottom - Sc(3) - y0) / (ph + gap) > 0) {      // «+N ещё»
@@ -9592,6 +9595,16 @@ static void MoveEv(int idx, int ns) {
     if (s0 >= 0) SaveSrc(g_calSrc[s0].id);
     SaveSrc(g_calSrc[ns].id); Focus(k);
 }
+static BOOL IsTask(const Cal::Event &e) { return e.extra && Cal::FindStr(e.extra, L"X-DKEYS-TASK"); }     // задача Google Tasks (gtasks.py)
+static BOOL IsDone(const Cal::Event &e) { return e.summary && e.summary[0] == 0x2713; }                  // «✓ название» - выполнена
+static void ToggleDone(int idx) {
+    if (idx < 0 || idx >= st.n) return;
+    Cal::Event *e = &st.ev[idx]; const wchar_t *old = e->summary ? e->summary : L""; wchar_t *n;
+    if (IsDone(*e)) { const wchar_t *p = old + 1; while (*p == L' ') p++; n = Dup(p); }
+    else { n = (wchar_t *)Alloc((lstrlenW(old) + 3) * sizeof(wchar_t)); n[0] = 0x2713; n[1] = L' '; lstrcpyW(n + 2, old); }
+    int s = SrcOf(e); Cal::SetStr(&e->summary, n); Free(n); Cal::Touch(e); if (s >= 0) SaveSrc(g_calSrc[s].id);
+    Rebuild(); Inv();
+}
 static void Unhide(int idx) {
     if (idx < 0 || idx >= st.n) return;
     int s = SrcOf(&st.ev[idx]); Cal::SetHidden(&st, idx, FALSE); if (s >= 0) SaveSrc(g_calSrc[s].id);
@@ -9711,12 +9724,13 @@ static void Context(int x, int y) {                            // правая �
         AppendMenuW(m, MF_STRING, 1, Tr(L_CAL_M_EDIT)); AppendMenuW(m, MF_STRING, 2, Tr(L_CAL_M_DUP));
         if (ns > 1) { mv = CreatePopupMenu(); for (int i = 0; i < ns; i++) if (i != s0) AppendMenuW(mv, MF_STRING, 10 + i, SrcName(i)); AppendMenuW(m, MF_POPUP, (UINT_PTR)mv, Tr(L_CAL_M_MOVE)); }
         if (hid) AppendMenuW(m, MF_STRING, 4, Tr(L_CAL_M_UNHIDE));
+        if (IsTask(st.ev[ev])) AppendMenuW(m, MF_STRING, 6, Tr(IsDone(st.ev[ev]) ? L_CAL_M_UNDONE : L_CAL_M_DONE));
         AppendMenuW(m, MF_SEPARATOR, 0, NULL); AppendMenuW(m, MF_STRING, 3, Tr(L_CAL_M_DEL));
     } else AppendMenuW(m, MF_STRING, 5, Tr(L_CAL_M_NEW));
     POINT p = {x, y}; ClientToScreen(hw, &p); g_menuOpen = TRUE;
     int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, p.x, p.y, 0, hw, NULL);
     g_menuOpen = FALSE; DestroyMenu(m);
-    if (cmd == 1) EditEvent(ev); else if (cmd == 2) DupEv(ev); else if (cmd == 3) DeleteFlow(ev); else if (cmd == 4) Unhide(ev);
+    if (cmd == 1) EditEvent(ev); else if (cmd == 2) DupEv(ev); else if (cmd == 3) DeleteFlow(ev); else if (cmd == 4) Unhide(ev); else if (cmd == 6) ToggleDone(ev);
     else if (cmd == 5) NewEvent(sel, hr); else if (cmd >= 10) MoveEv(ev, cmd - 10);
 }
 
@@ -9748,8 +9762,12 @@ static void Click(int x, int y, BOOL dbl) {
     else if (PtInRect(&G.add, p)) NewEvent(sel);
     else if (PtInRect(&G.vw[0], p) || PtInRect(&G.vw[1], p) || PtInRect(&G.vw[2], p) || PtInRect(&G.vw[3], p)) { for (int i = 0; i < 4; i++) if (PtInRect(&G.vw[i], p)) SetView(i); }
     else if (g_calView != 0) ClickTime(x, y, dbl);
-    else if (dbl) { if (CellAt(x, y) >= 0) { if (selEv >= 0) EditEvent(selEv); else NewEvent(sel); } }      // первый щелчок уже выбрал день и событие под курсором
-    else { int c, ev = PlateAt(x, y, &c); if (c >= 0) { SetSel(first + c); selEv = ev; Inv(); } }
+    else {
+        int cc = CellAt(x, y);
+        if (cc >= 0) { RECT cr, pr; CellRc(cc, &cr); pr = PlusRc(cr); if (PtInRect(&pr, p)) { SetSel(first + cc); NewEvent(first + cc); return; } }
+        if (dbl) { if (cc >= 0) { if (selEv >= 0) EditEvent(selEv); else { SetSel(first + cc); SetView(2); } } }   // двойной щелчок: по событию - правка, по дню - открыть день
+        else { int c, ev = PlateAt(x, y, &c); if (c >= 0) { SetSel(first + c); selEv = ev; Inv(); } }
+    }
 }
 static void Save(void) {                                      // положение, размер и панель - в ini
     if (!hw) return;
@@ -10287,7 +10305,6 @@ static void TrayMenuAt(POINT pt, int again) {
     AppendMenuW(m, MF_POPUP | (g_dOn ? MF_CHECKED : 0), (UINT_PTR)DupNs::Menu(), Tr(L_TRAY_DUP));
     AppendMenuW(m, MF_POPUP | (TmAnyActive() ? MF_CHECKED : 0), (UINT_PTR)TmMenu(0), Tr(L_TRAY_TIMER));
     AddHk(m, MF_STRING, 73, Tr(L_TRAY_CAL), A_CALENDAR);
-    if (CalNs::AllMask()) AppendMenuW(m, MF_STRING, 74, Tr(L_TRAY_CALSYNC));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AddHk(m, MF_STRING | (g_histOn ? MF_CHECKED : 0), 10, Tr(L_TRAY_HISTON), A_HIST);
     AppendMenuW(m, MF_STRING | (g_selCopy ? MF_CHECKED : 0), 9, Tr(L_TRAY_SELCOPY));

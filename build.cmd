@@ -1,5 +1,5 @@
 @echo off
-rem build.cmd [run]: build to obj\, stop running DKeys, copy exe to DEST (default D:\Progs\DKeys); "run" starts it afterwards.
+rem build.cmd: build to obj\, ask running DKeys to exit (do exit; else kill), copy exe to DEST (default D:\Progs\DKeys), start it again. Run as administrator (DKeys runs elevated).
 setlocal
 if not defined DEST set "DEST=D:\Progs\DKeys"
 set "VCV="
@@ -15,7 +15,11 @@ cl /nologo /utf-8 /O1 /Os /GS- /Gs1048576 /GR- /W3 /Zl /Fo:obj\ /Fe:obj\DKeys.ex
 if errorlevel 1 exit /b 1
 for %%f in (obj\DKeys.exe) do echo built %%f  %%~zf bytes
 if not exist "%DEST%" mkdir "%DEST%"
-taskkill /f /im DKeys.exe >nul 2>&1 && (echo stopped running DKeys & ping -n 2 127.0.0.1 >nul)
+rem попросить работающий DKeys выйти (нужен [Remote] Enabled=1), иначе убить; ждать до ~5 с
+if exist "%DEST%\DKeys.exe" "%DEST%\DKeys.exe" do exit >nul 2>&1
+for /l %%i in (1,1,10) do (tasklist /fi "imagename eq DKeys.exe" 2>nul | find /i "DKeys.exe" >nul && ping -n 2 127.0.0.1 >nul)
+tasklist /fi "imagename eq DKeys.exe" 2>nul | find /i "DKeys.exe" >nul && (taskkill /f /im DKeys.exe >nul 2>&1 & ping -n 2 127.0.0.1 >nul)
 copy /y obj\DKeys.exe "%DEST%\DKeys.exe" >nul || (echo copy to %DEST% failed - DKeys may run as admin, start build as administrator & exit /b 1)
+if exist "%DEST%\calendars" (copy /y calendars\*.py "%DEST%\calendars\" >nul & copy /y calendars\README.md "%DEST%\calendars\" >nul)
 echo installed %DEST%\DKeys.exe
-if /i "%~1"=="run" start "" "%DEST%\DKeys.exe"
+start "" "%DEST%\DKeys.exe"
