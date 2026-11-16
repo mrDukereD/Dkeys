@@ -1,5 +1,52 @@
 # TODO
 
+## Проверка приложения в Google (OAuth verification)
+
+Нужна, чтобы любой пользователь мог войти через встроенный ключ (`calendars\_appkey.py`) без «приложение не проверено» и лимита 100 пользователей.
+Разрешения: `https://www.googleapis.com/auth/calendar` и `https://www.googleapis.com/auth/tasks` (оба «чувствительные», не «ограниченные»: сторонний аудит безопасности не нужен).
+
+### Подготовка (один раз)
+
+1. Google Cloud Console -> проект DKeys -> «Google Auth Platform» (OAuth consent screen).
+2. **Branding:** имя DKeys, e-mail поддержки, логотип (`src\icon.png`, 120x120), домашняя страница `https://mrwoodman.by/soft/dkeys/`,
+   политика `https://mrwoodman.by/soft/dkeys/privacy`, условия `https://mrwoodman.by/soft/dkeys/terms`, авторизованный домен `mrwoodman.by`.
+3. Подтвердить домен в Google Search Console (мета-тег или DNS TXT) под тем же аккаунтом, что владеет проектом.
+4. **Data access:** добавить два разрешения выше (и больше никаких). Включены Calendar API и Tasks API.
+5. **Audience:** тип External, затем «Publish app» (In production) и «Prepare for verification».
+6. Загрузить видео (YouTube, «не в списке»), вставить тексты ниже, отправить. Ответ приходит на e-mail, обычно 3-14 дней; возможны вопросы - отвечать в той же ветке.
+
+### Текст: зачем приложению данные (justification, по-английски - так принимают)
+
+**App description.** DKeys is a small portable Windows tray utility (clipboard history, hotkeys, screen tools). Its optional Calendar module shows the user's own Google Calendar events and Google Tasks in a desktop window, lets the user create, edit and delete them, and shows reminders. The app has no server: it runs entirely on the user's computer.
+
+**Why `calendar` scope.** The app displays the signed-in user's calendar events in a desktop calendar window and writes back events the user creates, edits or deletes there, plus reminders. Read-only access would not allow editing or creating events, which is the core feature. We request the full `calendar` scope because the app creates, updates and deletes events and reads calendar settings (default reminders, time zone). We do not use any narrower scope because `calendar.events` alone does not cover reading the calendar list and defaults needed for the calendar picker.
+
+**Why `tasks` scope.** The app shows Google Tasks that have a due date as all-day items in the same calendar view and lets the user mark a task completed or edit its title and due date, so tasks appear next to events as in Google Calendar. This requires read and write access to tasks.
+
+**Data handling.** All data is fetched directly from Google to the user's own computer and stored only locally (events in a local file, tokens in a local folder). Nothing is sent to the developer or to any third party; there is no developer-operated server. Data is not used for advertising, profiling or training of AI/ML models, and is not sold or shared. Humans do not read the data. The app's use of Google user data complies with the Google API Services User Data Policy, including the Limited Use requirements. The user can revoke access at any time at https://myaccount.google.com/permissions or by deleting the `calendars\*.state` folders.
+
+**Privacy policy URL:** https://mrwoodman.by/soft/dkeys/privacy  **Terms:** https://mrwoodman.by/soft/dkeys/terms  **Home:** https://mrwoodman.by/soft/dkeys/
+
+### Видео-демонстрация (2-3 минуты, английский интерфейс Google, озвучка не обязательна, можно субтитры)
+
+Записать экран, DKeys уже запущен, источник Google не подключён:
+1. Показать адрес консоли OAuth-клиента (Client ID приложения в URL) и экран согласия с названием DKeys.
+2. В DKeys открыть календарь (Alt+Win+C) -> «Подключить…» -> google. Открывается браузер.
+3. **Показать экран согласия Google целиком**, с названием приложения и запрашиваемыми разрешениями (календарь, задачи); нажать «Allow».
+4. Вернуться в DKeys: события появились в окне календаря. Показать месяц, неделю, день.
+5. Создать событие («+» в клетке), изменить его, удалить. Показать, что оно появилось/изменилось/исчезло в calendar.google.com (открыть рядом).
+6. Подключить `gtasks`: показать задачи со сроком в календаре, отметить одну выполненной (правый клик -> «Отметить выполненной») и показать это в Google Tasks.
+7. Показать, где хранятся данные: папка `calendars\google.state` (токен) и `memory\calendar` (события) на диске; сказать/написать субтитром, что данные никуда не отправляются.
+8. Показать отзыв доступа: https://myaccount.google.com/permissions и пункт DKeys.
+
+### Частые причины отказа (проверить заранее)
+
+- Домен политики не подтверждён или страница политики недоступна/ведёт на 404, в ней нет формулировки Limited Use (есть на `/soft/dkeys/privacy`).
+- Название приложения в консоли не совпадает с названием на экране согласия и в видео.
+- В видео нет экрана согласия с URL проекта/Client ID или не показан вход с нуля.
+- Запрошены лишние разрешения (в консоли должны быть только `calendar` и `tasks`).
+- На главной странице нет ссылки на политику (она есть внизу `/soft/dkeys/`).
+
 ## Календарь (в обсуждении, ничего не сделано)
 
 Цель: общий календарь DKeys с двусторонней синхронизацией через скрипты-провайдеры (Google, Apple/iCloud, любой CalDAV). DKeys хранит и показывает события, скрипты в `calendars\` общаются с внешними сервисами.
