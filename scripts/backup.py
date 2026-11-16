@@ -15,7 +15,7 @@ import os
 import subprocess
 import sys
 
-DEST = r'L:\Мой диск\DukereD\Dkeys'
+DEST = r'D:\DKeys_backup'                                              # папка бэкапа (например, на Google Диске): замените своей или укажите в аргументе
 SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))     # папка DKeys: scripts\ лежит внутри неё
 SKIP = ['whisper']
 

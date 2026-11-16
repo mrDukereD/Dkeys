@@ -10676,14 +10676,18 @@ except Exception:
     print(m.group(1))
 )PY";
 #include "check_update.inc"
+#include "calendar_add_selection.inc"                                                  // kEx5, kEx6: примеры для календаря (scripts\calendar_add_selection.py и onreminder.py)
+#include "onreminder.inc"
 static void EnsureUpdater(void) {                                                    // скрипт проверки обновлений: кладём, если его нет (в том числе у тех, у кого папка scripts уже была)
     wchar_t f[MAX_PATH]; lstrcpynW(f, g_pyDir, MAX_PATH); Cat(f, MAX_PATH, L"check_update.py");
     if (GetFileAttributesW(f) == INVALID_FILE_ATTRIBUTES) WriteText(f, kEx3);
 }
-static void MakeScripts(void) {                                                       // папка scripts создана впервые: кладём два примера .dpy
+static void MakeScripts(void) {                                                       // папка scripts создана впервые: кладём примеры (два .dpy и два скрипта для календаря)
     wchar_t f[MAX_PATH];
     lstrcpynW(f, g_pyDir, MAX_PATH); Cat(f, MAX_PATH, L"datetime.dpy"); WriteText(f, kEx1);
     lstrcpynW(f, g_pyDir, MAX_PATH); Cat(f, MAX_PATH, L"usd_nbrb.dpy"); WriteText(f, kEx2);
+    lstrcpynW(f, g_pyDir, MAX_PATH); Cat(f, MAX_PATH, L"calendar_add_selection.py"); WriteText(f, kEx5);
+    lstrcpynW(f, g_pyDir, MAX_PATH); Cat(f, MAX_PATH, L"onreminder.py"); WriteText(f, kEx6);
 }
 
 static int Run(void) {

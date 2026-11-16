@@ -2,7 +2,8 @@
 Запуск: python src/mkscripts.py (build.cmd запускает сам, если найден python)."""
 import io, os
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for src, inc, name in (('scripts/check_update.py', 'src/check_update.inc', 'kEx3'), ('src/whisper_fetch.py', 'src/whisper_fetch.inc', 'kEx4')):
+for src, inc, name in (('scripts/check_update.py', 'src/check_update.inc', 'kEx3'), ('src/whisper_fetch.py', 'src/whisper_fetch.inc', 'kEx4'),
+                       ('scripts/calendar_add_selection.py', 'src/calendar_add_selection.inc', 'kEx5'), ('scripts/onreminder.py', 'src/onreminder.inc', 'kEx6')):
     s = io.open(os.path.join(root, src), encoding='utf-8', newline='').read().replace('\r\n', '\n')
     assert ')PY"' not in s
     io.open(os.path.join(root, inc), 'w', encoding='utf-8', newline='\n').write(
