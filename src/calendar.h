@@ -918,8 +918,33 @@ static BOOL ScanTime(const wchar_t *s, int n, int *pos, BOOL needColon, int *tod
     *tod = h * 3600 + m * 60; *pos = p; return TRUE;
 }
 static void Trim(const wchar_t *&s, int &n) { while (n > 0 && s[n - 1] <= L' ') n--; while (n > 0 && *s <= L' ') { s++; n--; } }
-static BOOL ParseDayStr(const wchar_t *s, I64 base, I64 *day) { int n = lstrlenW(s); Trim(s, n); return ScanDate(s, n, base, day); }
-static BOOL ParseTodStr(const wchar_t *s, int *tod) { int n = lstrlenW(s), pos = 0; Trim(s, n); return ScanTime(s, n, &pos, FALSE, tod) && pos == n; }
+// Ввод без знаков препинания: дата 1112 / 111226 / 1112026 / 11122026 -> 11.12[.гг[гг]]; время 905 / 1405 -> 9:05 / 14:05; вместо точки и двоеточия годятся пробел, запятая, дефис (даты ГГГГ-ММ-ДД не трогаем)
+static BOOL AllDigits(const wchar_t *s, int n) { for (int i = 0; i < n; i++) if (s[i] < L'0' || s[i] > L'9') return FALSE; return n > 0; }
+static BOOL ParseDayStr(const wchar_t *s, I64 base, I64 *day) {
+    int n = lstrlenW(s); Trim(s, n);
+    if (n > 0 && n <= 20) {
+        wchar_t b[32]; int m = 0;
+        if (AllDigits(s, n)) {
+            int cut[3] = {0, 0, 0}, nc = 0;
+            if (n == 4) { cut[0] = 2; nc = 1; } else if (n == 6) { cut[0] = 2; cut[1] = 4; nc = 2; } else if (n == 7) { cut[0] = 1; cut[1] = 3; nc = 2; } else if (n == 8) { cut[0] = 2; cut[1] = 4; nc = 2; }
+            if (nc) { for (int i = 0; i < n; i++) { for (int k = 0; k < nc; k++) if (cut[k] == i) b[m++] = L'.'; b[m++] = s[i]; } b[m] = 0; return ScanDate(b, m, base, day); }
+        } else {
+            BOOL ok = TRUE; for (int i = 0; i < n; i++) { wchar_t c = s[i]; if ((c >= L'0' && c <= L'9') || c == L'.' || c == L'/' || c == L'-') b[m++] = c; else if (c == L' ' || c == L',') b[m++] = L'.'; else ok = FALSE; }
+            b[m] = 0; if (ok && m == n && !IsDash(s[0]) && !(n >= 5 && s[4] == L'-')) return ScanDate(b, m, base, day);
+        }
+    }
+    return ScanDate(s, n, base, day);
+}
+static BOOL ParseTodStr(const wchar_t *s, int *tod) {
+    int n = lstrlenW(s), pos = 0; Trim(s, n);
+    if (n >= 3 && n <= 5) {
+        wchar_t b[8]; int m = 0;
+        if (AllDigits(s, n) && n <= 4) { for (int i = 0; i < n; i++) { if (i == n - 2) b[m++] = L':'; b[m++] = s[i]; } b[m] = 0; return ScanTime(b, m, &pos, FALSE, tod) && pos == m; }
+        for (int i = 0; i < n; i++) b[m++] = (s[i] == L'.' || s[i] == L',' || s[i] == L' ' || s[i] == L'-') && i > 0 && i < n - 1 ? L':' : s[i];
+        b[m] = 0; if (ScanTime(b, m, &pos, FALSE, tod) && pos == m) return TRUE; pos = 0;
+    }
+    return ScanTime(s, n, &pos, FALSE, tod) && pos == n;
+}
 static void FmtDay(wchar_t *o, I64 day) { int y, m, d; CivilFromDays(day, &y, &m, &d); wsprintfW(o, L"%02d.%02d.%04d", d, m, y); }
 static void FmtTod(wchar_t *o, int tod) { wsprintfW(o, L"%02d:%02d", tod / 3600, tod / 60 % 60); }
 static I64 DayAddMonths(I64 day, int n) {                            // тот же день через n месяцев (31-е -> последний день месяца)

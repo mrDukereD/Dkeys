@@ -396,6 +396,9 @@ static void TestFields(void) {
     CHECK(!ParseDayStr(L"32.01.2026", base, &d) && !ParseDayStr(L"20.13.2026", base, &d) && !ParseDayStr(L"abc", base, &d) && !ParseDayStr(L"", base, &d) && !ParseDayStr(L"20.11.20260", base, &d) && !ParseDayStr(L"20.11.202", base, &d));
     CHECK(ParseTodStr(L"9:05", &t) && t == 9 * 3600 + 300 && ParseTodStr(L"09:05", &t) && t == 9 * 3600 + 300 && ParseTodStr(L" 23:59 ", &t) && t == 86340 && ParseTodStr(L"7", &t) && t == 7 * 3600 && ParseTodStr(L"0:00", &t) && t == 0);
     CHECK(!ParseTodStr(L"24:00", &t) && !ParseTodStr(L"12:60", &t) && !ParseTodStr(L"12:5", &t) && !ParseTodStr(L"", &t) && !ParseTodStr(L"12:30:00", &t) && !ParseTodStr(L"ab", &t));
+    CHECK(ParseDayStr(L"011226", base, &d) && d == DaysFromCivil(2026, 12, 1) && ParseDayStr(L"01122026", base, &d) && d == DaysFromCivil(2026, 12, 1) && ParseDayStr(L"1122026", base, &d) && d == DaysFromCivil(2026, 12, 1) && ParseDayStr(L"2011", base, &d) && d == DaysFromCivil(2026, 11, 20));
+    CHECK(ParseDayStr(L"01 12 2026", base, &d) && d == DaysFromCivil(2026, 12, 1) && ParseDayStr(L"01,12,26", base, &d) && d == DaysFromCivil(2026, 12, 1) && !ParseDayStr(L"31022026", base, &d) && !ParseDayStr(L"12345", base, &d));
+    CHECK(ParseTodStr(L"1405", &t) && t == 14 * 3600 + 300 && ParseTodStr(L"905", &t) && t == 9 * 3600 + 300 && ParseTodStr(L"14 05", &t) && t == 14 * 3600 + 300 && ParseTodStr(L"14.05", &t) && t == 14 * 3600 + 300 && ParseTodStr(L"0000", &t) && t == 0 && !ParseTodStr(L"2460", &t) && !ParseTodStr(L"2500", &t) && !ParseTodStr(L"12345", &t));
     wchar_t o[24]; FmtDay(o, DaysFromCivil(2026, 1, 5)); CHECK(!lstrcmpW(o, L"05.01.2026")); FmtTod(o, 9 * 3600 + 300); CHECK(!lstrcmpW(o, L"09:05"));
     CHECK(DayAddMonths(DaysFromCivil(2026, 1, 31), 1) == DaysFromCivil(2026, 2, 28) && DayAddMonths(DaysFromCivil(2026, 11, 16), -12) == DaysFromCivil(2025, 11, 16));
 }

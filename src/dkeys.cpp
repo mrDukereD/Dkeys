@@ -293,6 +293,7 @@ X(L_CAL_CALS, "cal.calendars", L"Календари") \
 X(L_CAL_LOCAL, "cal.local", L"Локально") \
 X(L_CAL_NOTITLE, "cal.untitled", L"(без названия)") \
 X(L_CAL_YEARIN, "cal.year_enter", L"Ввести год…") \
+X(L_CAL_COPIED, "cal.copied", L"Скопировано в буфер обмена") \
 X(L_CAL_M_DONE, "cal.menu_done", L"Отметить выполненной") \
 X(L_CAL_M_UNDONE, "cal.menu_undone", L"Снять отметку выполнения") \
 X(L_CAL_YEARIN_T, "cal.year_title", L"Год (число)") \
@@ -3956,8 +3957,9 @@ static LRESULT CALLBACK LLKbd(int code, WPARAM wp, LPARAM lp) {
     BYTE &sw = g_swallowed[vk & 0xFF];
     if (!down) { if (sw) { sw = 0; return 1; } MacroKey(vk, FALSE); return CallNextHookEx(NULL, code, wp, lp); }
     if (sw) return 1;
-    if (g_paused || g_modal) return CallNextHookEx(NULL, code, wp, lp);
+    if (g_paused) return CallNextHookEx(NULL, code, wp, lp);
     UINT key = NormKey(k), mods = Mods();
+    if (g_modal) { int mi = FindBind(mods, key); if (mi < 0 || g_bind[mi].act != A_LAYOUT) return CallNextHookEx(NULL, code, wp, lp); }   // в диалоге правки событий работает только исправление раскладки
     if (g_popup) {
         sw = 1;
         WCHAR ch = TranslateChar(vk, k, mods);
@@ -9153,6 +9155,12 @@ static I64 eS, eEn; static wchar_t eTzX[80], eErr[100]; static HBRUSH hbBg, hbFl
 static void SetT(int id, const wchar_t *t) { SetWindowTextW(ec[id], t); }
 static void GetT(int id, wchar_t *o, int cap) { GetWindowTextW(ec[id], o, cap); }
 static BOOL TxtEmpty(int id) { return GetWindowTextLengthW(ec[id]) == 0; }
+static void CopyText(const wchar_t *t) {                                       // Ctrl+щелчок по статусу или ошибке: текст в буфер обмена
+    int n = lstrlenW(t); if (!n) return;
+    HGLOBAL hg = GlobalAlloc(GMEM_MOVEABLE, (n + 1) * sizeof(wchar_t)); if (!hg) return;
+    memcpy(GlobalLock(hg), t, (n + 1) * sizeof(wchar_t)); GlobalUnlock(hg);
+    if (ClipSet(CF_UNICODETEXT, hg)) Toast(Tr(L_CAL_COPIED));
+}
 static void ErrMsg(int lid) { SetT(E_ERR, lid ? Tr(lid) : L""); }
 static void Fail(int lid, int ctl) { ErrMsg(lid); SetFocus(ec[ctl]); SendMessageW(ec[ctl], EM_SETSEL, 0, -1); MessageBeep(MB_ICONWARNING); }
 /* списки выбора (Sel): пункты зависят от поля */
@@ -9257,7 +9265,7 @@ static int EdLayout(void) {
     int n = g_ncalSrc < 8 ? g_ncalSrc : 8, sw = FW / n < 150 ? FW / n : 150;
     Put(E_LAB + 9, X0, y + 3, LW - 6, 18, TRUE); for (int i = 0; i < 8; i++) Put(E_SRC + i, FX + i * sw, y, sw, 24, i < n); y += 30;
     BOOL keep = n > 1 && !eNew && eOrigSrc >= 0; Put(E_KEEP, FX, y, FW, 24, keep); if (keep) y += 30;
-    y += 6; Put(E_DEL, X0, y, 112, 32, !eNew); Put(E_ERR, X0 + 122, y + 7, 250, 20, TRUE); Put(IDOK, EW - X0 - 232, y, 112, 32, TRUE); Put(IDCANCEL, EW - X0 - 112, y, 112, 32, TRUE);
+    y += 6; Put(E_DEL, X0, y, 112, 32, !eNew); Put(E_ERR, X0 + 122, y + 7, EW - X0 - 232 - (X0 + 122) - 8, 20, TRUE); Put(IDOK, EW - X0 - 232, y, 112, 32, TRUE); Put(IDCANCEL, EW - X0 - 112, y, 112, 32, TRUE);
     return y + 32 + 14;
 }
 static void ResizeEd(int h96) {                              // подогнать окно под клиентскую область (EW x h96)
@@ -9408,6 +9416,7 @@ static LRESULT CALLBACK EdProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         else if (id >= E_RWD && id < E_RWD + 7) { eVal[id] = !eVal[id]; eCust = TRUE; InvalidateRect(ec[id], NULL, FALSE); }
         else if (id >= E_SRC && id < E_SRC + 8) SrcPick(id - E_SRC);
         else if (id == E_KEEP) { eVal[id] = !eVal[id]; InvalidateRect(ec[id], NULL, FALSE); }
+        else if ((id == E_ERR || id == E_NOTE || id == E_TZINFO || id == E_DHINT) && (GetKeyState(VK_CONTROL) & 0x8000)) { wchar_t t[400]; GetWindowTextW(ec[id], t, 400); CopyText(t); }
         else if (id == E_AADD) AlarmAdd();
         else if (id == E_ADEL) AlarmDel();
         return 0;
@@ -9422,7 +9431,7 @@ static HWND Ctl(int id, const wchar_t *cls, const wchar_t *txt, DWORD style, int
     SendMessageW(c, WM_SETFONT, (WPARAM)fN, TRUE); ec[id] = c; eKind[id] = (BYTE)kind; return c;
 }
 static void Btn(int id, const wchar_t *t) { Ctl(id, L"BUTTON", t, 0, K_BTN); }
-static void Lab(int id, const wchar_t *t) { Ctl(id, L"STATIC", t, SS_LEFT); }
+static void Lab(int id, const wchar_t *t) { Ctl(id, L"STATIC", t, SS_LEFT | SS_NOTIFY); }     // SS_NOTIFY: Ctrl+щелчок по подсказке/ошибке копирует текст
 static void Fld(int id, DWORD extra = 0) { Ctl(id, L"EDIT", L"", WS_TABSTOP | ES_AUTOHSCROLL | extra); }
 static void MakeEd(void) {
     Lab(E_NOTE, L""); Lab(E_LAB + 0, Tr(L_CAL_ED_NAME)); Fld(E_TITLE); SendMessageW(ec[E_TITLE], EM_SETLIMITTEXT, 300, 0);
@@ -9741,6 +9750,7 @@ static void Click(int x, int y, BOOL dbl) {
         else if (PtInRect(&G.mNext, p)) { AddMonths(&mY, &mM, 1); Inv(); }
         else if (PtInRect(&G.mGrid, p)) { if (dbl) NewEvent(sel); else SetSel(GridStart(mY, mM, g_calWs) + (y - G.mGrid.top) / G.mrh * 7 + (x - G.mGrid.left) / G.mcw); }
         else if (PtInRect(&G.hid, p)) { g_calHid = !g_calHid; IniSet(L"Calendar", L"ShowHidden", g_calHid ? L"1" : L"0"); Rebuild(); Inv(); }
+        else if (HasProv() && PtInRect(&G.sst, p) && (GetKeyState(VK_CONTROL) & 0x8000)) { wchar_t t[400]; BOOL er; StatusText(t, 400, &er); CopyText(t); }   // Ctrl+щелчок по статусу синхронизации
         else if (PtInRect(&G.rem, p)) { g_calRem = !g_calRem; IniSet(L"Calendar", L"Reminders", g_calRem ? L"1" : L"0"); RemSync(); Inv(); }
         else if (HasProv() && PtInRect(&G.sbtn, p)) SyKick(AllMask(), TRUE);
         else if (HasProv() && PtInRect(&G.cbtn, p)) ConnectMenu(x, y);
@@ -10405,7 +10415,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         PostMessageW(g_hwnd, WM_APP_SPEC, 0, (LPARAM)t); return TRUE;
     }
     case WM_APP_HOT: {
-        if (g_modal || (int)w >= g_nbind) return 0;
+        if ((int)w >= g_nbind || (g_modal && g_bind[w].act != A_LAYOUT)) return 0;
         Bind b = g_bind[w];
         ExecBind(&b);
         return 0;
