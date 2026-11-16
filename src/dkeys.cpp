@@ -97,6 +97,7 @@ enum {
 #define TID_SCHED 7
 #define TID_SELCOPY 8
 #define TID_DEFER 9
+#define TID_REM 10
 #define VISROWS g_vr
 
 struct Bind { UINT mods, key; int act, n, n2; wchar_t *arg, *dir; int lau; };      // lau: хоткей задан строкой меню запуска [Launcher]
@@ -105,7 +106,7 @@ struct Row { wchar_t *label, *title, *text, *hk, *dir; int ref, act; };      // 
 struct Snap { UINT fmt[64]; HGLOBAL h[64]; int n; };
 struct Buf { wchar_t *p; int n, cap; };
 static void CamOpen(void);
-static void CalOpen(void), CalRefresh(void), CalClose(void);
+static void CalOpen(void), CalRefresh(void), CalClose(void), RemDirty(void), RemSync(void), RemPoke(void), RemStart(void);
 static IUnknown *CamObj(int k);
 static void TmToggle(int mode);
 static void DrawOpen(void);
@@ -174,7 +175,7 @@ static wchar_t g_cfgCamDev[80]; static int g_cfgCamW, g_cfgCamH, g_cfgWin[4];   
 static DWORD g_ignoreSeq, g_ownSeq;
 struct CalSrc { wchar_t id[24]; COLORREF col; BOOL show, sync; };                   // источник календаря: id (local, ...), цвет плашек, показывать, синхронизируется ли (тогда удаление - надгробие, пока не отправлено)
 static CalSrc g_calSrc[8]; static int g_ncalSrc = 1;
-static int g_calView, g_calWs, g_calWkn, g_calPanel = 1, g_calWin[5], g_calAlarm = 10; static BOOL g_calDemo, g_calHid; static wchar_t g_calDefSrc[24];   // [Calendar] в ini: вид (0 месяц, 1 неделя), первый день недели (0 пн, 1 вс), номера недель, мини-панель, окно x,y,w,h,развёрнуто, тестовые события, напоминание по умолчанию (минут, 0 - без), источник по умолчанию, показывать скрытые
+static int g_calView, g_calWs, g_calWkn, g_calPanel = 1, g_calWin[5], g_calAlarm = 10, g_calPopSec, g_calAdTod = 9 * 3600; static BOOL g_calDemo, g_calHid, g_calRem = TRUE, g_calSound = TRUE; static wchar_t g_calDefSrc[24];   // [Calendar] в ini: вид (0 месяц, 1 неделя), первый день недели (0 пн, 1 вс), номера недель, мини-панель, окно x,y,w,h,развёрнуто, тестовые события, напоминание по умолчанию (минут, 0 - без), источник по умолчанию, показывать скрытые; напоминания: включены, звук, автозакрытие (с, 0 - нет), час целодневных (секунды от полуночи)
 
 static wchar_t g_editor[MAX_PATH];                                                      // [General] Editor: свой редактор (иначе Notepad++ / Блокнот)
 static int g_histOn, g_histMax = 50, g_pasteDelay = 300, g_copyTimeout = 600, g_pyPause = 1, g_toasts = 1;
@@ -334,6 +335,17 @@ X(L_CAL_DEL_SERIES, "cal.del_series", L"Событие повторяется: �
 X(L_CAL_DEL_ALL, "cal.del_all", L"Удалить везде") \
 X(L_CAL_DEL_HIDE, "cal.del_hide", L"Убрать только из DKeys") \
 X(L_CAL_DEL_HINT, "cal.del_hint", L"«Удалить везде» - событие исчезнет и из источника; «Убрать» - останется в источнике, но DKeys его не покажет.") \
+X(L_CAL_R_ON, "cal.rem_on", L"Напоминания") \
+X(L_CAL_R_SNOOZE, "cal.rem_snooze", L"Отложить") \
+X(L_CAL_R_OPEN, "cal.rem_open", L"Открыть") \
+X(L_CAL_R_CLOSE, "cal.rem_close", L"Закрыть") \
+X(L_CAL_R_SNZ, "cal.rem_snooze_items", L"На 5 минут,На 10 минут,На 30 минут,На 1 час,До начала") \
+X(L_CAL_R_IN, "cal.rem_in", L"через %s") \
+X(L_CAL_R_AGO, "cal.rem_ago", L"началось %s назад") \
+X(L_CAL_R_NOW, "cal.rem_now", L"сейчас") \
+X(L_CAL_R_UNITS, "cal.rem_units", L"мин,ч,дн") \
+X(L_CAL_R_DAYS, "cal.rem_days", L"сегодня,завтра,весь день") \
+X(L_CAL_R_MISSED, "cal.rem_missed", L"Пропущено напоминаний: %d") \
 X(L_TRAY_HISTON, "tray.history_on", L"Своя история буфера") \
 X(L_TRAY_SELCOPY, "tray.selcopy", L"Автокопирование выделенного мышью") \
 X(L_TRAY_AUTO, "tray.autostart", L"Автозапуск") \
@@ -1052,6 +1064,12 @@ PowerShell=powershell.exe
 ; DefaultSource: источник для быстрого ввода (id, по умолчанию local) | DefaultAlarm: напоминание по умолчанию в минутах (0 или пусто - без)
 ;DefaultSource=local
 ;DefaultAlarm=10
+; Reminders: 1 - показывать напоминания (всплывают в углу экрана; в игре на весь экран и при блокировке копятся) | Sound: 1 - со звуком
+; PopupSeconds: закрывать напоминание само через N секунд (0 - висит, пока не нажмёшь) | AllDayTime: во сколько напоминать о целодневных (чч:мм)
+;Reminders=1
+;Sound=1
+;PopupSeconds=0
+;AllDayTime=09:00
 ; ShowHidden: 1 - показывать события, убранные только из DKeys (в окне есть переключатель)
 ;ShowHidden=0
 ; Window: положение и размер окна x,y,ширина,высота,развёрнуто (1) - запоминается само
@@ -1318,6 +1336,7 @@ static void CfgDefaults(void) {
     g_mHover = 300; g_mPos[0] = g_mPos[1] = -99999;
     g_cfgCamDev[0] = 0; g_cfgCamW = g_cfgCamH = 0; memset(g_cfgWin, 0, sizeof g_cfgWin);
     g_calView = g_calWs = g_calWkn = 0; g_calPanel = 1; g_calDemo = g_calHid = FALSE; g_calAlarm = 10; g_calDefSrc[0] = 0; memset(g_calWin, 0, sizeof g_calWin);
+    g_calRem = g_calSound = TRUE; g_calPopSec = 0; g_calAdTod = 9 * 3600;
     memset(g_calSrc, 0, sizeof g_calSrc); g_ncalSrc = 1; lstrcpyW(g_calSrc[0].id, L"local"); g_calSrc[0].col = RGB(66, 133, 244); g_calSrc[0].show = TRUE;
     g_remote = FALSE; g_selCopy = FALSE; g_selIgn[0] = 0;
     lstrcpyW(g_vcModel, L"small"); g_vcLang[0] = 0; g_vcThr = 0; g_vcPause = 600; g_vcMaxChunk = 15; g_vcSil = 300; g_vcStream = FALSE; g_vcLive = TRUE; g_vcDebug = FALSE; g_vcPrompt[0] = 0; g_vcCmdModel[0] = 0; g_cmdDirty = TRUE;
@@ -1461,6 +1480,10 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
         else if (!lstrcmpiW(k, L"ShowHidden")) g_calHid = ToInt(v) != 0;
         else if (!lstrcmpiW(k, L"DefaultAlarm")) g_calAlarm = ToInt(v) > 0 ? ToInt(v) : 0;
         else if (!lstrcmpiW(k, L"DefaultSource")) lstrcpynW(g_calDefSrc, v, 24);
+        else if (!lstrcmpiW(k, L"Reminders")) g_calRem = ToInt(v) != 0;
+        else if (!lstrcmpiW(k, L"Sound")) g_calSound = ToInt(v) != 0;
+        else if (!lstrcmpiW(k, L"PopupSeconds")) g_calPopSec = ToInt(v) > 0 ? ToInt(v) : 0;
+        else if (!lstrcmpiW(k, L"AllDayTime")) { int t; if (Cal::ParseTodStr(v, &t)) g_calAdTod = t; }
         else if (!lstrcmpiW(k, L"Window")) { const wchar_t *q = v; for (int i = 0; i < 5; i++) { g_calWin[i] = ToInt(q); while (*q && *q != L',') q++; if (*q) q++; } }
         else if (lstrlenW(k) > 6 && (CompareStringOrdinal(k, 5, L"Show.", 5, TRUE) == CSTR_EQUAL || CompareStringOrdinal(k, 6, L"Color.", 6, TRUE) == CSTR_EQUAL)) {
             BOOL show = (k[0] | 32) == L's'; const wchar_t *id = k + (show ? 5 : 6);
@@ -4022,7 +4045,7 @@ static void Reload(void) {
     LoadConfig();
     if (g_histOn != was) { if (g_histOn) AddClipboardFormatListener(g_hwnd); else RemoveClipboardFormatListener(g_hwnd); }
     PostThreadMessageW(g_hookTid, TM_REHOOK, 0, 0);
-    RecShowSync(); VolSync(); DupSync(); CamRecSync(); CalRefresh();
+    RecShowSync(); VolSync(); DupSync(); CamRecSync(); CalRefresh(); RemSync();
     Toast(Tr(L_T_RELOADED)); SchBadToast();
 }
 /* ---------- веб-камера (DirectShow): предпросмотр в окне ---------- */
@@ -4937,16 +4960,16 @@ static int TmSin(int deg) {                              // sin*1000, целые
     int p = deg * (180 - deg);
     return sg * (4000 * p / (40500 - p));
 }
-static DWORD WINAPI TmAlarm(void *) {                    // будильник: серии по 4 коротких писка, 3 раза
-    const int rate = 22050, beep = rate * 80 / 1000, gap = rate * 70 / 1000, pause = rate * 450 / 1000;
-    const int n = 3 * (4 * (beep + gap) + pause);
+static DWORD WINAPI TmAlarm(void *rounds) {              // будильник: серии по 4 коротких писка, 3 раза (напоминание календаря - одна серия)
+    const int rate = 22050, beep = rate * 80 / 1000, gap = rate * 70 / 1000, pause = rate * 450 / 1000, rn = rounds ? (int)(INT_PTR)rounds : 3;
+    const int n = rn * (4 * (beep + gap) + pause);
     BYTE *w = (BYTE *)VirtualAlloc(NULL, 44 + n * 2, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!w) { Beep(1760, 100); Sleep(80); Beep(1760, 100); Sleep(80); Beep(1760, 100); return 0; }
     DWORD h[11] = {0x46464952, (DWORD)(36 + n * 2), 0x45564157, 0x20746D66, 16, 0x00010001, (DWORD)rate, (DWORD)(rate * 2), 0x00100002, 0x61746164, (DWORD)(n * 2)};
     memcpy(w, h, 44);
     short *s = (short *)(w + 44);
     int pos = 0;
-    for (int r = 0; r < 3; r++) {
+    for (int r = 0; r < rn; r++) {
         for (int b = 0; b < 4; b++) {
             for (int i = 0; i < beep; i++) {
                 int deg = (int)((ULONGLONG)i * 1760 * 360 / rate % 360), deg2 = (int)((ULONGLONG)i * 3520 * 360 / rate % 360);
@@ -4963,9 +4986,9 @@ static DWORD WINAPI TmAlarm(void *) {                    // будильник: 
     VirtualFree(w, 0, MEM_RELEASE);
     return 0;
 }
-static void TmAlarmPlay(void) {
-    HANDLE sound = CreateThread(NULL, 0, TmAlarm, NULL, 0, NULL);
-    if (sound) CloseHandle(sound); else TmAlarm(NULL);
+static void TmAlarmPlay(int rounds = 3) {
+    HANDLE sound = CreateThread(NULL, 0, TmAlarm, (void *)(INT_PTR)rounds, 0, NULL);
+    if (sound) CloseHandle(sound); else TmAlarm((void *)(INT_PTR)rounds);
 }
 static void TmFinish(void) {
     g_tmAcc = g_tmTarget; g_tmRun = FALSE;
@@ -8297,7 +8320,7 @@ static void NavRun(void) {                                      // клавиш�
 // Любое изменение: Cal::Touch, сразу запись файла источника (SaveSrc), перестройка вида. Диалоги (редактор, удаление) - свои, модальные, только из главного потока.
 namespace CalNs {
 using namespace CalView;
-struct Geo { RECT panel, head, tgl, prev, next, tod, add, title, wd, grid, qbox, qlab, qedit, mPrev, mNext, mTitle, mWd, mGrid, srcHdr, src[8], hid; int wnW, mcw, mrh; };
+struct Geo { RECT panel, head, tgl, prev, next, tod, add, title, wd, grid, qbox, qlab, qedit, mPrev, mNext, mTitle, mWd, mGrid, srcHdr, src[8], hid, rem; int wnW, mcw, mrh; };
 static HWND hw, hQuick; static WNDPROC quickOld; static HBRUSH hbrQ; static RECT lastQ;
 static Cal::Store st; static Cal::OccList ol; static DayLists dl; static I64 *locStart;      // locStart[i] - начало вхождения i в местном времени
 static int dpi = 96, mY, mM, wheelAcc, selEv = -1; static BOOL dark, placing; static HFONT fN, fB, fT, fS;     // selEv - выбранное событие (индекс в st) в выбранном дне
@@ -8345,6 +8368,7 @@ static void SaveSrc(const wchar_t *id) {                       // записат
     if (!id || SrcIdx(id) < 0) return;
     wchar_t p[MAX_PATH]; SrcPath(id, p);
     if (!Cal::SaveFile(&st, p, id)) Toast(Tr(L_CAL_SAVEFAIL));
+    RemDirty();                                                // напоминания перечитают файлы
 }
 static void Load(void) {
     Cal::StoreFree(&st); selEv = -1;
@@ -8393,6 +8417,7 @@ static void Layout(int W, int H) {
     G.srcHdr = Mk(x0 + Sc(4), G.mGrid.bottom + Sc(20), x1, G.mGrid.bottom + Sc(44));
     for (int i = 0; i < g_ncalSrc && i < 8; i++) G.src[i] = Mk(x0, G.srcHdr.bottom + i * Sc(30), x1, G.srcHdr.bottom + (i + 1) * Sc(30));
     int ns = g_ncalSrc < 8 ? g_ncalSrc : 8; G.hid = Mk(x0, G.srcHdr.bottom + ns * Sc(30) + Sc(8), x1, G.srcHdr.bottom + ns * Sc(30) + Sc(38));
+    G.rem = Mk(x0, G.hid.bottom, x1, G.hid.bottom + Sc(30));
     if (hQuick && !EqualRect(&G.qedit, &lastQ)) { lastQ = G.qedit; MoveWindow(hQuick, G.qedit.left, G.qedit.top, G.qedit.right - G.qedit.left, G.qedit.bottom - G.qedit.top, TRUE); }
 }
 static void Lay(void) { RECT c; GetClientRect(hw, &c); Layout(c.right, c.bottom); }
@@ -8436,6 +8461,12 @@ static void Tick(HDC dc, const RECT &bx, COLORREF c) {              // гало�
 static void Button(HDC dc, const Pal &P, const RECT &r) { Round(dc, r, P.bd, Sc(8), FALSE); RECT i = r; InflateRect(&i, -1, -1); Round(dc, i, P.hdr, Sc(8), FALSE); }
 static void MonthTitle(wchar_t *out, int y, int m) { wchar_t mn[24]; Item(Tr(L_CAL_MONTHS), m - 1, mn, 24); wsprintfW(out, L"%s %d", mn, y); }
 
+static void PaintCheck(HDC dc, const Pal &P, const RECT &r, BOOL on, const wchar_t *text) {
+    int cy = (r.top + r.bottom) / 2; RECT bx = Mk(r.left + Sc(6), cy - Sc(8), r.left + Sc(22), cy + Sc(8));
+    Round(dc, bx, on ? P.acc : P.bd, Sc(4), FALSE);
+    if (on) Tick(dc, bx, OnCol(P.acc)); else { RECT in = bx; InflateRect(&in, -Sc(2), -Sc(2)); Round(dc, in, P.hdr, Sc(2), FALSE); }
+    RECT tr = Mk(bx.right + Sc(10), r.top, r.right, r.bottom); SelectObject(dc, fN); Txt(dc, text, tr, P.fg, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+}
 static void PaintMini(HDC dc, const Pal &P) {
     Fill(dc, G.panel, P.hdr);
     RECT ln = Mk(G.panel.right - 1, 0, G.panel.right, G.panel.bottom); Fill(dc, ln, P.bd);
@@ -8467,12 +8498,8 @@ static void PaintMini(HDC dc, const Pal &P) {
         RECT tr = Mk(bx.right + Sc(10), row.top, row.right, row.bottom);
         SelectObject(dc, fN); Txt(dc, SrcName(i), tr, P.fg, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
     }
-    {                                                                       // «показывать скрытые»
-        int cy = (G.hid.top + G.hid.bottom) / 2; RECT bx = Mk(G.hid.left + Sc(6), cy - Sc(8), G.hid.left + Sc(22), cy + Sc(8));
-        Round(dc, bx, g_calHid ? P.acc : P.bd, Sc(4), FALSE);
-        if (g_calHid) Tick(dc, bx, OnCol(P.acc)); else { RECT in = bx; InflateRect(&in, -Sc(2), -Sc(2)); Round(dc, in, P.hdr, Sc(2), FALSE); }
-        RECT tr = Mk(bx.right + Sc(10), G.hid.top, G.hid.right, G.hid.bottom); SelectObject(dc, fN); Txt(dc, Tr(L_CAL_SHOWHID), tr, P.fg, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
-    }
+    PaintCheck(dc, P, G.hid, g_calHid, Tr(L_CAL_SHOWHID));                  // «показывать скрытые», «напоминания»
+    PaintCheck(dc, P, G.rem, g_calRem, Tr(L_CAL_R_ON));
 }
 static void PaintHead(HDC dc, const Pal &P) {
     Button(dc, P, G.tgl);
@@ -9051,6 +9078,7 @@ static void Click(int x, int y, BOOL dbl) {
         else if (PtInRect(&G.mNext, p)) { AddMonths(&mY, &mM, 1); Inv(); }
         else if (PtInRect(&G.mGrid, p)) { if (dbl) NewEvent(sel); else SetSel(GridStart(mY, mM, g_calWs) + (y - G.mGrid.top) / G.mrh * 7 + (x - G.mGrid.left) / G.mcw); }
         else if (PtInRect(&G.hid, p)) { g_calHid = !g_calHid; IniSet(L"Calendar", L"ShowHidden", g_calHid ? L"1" : L"0"); Rebuild(); Inv(); }
+        else if (PtInRect(&G.rem, p)) { g_calRem = !g_calRem; IniSet(L"Calendar", L"Reminders", g_calRem ? L"1" : L"0"); RemSync(); Inv(); }
         else for (int i = 0; i < g_ncalSrc && i < 8; i++) if (PtInRect(&G.src[i], p)) {
             wchar_t k[40] = L"Show."; Cat(k, 40, g_calSrc[i].id);
             g_calSrc[i].show = !g_calSrc[i].show; IniSet(L"Calendar", k, g_calSrc[i].show ? L"1" : L"0"); Rebuild(); Inv();
@@ -9187,10 +9215,296 @@ static void Open(void) {
     placing = FALSE; SetForegroundWindow(h);
 }
 static void Refresh(void) { if (!hw) return; if (ed) { pendRef = TRUE; return; } today = TodayLocal(); Load(); Rebuild(); Inv(); }      // после «Перечитать настройки»
+static void OpenOn(I64 day, const wchar_t *uid) {              // из напоминания: окно на день вхождения, событие выделено
+    Open(); if (!hw) return;
+    if (Busy()) { SetForegroundWindow(hw); return; }
+    int idx = -1; for (int i = 0; i < st.n; i++) if (st.ev[i].uid && !st.ev[i].deleted && !lstrcmpW(st.ev[i].uid, uid) && (idx < 0 || !st.ev[i].hasRec)) idx = i;
+    if (idx >= 0) EnsureShown(SrcOf(&st.ev[idx]));
+    SetSel(day); if (idx >= 0) selEv = idx;
+    Inv();
+}
 } // namespace CalNs
+static void CalOpenOn(Cal::I64 day, const wchar_t *uid) { CalNs::OpenOn(day, uid); }
 static void CalOpen(void) { CalNs::Open(); }
 static void CalRefresh(void) { CalNs::Refresh(); }
 static void CalClose(void) { CalNs::Close(); }
+
+/* ---------- напоминания календаря ---------- */
+// Планировщик в главном потоке (таймер TID_REM): свой набор событий из memory\calendar\*.ics (перечитывается раз в 5 минут и при любой правке календаря),
+// расчёт срабатываний, журнал и отложенные - в calendar.h (проверка: tests\run.cmd). Показ - окно-стопка в углу экрана без фокуса (DKRem).
+// В игре на весь экран, презентации и при блокировке ничего не показывается и не отмечается: всё накопленное всплывает после (много пропущенного - одной сводкой).
+// Журнал: memory\calendar\fired.txt, отложенное: snooze.txt.
+namespace RemNs {
+using Cal::I64;
+struct Card { int id, n, nl, alarm; BOOL sum, allDay; wchar_t *uid, *title, *loc, *lines; I64 occ, end, wall; COLORREF col; ULONGLONG expire; };      // sum - сводка пропущенного (n событий, nl строк текста)
+enum { MAXC = 24, VIS = 4, H_SNZ = 1, H_ARR, H_OPEN, H_CLOSE };
+struct Geo { int top[VIS + 1], h[VIS], nvis, foot, total; };
+static Cal::Store st; static Cal::FireList fl; static Cal::SeenList seen; static I64 builtAt; static BOOL dirty = TRUE, loaded, dark;
+static Card cards[MAXC]; static int nc, nextId = 1, dpi = 96, hotC = -1, hotB, ticks;
+static HWND hw; static HFONT fN, fT; static int fontDpi;
+
+static int Sc(int v) { return MulDiv(v, dpi, 96); }
+static RECT Mk(int l, int t, int r, int b) { RECT x = {l, t, r, b}; return x; }
+static void Fill(HDC dc, const RECT &r, COLORREF c) { SetBkColor(dc, c); ExtTextOutW(dc, 0, 0, ETO_OPAQUE, &r, NULL, 0, NULL); }
+static void Frame(HDC dc, const RECT &r, COLORREF c) { RECT a = Mk(r.left, r.top, r.right, r.top + 1), b = Mk(r.left, r.bottom - 1, r.right, r.bottom), l = Mk(r.left, r.top, r.left + 1, r.bottom), x = Mk(r.right - 1, r.top, r.right, r.bottom); Fill(dc, a, c); Fill(dc, b, c); Fill(dc, l, c); Fill(dc, x, c); }
+static void Txt(HDC dc, const wchar_t *s, RECT r, COLORREF c, UINT fl2) { SetTextColor(dc, c); DrawTextW(dc, s, -1, &r, fl2 | DT_NOPREFIX | DT_SINGLELINE); }
+
+/* журнал и данные */
+static void SeenPath(const wchar_t *name, wchar_t *p) { wchar_t rel[40]; lstrcpyW(rel, L"calendar\\"); Cat(rel, 40, name); MemPath(p, rel); }
+static void SaveAll(void) {
+    wchar_t p[MAX_PATH]; lstrcpynW(p, g_memDir, MAX_PATH); Cat(p, MAX_PATH, L"calendar"); CreateDirectoryW(p, NULL);
+    for (int k = 0; k < 2; k++) {
+        wchar_t *t = Cal::SeenSave(&seen, k); int n; char *u = ToUtf8(t, &n); Free(t);
+        SeenPath(k ? L"snooze.txt" : L"fired.txt", p); WriteAtomic(p, u, (DWORD)n); Free(u);
+    }
+}
+static void SeenReload(void) {
+    Cal::SeenFree(&seen);
+    for (int k = 0; k < 2; k++) {
+        wchar_t p[MAX_PATH]; SeenPath(k ? L"snooze.txt" : L"fired.txt", p); DWORD sz; BYTE *raw = ReadAll(p, &sz);
+        if (raw) { wchar_t *t = FromUtf8((char *)raw, (int)sz); Free(raw); Cal::SeenLoad(&seen, t, k); Free(t); }
+    }
+    loaded = TRUE;
+}
+static void Rebuild(I64 now) {
+    Cal::StoreFree(&st); Cal::FireFree(&fl);
+    for (int i = 0; i < g_ncalSrc; i++) { wchar_t p[MAX_PATH], rel[48]; lstrcpyW(rel, L"calendar\\"); Cat(rel, 48, g_calSrc[i].id); Cat(rel, 48, L".ics"); MemPath(p, rel); Cal::LoadFile(&st, p, g_calSrc[i].id); }
+    Cal::RemBuild(&st, now, g_calAdTod, &fl); builtAt = now; dirty = FALSE;
+}
+static BOOL Blocked(void) {                                    // заблокированный экран, игра на весь экран, презентация: напоминания ждут
+    if (g_locked) return TRUE;
+    QUERY_USER_NOTIFICATION_STATE s;
+    return SUCCEEDED(SHQueryUserNotificationState(&s)) && (s == QUNS_NOT_PRESENT || s == QUNS_BUSY || s == QUNS_RUNNING_D3D_FULL_SCREEN || s == QUNS_PRESENTATION_MODE);
+}
+
+/* карточки */
+static void CardFree(Card *c) { Free(c->uid); Free(c->title); Free(c->loc); Free(c->lines); }
+static void Drop(int i) { CardFree(&cards[i]); memmove(cards + i, cards + i + 1, (nc - i - 1) * sizeof(Card)); nc--; memset(&cards[nc], 0, sizeof(Card)); }
+static int Find(int id) { for (int i = 0; i < nc; i++) if (cards[i].id == id) return i; return -1; }
+static Card *NewCard(void) {
+    if (nc == MAXC) Drop(0);
+    Card *c = &cards[nc++]; memset(c, 0, sizeof *c); c->id = nextId++;
+    if (g_calPopSec > 0) c->expire = GetTickCount64() + (ULONGLONG)g_calPopSec * 1000;
+    return c;
+}
+static I64 LocDay(I64 utc) { return Cal::FloorDiv(Cal::UtcToWall(utc, L""), 86400); }
+static void DayPrefix(I64 day, I64 today, wchar_t *o) {         // "" сегодня, "завтра ", "17.11 "
+    wchar_t w[16]; o[0] = 0;
+    if (day == today) return;
+    if (day == today + 1) { CalNs::Item(Tr(L_CAL_R_DAYS), 1, w, 16); wsprintfW(o, L"%s ", w); return; }
+    int y, m, d; Cal::CivilFromDays(day, &y, &m, &d); wsprintfW(o, L"%02d.%02d ", d, m);
+}
+static void Span(I64 secs, wchar_t *o) {                       // «10 мин», «2 ч 5 мин», «3 дн»
+    wchar_t u[3][8]; for (int i = 0; i < 3; i++) CalNs::Item(Tr(L_CAL_R_UNITS), i, u[i], 8);
+    int m = (int)((secs + 30) / 60); if (m < 1) m = 1;
+    if (m < 60) wsprintfW(o, L"%d %s", m, u[0]);
+    else if (m < 1440) { if (m % 60) wsprintfW(o, L"%d %s %d %s", m / 60, u[1], m % 60, u[0]); else wsprintfW(o, L"%d %s", m / 60, u[1]); }
+    else { if (m % 1440 / 60) wsprintfW(o, L"%d %s %d %s", m / 1440, u[2], m % 1440 / 60, u[1]); else wsprintfW(o, L"%d %s", m / 1440, u[2]); }
+}
+static void TimeLine(const Card &c, I64 now, wchar_t *o) {      // «через 10 мин · 15:00–16:00», «завтра · весь день»
+    wchar_t rel[60], rng[80], pre[24], sp[40]; I64 today = LocDay(now);
+    if (c.allDay) {
+        I64 day = Cal::FloorDiv(c.wall, 86400); CalNs::Item(Tr(L_CAL_R_DAYS), 2, rng, 80);
+        if (day == today) CalNs::Item(Tr(L_CAL_R_DAYS), 0, rel, 60); else { DayPrefix(day, today, pre); lstrcpynW(rel, pre, 60); rel[lstrlenW(rel) - 1] = 0; }
+        wsprintfW(o, L"%s · %s", rel, rng); return;
+    }
+    I64 d = c.occ - now;
+    if (d > 60) { Span(d, sp); wsprintfW(rel, Tr(L_CAL_R_IN), sp); } else if (d >= -60) lstrcpynW(rel, Tr(L_CAL_R_NOW), 60); else { Span(-d, sp); wsprintfW(rel, Tr(L_CAL_R_AGO), sp); }
+    I64 ws = Cal::UtcToWall(c.occ, L""), we = Cal::UtcToWall(c.end, L""); Cal::Tm a = Cal::SecToTm(ws), b = Cal::SecToTm(we);
+    DayPrefix(Cal::FloorDiv(ws, 86400), today, pre);
+    if (c.end <= c.occ) wsprintfW(rng, L"%02d:%02d", a.h, a.mi);
+    else if (Cal::FloorDiv(we, 86400) == Cal::FloorDiv(ws, 86400)) wsprintfW(rng, L"%02d:%02d–%02d:%02d", a.h, a.mi, b.h, b.mi);
+    else wsprintfW(rng, L"%02d:%02d–%02d.%02d %02d:%02d", a.h, a.mi, b.d, b.mo, b.h, b.mi);
+    wsprintfW(o, L"%s · %s%s", rel, pre, rng);
+}
+static wchar_t *DupS(const wchar_t *s) { return s && *s ? Dup(s) : NULL; }
+static void AddFire(int fi) {
+    const Cal::Fire &f = fl.a[fi]; const Cal::Event &e = st.ev[f.ev]; Card *c = NewCard();
+    c->uid = Dup(e.uid); c->title = Dup(e.summary && *e.summary ? e.summary : Tr(L_CAL_NOTITLE)); c->loc = DupS(e.loc);
+    c->occ = f.occ; c->end = f.end; c->wall = f.wall; c->alarm = f.alarm; c->allDay = f.allDay; c->col = CalNs::ColOf(&e); c->n = c->nl = 1;
+}
+static void AddSummary(const int *idx, int n) {                  // одна карточка на всё пропущенное: до 5 строк «время название», остальное «+N ещё»
+    const Cal::Fire &f0 = fl.a[idx[0]]; Card *c = NewCard(); I64 today = LocDay(Cal::NowUtc());
+    c->sum = TRUE; c->n = n; c->uid = Dup(st.ev[f0.ev].uid); c->occ = f0.occ; c->end = f0.end; c->wall = f0.wall; c->allDay = f0.allDay; c->col = CalNs::ColOf(&st.ev[f0.ev]);
+    Buf b = {0};
+    for (int i = 0; i < n && i < 5; i++) {
+        const Cal::Fire &f = fl.a[idx[i]]; const Cal::Event &e = st.ev[f.ev]; wchar_t tm[48], pre[24];
+        if (f.allDay) CalNs::Item(Tr(L_CAL_R_DAYS), 2, tm, 48);
+        else { I64 ws = Cal::UtcToWall(f.occ, L""); Cal::Tm a = Cal::SecToTm(ws); DayPrefix(Cal::FloorDiv(ws, 86400), today, pre); wsprintfW(tm, L"%s%02d:%02d", pre, a.h, a.mi); }
+        if (b.n) BufAdd(&b, L"\n");
+        BufAdd(&b, tm); BufAdd(&b, L"  "); BufAdd(&b, e.summary && *e.summary ? e.summary : Tr(L_CAL_NOTITLE)); c->nl++;
+    }
+    if (n > 5) { wchar_t t[40]; wsprintfW(t, Tr(L_CAL_MORE), n - 5); BufAdd(&b, L"\n"); BufAdd(&b, t); c->nl++; }
+    c->lines = b.p;
+}
+
+/* окно */
+static void MakeFonts(void) {
+    if (fN && fontDpi == dpi) return;
+    if (fN) DeleteObject(fN); if (fT) DeleteObject(fT);
+    fN = CreateFontW(-MulDiv(9, dpi, 72), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+    fT = CreateFontW(-MulDiv(10, dpi, 72), 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+    fontDpi = dpi;
+}
+static int CardH(const Card &c) { return Sc(10 + 22 + 8 + 28 + 10) + (c.sum ? c.nl : 1 + (c.loc ? 1 : 0)) * Sc(18); }
+static void Calc(Geo *g) {
+    g->nvis = nc < VIS ? nc : VIS; int y = 0;
+    for (int i = 0; i < g->nvis; i++) { g->top[i] = y; g->h[i] = CardH(cards[i]); y += g->h[i]; }
+    g->foot = nc > VIS ? Sc(24) : 0; g->total = y + g->foot;
+}
+static void Btns(const Card &c, int top, int h, RECT r[4]) {     // 0 отложить, 1 стрелка меню, 2 открыть, 3 закрыть
+    int y1 = top + h - Sc(10), y0 = y1 - Sc(28), x0 = Sc(14), x1 = Sc(340) - Sc(12), g = Sc(6), tw = x1 - x0 - 2 * g;
+    memset(r, 0, 4 * sizeof(RECT));
+    if (c.sum) { int w2 = (x1 - x0 - g) / 2; r[2] = Mk(x0, y0, x0 + w2, y1); r[3] = Mk(x0 + w2 + g, y0, x1, y1); return; }
+    int ws = tw * 42 / 100, wo = (tw - ws) / 2;
+    r[0] = Mk(x0, y0, x0 + ws - Sc(26), y1); r[1] = Mk(x0 + ws - Sc(26), y0, x0 + ws, y1);
+    r[2] = Mk(x0 + ws + g, y0, x0 + ws + g + wo, y1); r[3] = Mk(x0 + ws + g + wo + g, y0, x1, y1);
+}
+static BOOL Hit(int x, int y, int *ci, int *b) {
+    Geo g; Calc(&g); POINT p = {x, y};
+    for (int i = 0; i < g.nvis; i++) { RECT r[4]; Btns(cards[i], g.top[i], g.h[i], r); for (int k = 0; k < 4; k++) if (!IsRectEmpty(&r[k]) && PtInRect(&r[k], p)) { *ci = i; *b = k + 1; return TRUE; } }
+    return FALSE;
+}
+static void Paint(HDC dc, int W, int H) {
+    const Pal &P = dark ? ::kDark : ::kLight; RECT all = Mk(0, 0, W, H); Fill(dc, all, P.bg); SetBkMode(dc, TRANSPARENT);
+    Geo g; Calc(&g); I64 now = Cal::NowUtc();
+    for (int i = 0; i < g.nvis; i++) {
+        const Card &c = cards[i]; int top = g.top[i], x0 = Sc(14), x1 = W - Sc(12), y = top + Sc(10); wchar_t t[400];
+        if (i) { RECT l = Mk(0, top, W, top + 1); Fill(dc, l, P.bd); }
+        RECT sr = Mk(0, top + (i ? 1 : 0), Sc(4), top + g.h[i]); Fill(dc, sr, c.col);
+        SelectObject(dc, fT);
+        if (c.sum) wsprintfW(t, Tr(L_CAL_R_MISSED), c.n); else lstrcpynW(t, c.title, 400);
+        Txt(dc, t, Mk(x0, y, x1, y + Sc(22)), P.fg, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS); y += Sc(22);
+        SelectObject(dc, fN);
+        if (c.sum) {
+            const wchar_t *p = c.lines;
+            while (p && *p) { const wchar_t *q = p; while (*q && *q != L'\n') q++; int n = (int)(q - p); if (n > 399) n = 399; memcpy(t, p, n * sizeof(wchar_t)); t[n] = 0;
+                Txt(dc, t, Mk(x0, y, x1, y + Sc(18)), P.fg, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS); y += Sc(18); p = *q ? q + 1 : q; }
+        } else {
+            TimeLine(c, now, t); Txt(dc, t, Mk(x0, y, x1, y + Sc(18)), P.dim, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS); y += Sc(18);
+            if (c.loc) Txt(dc, c.loc, Mk(x0, y, x1, y + Sc(18)), P.dim, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+        }
+        RECT r[4]; Btns(c, top, g.h[i], r); const wchar_t *lab[4] = {Tr(L_CAL_R_SNOOZE), L"", Tr(L_CAL_R_OPEN), Tr(L_CAL_R_CLOSE)};
+        for (int k = 0; k < 4; k++) {
+            if (IsRectEmpty(&r[k])) continue;
+            Fill(dc, r[k], hotC == i && hotB == k + 1 ? P.sel : P.hdr);
+            if (k == 1) {                                                   // стрелка меню отложить
+                int cx = (r[k].left + r[k].right) / 2, cy = (r[k].top + r[k].bottom) / 2, a = Sc(4);
+                HPEN pn = CreatePen(PS_SOLID, Sc(2) > 1 ? Sc(2) : 1, P.fg); HGDIOBJ op = SelectObject(dc, pn);
+                MoveToEx(dc, cx - a, cy - a / 2, NULL); LineTo(dc, cx, cy + a / 2 + 1); LineTo(dc, cx + a + 1, cy - a / 2 - 1); SelectObject(dc, op); DeleteObject(pn);
+                RECT dv = Mk(r[k].left, r[k].top + Sc(5), r[k].left + 1, r[k].bottom - Sc(5)); Fill(dc, dv, P.bd);
+            } else Txt(dc, lab[k], r[k], P.fg, DT_CENTER | DT_VCENTER | DT_END_ELLIPSIS);
+        }
+        if (!c.sum) { RECT u = Mk(r[0].left, r[0].top, r[1].right, r[0].bottom); Frame(dc, u, P.bd); }
+        Frame(dc, r[2], P.bd); Frame(dc, r[3], P.bd);
+    }
+    if (g.foot) { wchar_t t[40]; wsprintfW(t, Tr(L_CAL_MORE), nc - VIS); SelectObject(dc, fN); RECT l = Mk(0, g.total - g.foot, W, g.total - g.foot + 1); Fill(dc, l, P.bd); Txt(dc, t, Mk(Sc(14), g.total - g.foot, W - Sc(12), g.total), P.dim, DT_LEFT | DT_VCENTER); }
+    Frame(dc, all, P.bd);
+}
+static void Relayout(void);
+static void Act(int ci, int b);
+static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    switch (m) {
+    case WM_ERASEBKGND: return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); RECT rc; GetClientRect(h, &rc);
+        HDC md = CreateCompatibleDC(dc); HBITMAP bm = CreateCompatibleBitmap(dc, rc.right, rc.bottom); HGDIOBJ ob = SelectObject(md, bm);
+        Paint(md, rc.right, rc.bottom); BitBlt(dc, 0, 0, rc.right, rc.bottom, md, 0, 0, SRCCOPY);
+        SelectObject(md, ob); DeleteObject(bm); DeleteDC(md); EndPaint(h, &ps); return 0;
+    }
+    case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
+    case WM_MOUSEMOVE: {
+        int ci = -1, b = 0; if (!Hit((short)LOWORD(l), (short)HIWORD(l), &ci, &b)) { ci = -1; b = 0; }
+        if (ci != hotC || b != hotB) { hotC = ci; hotB = b; InvalidateRect(h, NULL, FALSE); }
+        TRACKMOUSEEVENT te = {sizeof te, TME_LEAVE, h, 0}; TrackMouseEvent(&te); return 0;
+    }
+    case WM_MOUSELEAVE: if (hotC >= 0) { hotC = -1; InvalidateRect(h, NULL, FALSE); } return 0;
+    case WM_LBUTTONDOWN: { int ci, b; if (Hit((short)LOWORD(l), (short)HIWORD(l), &ci, &b)) Act(ci, b); return 0; }
+    case WM_RBUTTONUP: { int ci, b; if (Hit((short)LOWORD(l), (short)HIWORD(l), &ci, &b) && (b == H_SNZ || b == H_ARR)) Act(ci, H_ARR); return 0; }
+    case WM_TIMER: {                                                        // автозакрытие; время «через N мин» обновляется
+        ULONGLONG t = GetTickCount64(); BOOL ch = FALSE;
+        for (int i = nc - 1; i >= 0; i--) if (cards[i].expire && t >= cards[i].expire) { Drop(i); ch = TRUE; }
+        if (ch) Relayout(); else if (++ticks % 20 == 0) InvalidateRect(h, NULL, FALSE);
+        return 0;
+    }
+    case WM_DPICHANGED: dpi = HIWORD(w); Relayout(); return 0;
+    case WM_DISPLAYCHANGE: Relayout(); return 0;
+    case WM_SETTINGCHANGE: if (l && !lstrcmpW((LPCWSTR)l, L"ImmersiveColorSet")) { dark = IsDark(); InvalidateRect(h, NULL, FALSE); } return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+static void Relayout(void) {                                    // размер и место (правый нижний угол основного монитора), показать или спрятать
+    if (!nc) { if (hw) { KillTimer(hw, 1); ShowWindow(hw, SW_HIDE); } hotC = -1; return; }
+    POINT o = {0, 0}; MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoW(MonitorFromPoint(o, MONITOR_DEFAULTTOPRIMARY), &mi); const RECT &wa = mi.rcWork;
+    if (!hw) {
+        static BOOL reg; if (!reg) { RegClass(L"DKRem", Proc, CS_DROPSHADOW); reg = TRUE; }
+        hw = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"DKRem", L"", WS_POPUP, wa.right - 50, wa.bottom - 50, 10, 10, NULL, NULL, g_inst, NULL);
+        if (!hw) return;
+        dpi = GetDpiForWindow(hw);
+    }
+    dark = IsDark(); MakeFonts();
+    Geo g; Calc(&g); int W = Sc(340), x = wa.right - W - Sc(12), y = wa.bottom - g.total - Sc(12); if (y < wa.top) y = wa.top;
+    SetWindowPos(hw, HWND_TOPMOST, x, y, W, g.total, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    SetTimer(hw, 1, 1000, NULL); InvalidateRect(hw, NULL, FALSE);
+}
+static void Arm(I64 now) {                                      // следующий такт: ближайшее срабатывание, но не реже раза в 20 секунд
+    I64 d = 20000, nx = Cal::RemNext(&st, &fl, &seen, now);
+    if (nx) { I64 ms = (nx - now) * 1000 + 300; if (ms < 500) ms = 500; if (ms < d) d = ms; }
+    SetTimer(g_hwnd, TID_REM, (UINT)d, NULL);
+}
+static void Snooze(int i, int kind) {                          // kind 0..3 - 5/10/30/60 минут, 4 - до начала
+    static const int mins[4] = {5, 10, 30, 60}; Card &c = cards[i]; I64 now = Cal::NowUtc(), until = kind < 4 ? now + mins[kind] * 60 : c.occ;
+    if (!c.sum && until > now) { Cal::SeenSnooze(&seen, c.uid, c.occ, c.alarm, until); SaveAll(); }
+    Drop(i); Relayout(); if (g_calRem) Arm(now);
+}
+static void Act(int ci, int b) {
+    if (ci >= nc) return;
+    if (b == H_SNZ) Snooze(ci, 0);
+    else if (b == H_ARR) {                                                  // меню «Отложить»
+        int id = cards[ci].id; I64 now = Cal::NowUtc(); BOOL canStart = cards[ci].occ > now + 30;
+        Geo g; Calc(&g); RECT r[4]; Btns(cards[ci], g.top[ci], g.h[ci], r); POINT p = {r[0].left, r[0].bottom}; ClientToScreen(hw, &p);
+        HMENU mn = CreatePopupMenu();
+        for (int k = 0; k < 5; k++) { wchar_t t[48]; CalNs::Item(Tr(L_CAL_R_SNZ), k, t, 48); AppendMenuW(mn, MF_STRING | (k == 4 && !canStart ? MF_GRAYED : 0), 1 + k, t); }
+        HWND prev = GetForegroundWindow(); g_menuOpen = TRUE; SetForegroundWindow(hw);
+        int cmd = TrackPopupMenu(mn, TPM_RETURNCMD | TPM_RIGHTBUTTON, p.x, p.y, 0, hw, NULL);
+        g_menuOpen = FALSE; DestroyMenu(mn); PostMessageW(hw, WM_NULL, 0, 0);
+        if (prev && prev != hw && IsWindow(prev)) SetForegroundWindow(prev);
+        int i = Find(id); if (cmd >= 1 && i >= 0) Snooze(i, cmd - 1);
+    } else if (b == H_OPEN) {
+        Card &c = cards[ci]; I64 day = c.allDay ? Cal::FloorDiv(c.wall, 86400) : LocDay(c.occ); wchar_t uid[200]; lstrcpynW(uid, c.uid, 200);
+        Drop(ci); Relayout(); CalOpenOn(day, uid);
+    } else if (b == H_CLOSE) { Drop(ci); Relayout(); }
+}
+static void ShowPicks(const Cal::PickList &pk) {
+    int before = nc, nlate = 0, *late = (int *)Alloc((pk.n + 1) * sizeof(int));
+    for (int i = 0; i < pk.n; i++) if (pk.a[i].late) late[nlate++] = pk.a[i].fire;
+    if (nlate >= 2) AddSummary(late, nlate);                                // много пропущенного (после сна, игры, блокировки) - одной карточкой
+    for (int i = 0; i < pk.n; i++) if (nlate < 2 || !pk.a[i].late) AddFire(pk.a[i].fire);
+    Free(late);
+    if (nc > before) { if (g_calSound) TmAlarmPlay(1); Relayout(); }
+}
+static void Tick(void) {
+    if (!g_calRem) { KillTimer(g_hwnd, TID_REM); return; }
+    I64 now = Cal::NowUtc();
+    if (Blocked()) { SetTimer(g_hwnd, TID_REM, 10000, NULL); return; }
+    if (!loaded) SeenReload();
+    if (dirty || now - builtAt >= 300 || now < builtAt) Rebuild(now);
+    Cal::PickList pk; BOOL ch = Cal::RemPick(&st, &fl, &seen, now, 120, &pk);
+    if (Cal::SeenPrune(&seen, now)) ch = TRUE;
+    if (ch) SaveAll();
+    if (pk.n) ShowPicks(pk);
+    Cal::PickFree(&pk); Arm(now);
+}
+static void At(int ms) { if (g_calRem) SetTimer(g_hwnd, TID_REM, ms, NULL); else KillTimer(g_hwnd, TID_REM); }
+static void Start(void) { SeenReload(); At(3000); }
+static void Dirty(void) { dirty = TRUE; At(1500); }
+static void Poke(void) { dirty = TRUE; At(2500); }                          // после сна и разблокировки: пересчитать и показать накопленное
+static void Sync(void) { dirty = TRUE; At(1000); }                         // настройки перечитаны или напоминания включили/выключили
+} // namespace RemNs
+static void RemDirty(void) { RemNs::Dirty(); }
+static void RemSync(void) { RemNs::Sync(); }
+static void RemPoke(void) { RemNs::Poke(); }
+static void RemStart(void) { RemNs::Start(); }
 
 /* Номера пунктов меню трея. Свои пункты трея: 1..19 и 70..79. Подменю модулей - свои диапазоны в kMenuMods (не пересекаться!).
    keep: после выбора меню открывается снова на том же пункте (переключатели настроек). */
@@ -9360,14 +9674,15 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         else if (w == TID_SCHED) SchTick();
         else if (w == TID_SELCOPY) OnSelCopy();
         else if (w == TID_DEFER) OnDeferTimer();
+        else if (w == TID_REM) RemNs::Tick();
         return 0;
     case WM_CLIPBOARDUPDATE: OnClip(); return 0;
     case WM_APP_RENDERED: if (g_psPending) SetTimer(g_hwnd, TID_RESTORE, g_pasteDelay, NULL); return 0;
     case 0x2B1:                                                                       // WM_WTSSESSION_CHANGE
-        if (w == 7) { g_locked = TRUE; SchEvent(SE_LOCK); } else if (w == 8) { g_locked = FALSE; PostThreadMessageW(g_hookTid, TM_REHOOK, 0, 0); SchEvent(SE_UNLOCK); }   // хуки могли снять, пока экран был заблокирован
+        if (w == 7) { g_locked = TRUE; SchEvent(SE_LOCK); } else if (w == 8) { g_locked = FALSE; PostThreadMessageW(g_hookTid, TM_REHOOK, 0, 0); SchEvent(SE_UNLOCK); RemPoke(); }   // хуки могли снять, пока экран был заблокирован; накопленные напоминания - показать
         return 0;
     case WM_POWERBROADCAST:
-        if (w == 0x12 || w == 7) { static DWORD wk; if (!wk || GetTickCount() - wk > 10000) { wk = GetTickCount() | 1; PostThreadMessageW(g_hookTid, TM_REHOOK, 0, 0); SchEvent(SE_WAKE); } }   // выход из сна (приходит дважды); хуки - заново
+        if (w == 0x12 || w == 7) { static DWORD wk; if (!wk || GetTickCount() - wk > 10000) { wk = GetTickCount() | 1; PostThreadMessageW(g_hookTid, TM_REHOOK, 0, 0); SchEvent(SE_WAKE); RemPoke(); } }   // выход из сна (приходит дважды); хуки - заново; напоминания - пересчитать
         else if (w == 0xA) {
             SYSTEM_POWER_STATUS sp;
             if (GetSystemPowerStatus(&sp) && sp.ACLineStatus != 255) { int ac = sp.ACLineStatus == 1; if (ac != g_acPrev) { int was = g_acPrev; g_acPrev = ac; if (was != -1) SchEvent(ac ? SE_AC : SE_BATT); } }
@@ -9488,7 +9803,7 @@ static int Run(void) {
     SetThreadPriority(ht, THREAD_PRIORITY_ABOVE_NORMAL);
     if (g_histOn) AddClipboardFormatListener(g_hwnd);
     RecShowSync(); VolSync(); DupSync(); CamRecSync(); TmResumeSaved();
-    SchEvent(SE_START); SchBadToast();
+    SchEvent(SE_START); SchBadToast(); RemStart();
     MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0) > 0) { if (g_hwndRec && IsDialogMessageW(g_hwndRec, &msg)) continue; TranslateMessage(&msg); DispatchMessageW(&msg); }
     for (int i = 0; i < g_nhid; i++) if (IsWindow(g_hid[i])) ShowWindow(g_hid[i], SW_SHOW);

@@ -508,9 +508,160 @@ static void TestQuick(void) {
     OccFree(&ol); StoreFree(&st); Free(q2.summary);
 }
 
+/* ---------- напоминания ---------- */
+static void RemStore(Store *st, const wchar_t *vevents, const wchar_t *src = L"t") {
+    Buf b = {0}; BufAdd(&b, L"BEGIN:VCALENDAR\r\nVERSION:2.0\r\n"); BufAdd(&b, vevents); BufAdd(&b, L"END:VCALENDAR\r\n");
+    memset(st, 0, sizeof *st); Parse(st, b.p, src); Free(b.p);
+}
+static const wchar_t *kAl60_10 = L"BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT1H\r\nEND:VALARM\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT10M\r\nEND:VALARM\r\n";
+static wchar_t *Ev(const wchar_t *uid, const wchar_t *start, const wchar_t *alarmsMin, const wchar_t *extra = L"") {      // UTC-событие на час; alarmsMin - "10,0"
+    Buf b = {0}; BufAdd(&b, L"BEGIN:VEVENT\r\nUID:"); BufAdd(&b, uid); BufAdd(&b, L"\r\nSUMMARY:"); BufAdd(&b, uid); BufAdd(&b, L"\r\nDTSTART:"); BufAdd(&b, start); BufAdd(&b, L"\r\n"); BufAdd(&b, extra);
+    for (const wchar_t *p = alarmsMin; *p; ) {
+        int m = 0; while (*p >= L'0' && *p <= L'9') m = m * 10 + (*p++ - L'0'); if (*p == L',') p++;
+        wchar_t t[96]; wsprintfW(t, L"BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT%dM\r\nEND:VALARM\r\n", m); BufAdd(&b, t);
+    }
+    BufAdd(&b, L"END:VEVENT\r\n"); return b.p;
+}
+static int RPick(const Store *st, const FireList *fl, SeenList *sn, I64 now, PickList *pk, I64 grace = 120) { RemPick(st, fl, sn, now, grace, pk); return pk->n; }
+static void TestReminders(void) {
+    Store st; FireList fl; SeenList sn; PickList pk; const I64 AD = 9 * 3600;
+    // одно событие, два напоминания: 60 и 10 минут
+    { wchar_t *e = Ev(L"a1", L"20261116T150000Z", L"60,10"); RemStore(&st, e); Free(e); }
+    I64 now = W(2026, 11, 16, 12); RemBuild(&st, now, AD, &fl); memset(&sn, 0, sizeof sn);
+    CHECK(fl.n == 2 && RemNext(&st, &fl, &sn, now) == W(2026, 11, 16, 14));
+    CHECK(RPick(&st, &fl, &sn, W(2026, 11, 16, 13, 59, 59), &pk) == 0); PickFree(&pk);
+    CHECK(RPick(&st, &fl, &sn, W(2026, 11, 16, 14), &pk) == 1 && !pk.a[0].late && fl.a[pk.a[0].fire].alarm == 60); PickFree(&pk);
+    CHECK(RPick(&st, &fl, &sn, W(2026, 11, 16, 14, 0, 5), &pk) == 0); PickFree(&pk);                        // уже показано
+    CHECK(RemNext(&st, &fl, &sn, W(2026, 11, 16, 14, 1)) == W(2026, 11, 16, 14, 50));
+    CHECK(RPick(&st, &fl, &sn, W(2026, 11, 16, 14, 50), &pk) == 1 && fl.a[pk.a[0].fire].alarm == 10); PickFree(&pk);
+    CHECK(RPick(&st, &fl, &sn, W(2026, 11, 16, 15), &pk) == 0 && RemNext(&st, &fl, &sn, W(2026, 11, 16, 15)) == 0); PickFree(&pk);
+    // запаздывание: граница grace
+    SeenFree(&sn);
+    CHECK(RPick(&st, &fl, &sn, W(2026, 11, 16, 14, 0, 0) + 120, &pk) == 1 && !pk.a[0].late); PickFree(&pk);
+    SeenFree(&sn);
+    CHECK(RPick(&st, &fl, &sn, W(2026, 11, 16, 14, 0, 0) + 121, &pk) == 1 && pk.a[0].late); PickFree(&pk);
+    // оба срока прошли (сон): показывается одно, позднее (10 мин), второе отмечено тихо
+    SeenFree(&sn);
+    CHECK(RPick(&st, &fl, &sn, W(2026, 11, 16, 14, 58), &pk) == 1 && fl.a[pk.a[0].fire].alarm == 10 && pk.a[0].late); PickFree(&pk);
+    CHECK(sn.n == 2 && RPick(&st, &fl, &sn, W(2026, 11, 16, 14, 59), &pk) == 0); PickFree(&pk);
+    SeenFree(&sn);                                                                                      // событие началось давно - поздно
+    CHECK(RPick(&st, &fl, &sn, W(2026, 11, 16, 15, 50), &pk) == 1 && pk.a[0].late); PickFree(&pk);       // началось 50 минут назад - ещё показываем
+    SeenFree(&sn);
+    CHECK(RPick(&st, &fl, &sn, W(2026, 11, 16, 16, 0, 1), &pk) == 0 && sn.n == 0); PickFree(&pk);        // больше часа
+    FireFree(&fl); StoreFree(&st);
+    // несколько пропущенных после сна: по порядку начала, устаревшие и будущие не берутся
+    { Buf b = {0}; const wchar_t *s[5] = {L"20261116T100500Z", L"20261116T100000Z", L"20261116T101000Z", L"20261116T080000Z", L"20261116T110000Z"}, *al[5] = {L"0", L"0", L"0", L"0", L"5"}, *id[5] = {L"b", L"a", L"c", L"old", L"future"};
+      for (int i = 0; i < 5; i++) { wchar_t *e = Ev(id[i], s[i], al[i]); BufAdd(&b, e); Free(e); }
+      RemStore(&st, b.p); Free(b.p); }
+    RemBuild(&st, W(2026, 11, 16, 9), AD, &fl); memset(&sn, 0, sizeof sn);
+    CHECK(RPick(&st, &fl, &sn, W(2026, 11, 16, 10, 20), &pk) == 3 && pk.a[0].late && pk.a[2].late);
+    CHECK(!lstrcmpW(st.ev[fl.a[pk.a[0].fire].ev].uid, L"a") && !lstrcmpW(st.ev[fl.a[pk.a[1].fire].ev].uid, L"b") && !lstrcmpW(st.ev[fl.a[pk.a[2].fire].ev].uid, L"c")); PickFree(&pk);
+    CHECK(RemNext(&st, &fl, &sn, W(2026, 11, 16, 10, 20)) == W(2026, 11, 16, 10, 55));
+    SeenFree(&sn); FireFree(&fl); StoreFree(&st);
+    // дубль: то же событие в двух источниках и дважды в одном
+    { wchar_t *e = Ev(L"d1", L"20261116T150000Z", L"10"); Buf b = {0}; BufAdd(&b, e); BufAdd(&b, e); Free(e); RemStore(&st, b.p, L"x");
+      Buf c = {0}; BufAdd(&c, L"BEGIN:VCALENDAR\r\n"); BufAdd(&c, b.p); BufAdd(&c, L"END:VCALENDAR\r\n"); Parse(&st, c.p, L"y"); Free(c.p); Free(b.p); }
+    RemBuild(&st, W(2026, 11, 16, 12), AD, &fl); memset(&sn, 0, sizeof sn);
+    CHECK(fl.n == 4 && RPick(&st, &fl, &sn, W(2026, 11, 16, 14, 50), &pk) == 1 && sn.n == 1); PickFree(&pk);
+    SeenFree(&sn); FireFree(&fl); StoreFree(&st);
+    // отложенное: до срока, в срок, после; журнал переживает перезапуск
+    { wchar_t *e = Ev(L"s|1", L"20261116T150000Z", L"10"); RemStore(&st, e); Free(e); }              // "|" в uid
+    RemBuild(&st, W(2026, 11, 16, 12), AD, &fl); memset(&sn, 0, sizeof sn);
+    CHECK(RPick(&st, &fl, &sn, W(2026, 11, 16, 14, 50), &pk) == 1); PickFree(&pk);
+    SeenSnooze(&sn, L"s|1", W(2026, 11, 16, 15), 10, W(2026, 11, 16, 14, 55));
+    CHECK(RemNext(&st, &fl, &sn, W(2026, 11, 16, 14, 51)) == W(2026, 11, 16, 14, 55));
+    { wchar_t *f = SeenSave(&sn, FALSE), *z = SeenSave(&sn, TRUE); SeenList sn2; memset(&sn2, 0, sizeof sn2); SeenLoad(&sn2, f, FALSE); SeenLoad(&sn2, z, TRUE);
+      CHECK(sn2.n == 1 && sn2.a[0].until == W(2026, 11, 16, 14, 55) && sn2.a[0].alarm == 10 && sn2.a[0].occ == W(2026, 11, 16, 15) && !lstrcmpW(sn2.a[0].uid, L"s|1"));
+      CHECK(RPick(&st, &fl, &sn2, W(2026, 11, 16, 14, 54), &pk) == 0); PickFree(&pk);
+      CHECK(RPick(&st, &fl, &sn2, W(2026, 11, 16, 14, 55), &pk) == 1 && !pk.a[0].late && sn2.a[0].until == 0); PickFree(&pk);
+      CHECK(RPick(&st, &fl, &sn2, W(2026, 11, 16, 14, 56), &pk) == 0); PickFree(&pk);
+      SeenFree(&sn2);
+      memset(&sn2, 0, sizeof sn2); SeenLoad(&sn2, L"x|1|5\r\nбез полей\r\n|5|5\r\nпусто||\n", FALSE); CHECK(sn2.n == 1 && sn2.a[0].occ == 1 && sn2.a[0].alarm == 5); SeenFree(&sn2);      // мусор пропускается
+      Free(f); Free(z); }
+    SeenSnooze(&sn, L"s|1", W(2026, 11, 16, 15), 10, W(2026, 11, 16, 15));                              // «до начала»
+    CHECK(RPick(&st, &fl, &sn, W(2026, 11, 16, 14, 59), &pk) == 0); PickFree(&pk);
+    CHECK(RPick(&st, &fl, &sn, W(2026, 11, 16, 15), &pk) == 1 && !pk.a[0].late); PickFree(&pk);
+    SeenSnooze(&sn, L"s|1", W(2026, 11, 16, 15), 10, W(2026, 11, 16, 15, 5));                           // долго спали: отложенное устарело
+    CHECK(RPick(&st, &fl, &sn, W(2026, 11, 16, 17), &pk) == 0 && sn.a[0].until == 0); PickFree(&pk);
+    SeenSnooze(&sn, L"s|1", W(2026, 11, 16, 15), 10, W(2026, 11, 16, 15, 5));                           // событие удалили: отложенное снимается
+    FireList fl0; memset(&fl0, 0, sizeof fl0);
+    CHECK(RPick(&st, &fl0, &sn, W(2026, 11, 16, 15, 6), &pk) == 0 && sn.a[0].until == 0); PickFree(&pk);
+    // событие перенесли: новое время - новый ключ, напоминание показывается снова
+    FireFree(&fl); StoreFree(&st);
+    { wchar_t *e = Ev(L"s|1", L"20261116T160000Z", L"10"); RemStore(&st, e); Free(e); }
+    RemBuild(&st, W(2026, 11, 16, 15, 1), AD, &fl);
+    CHECK(RPick(&st, &fl, &sn, W(2026, 11, 16, 15, 50), &pk) == 1); PickFree(&pk);
+    // чистка журнала: старше трёх суток от начала вхождения
+    SeenMark(&sn, L"old", W(2026, 11, 10, 10), 5);
+    CHECK(SeenPrune(&sn, W(2026, 11, 16, 15)) && SeenFind(&sn, L"old", W(2026, 11, 10, 10), 5) < 0 && SeenFind(&sn, L"s|1", W(2026, 11, 16, 16), 10) >= 0 && !SeenPrune(&sn, W(2026, 11, 16, 15)));
+    SeenFree(&sn); FireFree(&fl); StoreFree(&st);
+    // повтор каждый день 09:00 с заменой 18-го (на 11:00), исключением 19-го и напоминанием за 15 минут
+    { const wchar_t *al = L"BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\n";
+      Buf b = {0}; BufAdd(&b, L"BEGIN:VEVENT\r\nUID:r1\r\nDTSTART:20261110T090000Z\r\nDTEND:20261110T093000Z\r\nRRULE:FREQ=DAILY\r\nEXDATE:20261119T090000Z\r\n"); BufAdd(&b, al); BufAdd(&b, L"END:VEVENT\r\n");
+      BufAdd(&b, L"BEGIN:VEVENT\r\nUID:r1\r\nDTSTART:20261118T110000Z\r\nDTEND:20261118T113000Z\r\nRECURRENCE-ID:20261118T090000Z\r\n"); BufAdd(&b, al); BufAdd(&b, L"END:VEVENT\r\n");
+      RemStore(&st, b.p); Free(b.p); }
+    RemBuild(&st, W(2026, 11, 16), AD, &fl);                                                          // 15..23 ноября без 19-го, 18-е в 11:00
+    CHECK(fl.n == 8);
+    { BOOL has1118_11 = FALSE, has1118_09 = FALSE, has1119 = FALSE, has1116 = FALSE;
+      for (int i = 0; i < fl.n; i++) {
+          if (fl.a[i].occ == W(2026, 11, 18, 11)) has1118_11 = fl.a[i].due == W(2026, 11, 18, 10, 45);
+          if (fl.a[i].occ == W(2026, 11, 18, 9)) has1118_09 = TRUE;
+          if (fl.a[i].occ == W(2026, 11, 19, 9)) has1119 = TRUE;
+          if (fl.a[i].occ == W(2026, 11, 16, 9)) has1116 = fl.a[i].due == W(2026, 11, 16, 8, 45);
+      }
+      CHECK(has1118_11 && !has1118_09 && !has1119 && has1116); }
+    memset(&sn, 0, sizeof sn);                                                                        // запуск программы в 09:00: пропущено напоминание 08:45 сегодняшнего вхождения (15-го уже вчера - устарело)
+    CHECK(RPick(&st, &fl, &sn, W(2026, 11, 16, 9), &pk) == 1 && pk.a[0].late && fl.a[pk.a[0].fire].occ == W(2026, 11, 16, 9)); PickFree(&pk);
+    SeenFree(&sn); FireFree(&fl); StoreFree(&st);
+    // целодневное: от 09:00 местного (напоминания кратные суткам), прочие - от полуночи
+    RemStore(&st, L"BEGIN:VEVENT\r\nUID:ad\r\nDTSTART;VALUE=DATE:20261117\r\n"
+                  L"BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:PT0S\r\nEND:VALARM\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-P1D\r\nEND:VALARM\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT10H\r\nEND:VALARM\r\nEND:VEVENT\r\n");
+    I64 mid = WallToUtc(W(2026, 11, 17), L""), nowL = WallToUtc(W(2026, 11, 15, 12), L"");
+    RemBuild(&st, nowL, AD, &fl); CHECK(fl.n == 3);
+    { BOOL a0 = FALSE, a1 = FALSE, a600 = FALSE;
+      for (int i = 0; i < fl.n; i++) {
+          if (fl.a[i].alarm == 0) a0 = fl.a[i].due == WallToUtc(W(2026, 11, 17, 9), L"") && fl.a[i].allDay && fl.a[i].occ == mid;
+          if (fl.a[i].alarm == 1440) a1 = fl.a[i].due == WallToUtc(W(2026, 11, 16, 9), L"");
+          if (fl.a[i].alarm == 600) a600 = fl.a[i].due == mid - 600 * 60;
+      }
+      CHECK(a0 && a1 && a600); }
+    FireFree(&fl); RemBuild(&st, nowL, 0, &fl);                                                       // AllDayTime=00:00: ровно от полуночи
+    { BOOL ok = TRUE; for (int i = 0; i < fl.n; i++) ok = ok && fl.a[i].due == mid - (I64)fl.a[i].alarm * 60; CHECK(ok); }
+    FireFree(&fl); RemBuild(&st, nowL, AD, &fl); memset(&sn, 0, sizeof sn);
+    CHECK(RPick(&st, &fl, &sn, WallToUtc(W(2026, 11, 17, 20), L""), &pk) == 1 && pk.a[0].late); PickFree(&pk);                 // целодневное: сутки не устаревает
+    SeenFree(&sn);
+    CHECK(RPick(&st, &fl, &sn, WallToUtc(W(2026, 11, 18, 0, 30), L""), &pk) == 0); PickFree(&pk);                              // а на следующий день уже поздно
+    SeenFree(&sn); FireFree(&fl); StoreFree(&st);
+    // пояс и переход на зимнее время (Нью-Йорк, 1 ноября 2026 в 02:00): напоминание за час - от истинного начала вхождения
+    RemStore(&st, L"BEGIN:VEVENT\r\nUID:ny\r\nDTSTART;TZID=America/New_York:20261030T090000\r\nDTEND;TZID=America/New_York:20261030T100000\r\nRRULE:FREQ=DAILY;COUNT=5\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT1H\r\nEND:VALARM\r\nEND:VEVENT\r\n");
+    RemBuild(&st, W(2026, 10, 30), AD, &fl); CHECK(fl.n == 5);
+    { I64 want[5] = {W(2026, 10, 30, 12), W(2026, 10, 31, 12), W(2026, 11, 1, 13), W(2026, 11, 2, 13), W(2026, 11, 3, 13)}; BOOL ok = TRUE;
+      for (int i = 0; i < 5; i++) { BOOL f = FALSE; for (int k = 0; k < fl.n; k++) if (fl.a[k].due == want[i]) f = TRUE; ok = ok && f; }
+      CHECK(ok); }
+    FireFree(&fl); StoreFree(&st);
+    RemStore(&st, L"BEGIN:VEVENT\r\nUID:ny2\r\nDTSTART;TZID=America/New_York:20261101T090000\r\nDTEND;TZID=America/New_York:20261101T100000\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-P1D\r\nEND:VALARM\r\nEND:VEVENT\r\n");
+    RemBuild(&st, W(2026, 10, 30), AD, &fl); CHECK(fl.n == 1 && fl.a[0].occ == W(2026, 11, 1, 14) && fl.a[0].due == W(2026, 10, 31, 14)); FireFree(&fl); StoreFree(&st);   // ровно 24 часа
+    // переход через полночь: 00:10 и напоминание за 30 минут - накануне 23:40
+    { wchar_t *e = Ev(L"m1", L"20261117T001000Z", L"30"); RemStore(&st, e); Free(e); }
+    RemBuild(&st, W(2026, 11, 16, 20), AD, &fl); memset(&sn, 0, sizeof sn);
+    CHECK(fl.n == 1 && fl.a[0].due == W(2026, 11, 16, 23, 40));
+    CHECK(RPick(&st, &fl, &sn, W(2026, 11, 16, 23, 39, 59), &pk) == 0); PickFree(&pk);
+    CHECK(RPick(&st, &fl, &sn, W(2026, 11, 16, 23, 40), &pk) == 1 && !pk.a[0].late); PickFree(&pk);
+    SeenFree(&sn); FireFree(&fl); StoreFree(&st);
+    // скрытое, удалённое и отменённое не напоминает; без напоминаний - тоже
+    { wchar_t *a = Ev(L"h", L"20261116T150000Z", L"10", L"X-DKEYS-HIDDEN:1\r\n"), *b = Ev(L"x", L"20261116T150000Z", L"10", L"X-DKEYS-DELETED:1\r\n"), *c = Ev(L"c", L"20261116T150000Z", L"10", L"STATUS:CANCELLED\r\n"), *d = Ev(L"n", L"20261116T150000Z", L"");
+      Buf t = {0}; BufAdd(&t, a); BufAdd(&t, b); BufAdd(&t, c); BufAdd(&t, d); Free(a); Free(b); Free(c); Free(d); RemStore(&st, t.p); Free(t.p); }
+    RemBuild(&st, W(2026, 11, 16, 12), AD, &fl); CHECK(st.n == 4 && fl.n == 0); FireFree(&fl); StoreFree(&st);
+    // напоминание за 14 суток: окно расширяется, пропущенное за 4 дня показывается; событие дальше окна - нет
+    { wchar_t *a = Ev(L"far", L"20261126T100000Z", L"20160"), *b = Ev(L"farther", L"20261226T100000Z", L"1440"); Buf t = {0}; BufAdd(&t, a); BufAdd(&t, b); Free(a); Free(b); RemStore(&st, t.p); Free(t.p); }
+    RemBuild(&st, W(2026, 11, 16, 12), AD, &fl); memset(&sn, 0, sizeof sn);
+    CHECK(fl.n == 1 && fl.a[0].due == W(2026, 11, 12, 10) && RPick(&st, &fl, &sn, W(2026, 11, 16, 12), &pk) == 1 && pk.a[0].late); PickFree(&pk);
+    SeenFree(&sn); FireFree(&fl); StoreFree(&st);
+}
+
 int main() {
     g_heap = GetProcessHeap(); CoInitialize(NULL);
-    TestDates(); TestZones(); TestParse(); TestRules(); TestStoreFile(); TestView(); TestEdit(); TestRuleSpec(); TestFields(); TestQuick();
+    TestDates(); TestZones(); TestParse(); TestRules(); TestStoreFile(); TestView(); TestEdit(); TestRuleSpec(); TestFields(); TestQuick(); TestReminders();
     printf("%d checks, %d failed\n", g_tests, g_fail);
     return g_fail ? 1 : 0;
 }

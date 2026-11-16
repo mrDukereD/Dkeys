@@ -636,6 +636,151 @@ static void Query(const Store *st, I64 fromUtc, I64 toUtc, OccList *out, BOOL sh
     }
 }
 
+/* ---------- напоминания: срабатывания, журнал показанных, отложенные (чистая логика, без интерфейса) ----------
+   Срабатывание (Fire) = вхождение события + напоминание (минуты до начала). Целодневное: напоминание кратно суткам (в том числе 0) считается от
+   allDayTod (секунды от местной полуночи, по умолчанию 09:00), прочее - как в ICS, от полуночи. Показанное запоминается в журнале (SeenList):
+   ключ uid + начало вхождения (UTC) + минуты; отложенное - та же запись с until. */
+struct Fire { int ev; I64 occ, end, wall, due; int alarm; BOOL allDay; };      // occ/end - UTC; wall - стенное начало (целодневное: полночь даты); due - когда показать (UTC)
+struct FireList { Fire *a; int n, cap; };
+static void FireFree(FireList *l) { Free(l->a); memset(l, 0, sizeof *l); }
+static I64 FireDue(I64 occ, I64 wall, BOOL allDay, int alarm, int allDayTod) {
+    if (allDay && alarm % 1440 == 0) return WallToUtc(wall - (I64)alarm * 60 + allDayTod, L"");
+    return occ - (I64)alarm * 60;
+}
+static const I64 kRemBack = 86400, kRemAhead = 8 * 86400, kRemMax = 400 * 86400, kRemKeep = 3600, kRemLog = 3 * 86400;
+// Все срабатывания вхождений в окне [now-1 сутки, now+8 суток] (шире, если у кого-то напоминание за больше недели). Скрытые, удалённые и отменённые не берутся.
+static void RemBuild(const Store *st, I64 now, int allDayTod, FireList *out) {
+    memset(out, 0, sizeof *out);
+    I64 maxAl = 0;
+    for (int i = 0; i < st->n; i++) for (int j = 0; j < st->ev[i].nal; j++) if (st->ev[i].alarms[j] > maxAl) maxAl = st->ev[i].alarms[j];
+    I64 ahead = maxAl * 60 + 86400; if (ahead < kRemAhead) ahead = kRemAhead; if (ahead > kRemMax) ahead = kRemMax;
+    OccList ol; Query(st, now - kRemBack, now + ahead, &ol);
+    for (int i = 0; i < ol.n; i++) {
+        const Occ &o = ol.a[i]; const Event *e = &st->ev[o.ev];
+        for (int j = 0; j < e->nal; j++) {
+            if (out->n == out->cap) { out->cap = out->cap ? out->cap * 2 : 64; out->a = (Fire *)Realloc(out->a, out->cap * sizeof(Fire)); }
+            Fire *f = &out->a[out->n++]; f->ev = o.ev; f->occ = o.s; f->end = o.e; f->wall = o.wall; f->alarm = e->alarms[j]; f->allDay = o.allDay;
+            f->due = FireDue(o.s, o.wall, o.allDay, f->alarm, allDayTod);
+        }
+    }
+    OccFree(&ol);
+}
+// Журнал показанного и отложенного
+struct Seen { wchar_t *uid; I64 occ, until; int alarm; };                 // until > 0 - отложено до этого момента (UTC)
+struct SeenList { Seen *a; int n, cap; };
+static void SeenFree(SeenList *l) { for (int i = 0; i < l->n; i++) Free(l->a[i].uid); Free(l->a); memset(l, 0, sizeof *l); }
+static int SeenFind(const SeenList *l, const wchar_t *uid, I64 occ, int alarm) {
+    for (int i = 0; i < l->n; i++) if (l->a[i].occ == occ && l->a[i].alarm == alarm && !lstrcmpW(l->a[i].uid, uid)) return i;
+    return -1;
+}
+static int SeenAdd(SeenList *l, const wchar_t *uid, I64 occ, int alarm) {
+    int i = SeenFind(l, uid, occ, alarm); if (i >= 0) return i;
+    if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 32; l->a = (Seen *)Realloc(l->a, l->cap * sizeof(Seen)); }
+    Seen *s = &l->a[l->n]; memset(s, 0, sizeof *s); s->uid = Dup(uid); s->occ = occ; s->alarm = alarm; return l->n++;
+}
+static void SeenMark(SeenList *l, const wchar_t *uid, I64 occ, int alarm) { l->a[SeenAdd(l, uid, occ, alarm)].until = 0; }
+static void SeenSnooze(SeenList *l, const wchar_t *uid, I64 occ, int alarm, I64 until) { l->a[SeenAdd(l, uid, occ, alarm)].until = until; }
+static BOOL SeenPrune(SeenList *l, I64 now) {                              // убрать записи о вхождениях, начавшихся больше трёх суток назад
+    BOOL ch = FALSE;
+    for (int i = l->n - 1; i >= 0; i--) if (l->a[i].occ < now - kRemLog) { Free(l->a[i].uid); memmove(l->a + i, l->a + i + 1, (l->n - i - 1) * sizeof(Seen)); l->n--; ch = TRUE; }
+    return ch;
+}
+static I64 ToI64(const wchar_t *s, int n) { I64 v = 0; int sg = 1, i = 0; if (n > 0 && s[0] == L'-') { sg = -1; i = 1; } for (; i < n && s[i] >= L'0' && s[i] <= L'9'; i++) v = v * 10 + (s[i] - L'0'); return v * sg; }
+static void FmtI64(wchar_t *o, I64 v) {                                     // wsprintf не знает 64-битных чисел
+    wchar_t t[24]; int n = 0, k = 0; BOOL neg = v < 0; unsigned long long u = neg ? 0ULL - (unsigned long long)v : (unsigned long long)v;
+    do { t[n++] = (wchar_t)(L'0' + (int)(u % 10)); u /= 10; } while (u);
+    if (neg) o[k++] = L'-';
+    while (n) o[k++] = t[--n];
+    o[k] = 0;
+}
+// Текст журнала: строка "uid|начало|минуты" (snooze: ещё "|до"). uid может содержать "|": поля разбираются с конца.
+static wchar_t *SeenSave(const SeenList *l, BOOL snooze) {
+    Buf b = {0};
+    for (int i = 0; i < l->n; i++) {
+        const Seen *s = &l->a[i]; if (snooze && s->until <= 0) continue;
+        wchar_t t[24]; BufAdd(&b, s->uid); BufAdd(&b, L"|");
+        FmtI64(t, s->occ); BufAdd(&b, t); BufAdd(&b, L"|"); wsprintfW(t, L"%d", s->alarm); BufAdd(&b, t);
+        if (snooze) { BufAdd(&b, L"|"); FmtI64(t, s->until); BufAdd(&b, t); }
+        BufAdd(&b, L"\n");
+    }
+    return b.p ? b.p : Dup(L"");
+}
+static void SeenLoad(SeenList *l, const wchar_t *text, BOOL snooze) {
+    for (const wchar_t *p = text; *p; ) {
+        const wchar_t *q = p; while (*q && *q != L'\n') q++;
+        int n = (int)(q - p); while (n > 0 && p[n - 1] == L'\r') n--;
+        int cut[4], nc = 0, need = snooze ? 3 : 2;                         // позиции "|" с конца
+        for (int i = n - 1; i >= 0 && nc < need; i--) if (p[i] == L'|') cut[nc++] = i;
+        if (nc == need && cut[need - 1] > 0) {                              // uid не пустой, числа с конца: [до], минуты, начало
+            I64 v[3]; int e = n, nv = 0; BOOL ok = TRUE;
+            for (int k = 0; k < need && ok; k++) { int a = cut[k] + 1; if (e - a < 1) ok = FALSE; else { v[nv++] = ToI64(p + a, e - a); e = cut[k]; } }
+            if (ok) {
+                wchar_t *uid = DupN(p, cut[need - 1]);
+                if (snooze) SeenSnooze(l, uid, v[2], (int)v[1], v[0]); else SeenMark(l, uid, v[1], (int)v[0]);
+                Free(uid);
+            }
+        }
+        p = *q ? q + 1 : q;
+    }
+}
+struct Pick { int fire; BOOL late; };                                       // fire - индекс в FireList; late - опоздание больше grace (показывать сводкой)
+struct PickList { Pick *a; int n, cap; };
+static void PickFree(PickList *l) { Free(l->a); memset(l, 0, sizeof *l); }
+static BOOL RemStale(const Fire &f, I64 t) { return t >= f.occ + (f.allDay ? 86400 : kRemKeep); }      // событие уже началось давно (час; целодневное - сутки): напоминать поздно
+static BOOL SameOcc(const Store *st, const Fire &a, const Fire &b) { return a.occ == b.occ && !lstrcmpW(st->ev[a.ev].uid, st->ev[b.ev].uid); }
+static void PickAdd(PickList *l, int fire, BOOL late) {
+    if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 8; l->a = (Pick *)Realloc(l->a, l->cap * sizeof(Pick)); }
+    l->a[l->n].fire = fire; l->a[l->n].late = late; l->n++;
+}
+// Что показать сейчас: срок прошёл, ещё не показывалось, событие не началось или началось не больше часа назад (+ отложенное, чей срок настал).
+// Несколько напоминаний одного вхождения - показывается самое позднее, остальные тихо отмечаются. Показанное отмечается в журнале sn; результат по началу вхождения.
+// grace - сколько секунд опоздания считается «вовремя». Возвращает TRUE, если журнал изменился (надо сохранить).
+static BOOL RemPick(const Store *st, const FireList *fl, SeenList *sn, I64 now, I64 grace, PickList *out) {
+    memset(out, 0, sizeof *out); BOOL ch = FALSE;
+    int *c = (int *)Alloc((fl->n + 1) * sizeof(int)), nc = 0;
+    for (int i = 0; i < fl->n; i++) {
+        const Fire &f = fl->a[i]; if (f.due > now || RemStale(f, now)) continue;
+        if (SeenFind(sn, st->ev[f.ev].uid, f.occ, f.alarm) >= 0) continue;
+        c[nc++] = i;
+    }
+    for (int k = 0; k < nc; k++) {
+        const Fire &f = fl->a[c[k]]; BOOL win = TRUE;
+        for (int m = 0; m < nc && win; m++) {
+            const Fire &g = fl->a[c[m]];
+            if (m != k && SameOcc(st, f, g) && (g.due > f.due || (g.due == f.due && m < k))) win = FALSE;
+        }
+        SeenMark(sn, st->ev[f.ev].uid, f.occ, f.alarm); ch = TRUE;
+        if (win) PickAdd(out, c[k], now - f.due > grace);
+    }
+    Free(c);
+    for (int j = 0; j < sn->n; j++) {                                        // отложенные, чей срок настал
+        Seen &s = sn->a[j]; if (s.until <= 0 || s.until > now) continue;
+        I64 until = s.until; s.until = 0; ch = TRUE;
+        for (int i = 0; i < fl->n; i++) {
+            const Fire &f = fl->a[i];
+            if (f.occ != s.occ || f.alarm != s.alarm || lstrcmpW(st->ev[f.ev].uid, s.uid)) continue;
+            if (now < (f.occ > until ? f.occ : until) + (f.allDay ? 86400 : kRemKeep)) PickAdd(out, i, now - until > grace);
+            break;                                                           // события не нашлось (удалено, перенесено) - отложенное снято
+        }
+    }
+    for (int i = 1; i < out->n; i++) {
+        Pick v = out->a[i]; int j = i - 1;
+        while (j >= 0 && fl->a[out->a[j].fire].occ > fl->a[v.fire].occ) { out->a[j + 1] = out->a[j]; j--; }
+        out->a[j + 1] = v;
+    }
+    return ch;
+}
+// Ближайший будущий момент (UTC), когда что-то может сработать; 0 - ждать нечего.
+static I64 RemNext(const Store *st, const FireList *fl, const SeenList *sn, I64 now) {
+    I64 best = 0;
+    for (int i = 0; i < fl->n; i++) {
+        const Fire &f = fl->a[i]; if (f.due <= now || RemStale(f, f.due) || (best && f.due >= best)) continue;
+        if (SeenFind(sn, st->ev[f.ev].uid, f.occ, f.alarm) < 0) best = f.due;
+    }
+    for (int j = 0; j < sn->n; j++) if (sn->a[j].until > now && (!best || sn->a[j].until < best)) best = sn->a[j].until;
+    return best;
+}
+
 /* ---------- правка: копия, перенос между источниками, удаление/скрытие ---------- */
 static wchar_t *DupOr0(const wchar_t *s) { return s ? Dup(s) : NULL; }
 static void EventClone(Event *d, const Event *s) {                  // глубокая копия
