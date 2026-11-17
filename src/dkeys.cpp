@@ -147,7 +147,7 @@ static void RecShowSync(void);
 static volatile LONG g_vOn; static int g_vLim = 50, g_vCeil, g_vBoost; static wchar_t g_vDev[80];     // стабильная громкость: вкл, порог пика %, потолок громкости %, подтяжка тихого %, устройство
 static void VolToggle(void); static void VolOpen(void); static void VolSync(void);
 static volatile LONG g_dOn; static wchar_t g_dSrc[80], g_dDst[80]; static int g_dLat = 20; static void DupSync(void), DupToggle(void), MacroToggle(DWORD mods);      // дублирование звука: вкл, источник (пусто - по умолчанию), приёмник
-static volatile BYTE g_ioKey[65536], g_ioMouse[8]; static volatile DWORD g_ioHit[65536], g_ioMHit[8]; static volatile DWORD g_ioWheelT; static volatile int g_ioWheelD;   // состояние ввода для оверлея (из хуков)
+static volatile BYTE g_ioKey[65536], g_ioMouse[8]; static volatile DWORD g_ioHit[65536], g_ioMHit[8], g_ioMUp[8]; static volatile DWORD g_ioWheelT; static volatile int g_ioWheelD;   // состояние ввода для оверлея (из хуков)
 static OvCfg *OvCfgGet(const wchar_t *stem, BOOL create) {
     for (int i = 0; i < g_novc; i++) if (!lstrcmpiW(g_ovc[i].stem, stem)) return &g_ovc[i];
     if (!create || g_novc >= 24) return NULL;
@@ -4205,8 +4205,8 @@ static LRESULT CALLBACK LLMouse(int code, WPARAM wp, LPARAM lp) {
     if (code == HC_ACTION) {                                           // состояние кнопок / колеса для оверлея ввода
         MSLLHOOKSTRUCT *mm = (MSLLHOOKSTRUCT *)lp;
         switch (wp) {
-        case WM_LBUTTONDOWN: { g_ioMouse[1] = 1; g_ioMHit[1] = GetTickCount(); } break; case WM_LBUTTONUP: g_ioMouse[1] = 0; break;
-        case WM_RBUTTONDOWN: { g_ioMouse[2] = 1; g_ioMHit[2] = GetTickCount(); } break; case WM_RBUTTONUP: g_ioMouse[2] = 0; break;
+        case WM_LBUTTONDOWN: { g_ioMouse[1] = 1; g_ioMHit[1] = GetTickCount(); } break; case WM_LBUTTONUP: g_ioMouse[1] = 0; g_ioMUp[1] = GetTickCount(); break;
+        case WM_RBUTTONDOWN: { g_ioMouse[2] = 1; g_ioMHit[2] = GetTickCount(); } break; case WM_RBUTTONUP: g_ioMouse[2] = 0; g_ioMUp[2] = GetTickCount(); break;
         case WM_MBUTTONDOWN: { g_ioMouse[3] = 1; g_ioMHit[3] = GetTickCount(); } break; case WM_MBUTTONUP: g_ioMouse[3] = 0; break;
         case WM_XBUTTONDOWN: { int bn = HIWORD(mm->mouseData) == 1 ? 4 : 5; g_ioMouse[bn] = 1; g_ioMHit[bn] = GetTickCount(); } break;
         case WM_XBUTTONUP: g_ioMouse[HIWORD(mm->mouseData) == 1 ? 4 : 5] = 0; break;
@@ -6679,13 +6679,17 @@ static void FxRing(GpGraphics *g, int x, int y, int k, DWORD age) {   // рас�
     GdipCreatePen1(((DWORD)a << 24) | (k == 1 ? g_clL : g_clR), 3, UnitPixel, &p);
     if (p) { GdipDrawEllipseI(g, p, x - r, y - r, 2 * r, 2 * r); GdipDeletePen(p); }
 }
+static void FxRelease(GpGraphics *g, int x, int y, int k, DWORD age) { FxRing(g, x, y, k, (DWORD)g_ringMs * 3 / 4 + age); }   // отпускание: последняя четверть кольца
+static DWORD fxUp[3]; static POINT fxUpPos[3];
 static void DrawFx(GpGraphics *g, int cx, int cy) {                // курсор в кадре записи: подсветка и кольца
     DWORD now = GetTickCount();
     if (g_rFx) FxHalo(g, cx, cy, g_ioMouse[1] || g_ioMouse[2]);
     for (int k = 1; k <= 2; k++) {
-        DWORD h = g_ioMHit[k];
+        DWORD h = g_ioMHit[k], u = g_ioMUp[k];
         if (h != fxHit[k]) { fxHit[k] = h; fxPos[k].x = cx; fxPos[k].y = cy; }
+        if (u != fxUp[k]) { fxUp[k] = u; fxUpPos[k].x = cx; fxUpPos[k].y = cy; }
         if (g_ringOn && h) FxRing(g, fxPos[k].x, fxPos[k].y, k, now - h);
+        if (g_ringOn && u) FxRelease(g, fxUpPos[k].x, fxUpPos[k].y, k, now - u);
     }
 }
 static BOOL PreFits(const wchar_t *png, const wchar_t *stem, int *len) {        // имя png (без .png) - начало имени json
@@ -7101,16 +7105,18 @@ static void SelectArea(void) {
 /* --- оверлеи на экране ("Показывать на экране"): не попадают в запись, клики проходят насквозь --- */
 /* --- подсветка курсора и кликов на экране, пока есть кнопка записи: окно идёт за курсором, клики проходят насквозь, в запись не попадает --- */
 static HWND lw; static HDC ldc; static HBITMAP lhb; static void *lbits; static GpBitmap *lbmp; static GpGraphics *lg; static int LS; static ULONG_PTR ltok; static BOOL ltokOn;
-static DWORD lvHit[3]; static POINT lvPos[3];
+static DWORD lvHit[3], lvUp[3]; static POINT lvPos[3], lvUpPos[3];
 static void LivePaint(void) {
     if (!lg) return;
     POINT cp; GetCursorPos(&cp); int c = LS / 2; DWORD now = GetTickCount();
     GdipGraphicsClear(lg, 0);
     if (g_rFx) FxHalo(lg, c, c, g_ioMouse[1] || g_ioMouse[2]);
     for (int k = 1; k <= 2; k++) {
-        DWORD h = g_ioMHit[k];
+        DWORD h = g_ioMHit[k], u = g_ioMUp[k];
         if (h != lvHit[k]) { lvHit[k] = h; lvPos[k] = cp; }
+        if (u != lvUp[k]) { lvUp[k] = u; lvUpPos[k] = cp; }
         if (g_ringOn && h) FxRing(lg, lvPos[k].x - cp.x + c, lvPos[k].y - cp.y + c, k, now - h);
+        if (g_ringOn && u) FxRelease(lg, lvUpPos[k].x - cp.x + c, lvUpPos[k].y - cp.y + c, k, now - u);
     }
     GdipFlush(lg, FlushIntentionSync);
     POINT pt = {cp.x - c, cp.y - c}, p0 = {0, 0}; SIZE sz = {LS, LS}; BLENDFUNCTION bf = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
@@ -7140,7 +7146,7 @@ static void LiveStart(void) {
     lw = CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"DKRecLive", L"", WS_POPUP, 0, 0, LS, LS, NULL, NULL, g_inst, NULL);
     if (!lw) { LiveStop(); return; }
     SetWindowDisplayAffinity(lw, 0x11);                            // WDA_EXCLUDEFROMCAPTURE
-    lvHit[1] = g_ioMHit[1]; lvHit[2] = g_ioMHit[2];
+    lvHit[1] = g_ioMHit[1]; lvHit[2] = g_ioMHit[2]; lvUp[1] = g_ioMUp[1]; lvUp[2] = g_ioMUp[2];
     LivePaint(); ShowWindow(lw, SW_SHOWNOACTIVATE); SetTimer(lw, 1, 15, NULL);
 }
 struct ShowW { HWND h; Ov o; HDC dc; HBITMAP hb; void *bits; GpBitmap *bmp; GpGraphics *g; int W, H, X, Y; };
