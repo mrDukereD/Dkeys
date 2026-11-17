@@ -166,6 +166,7 @@ static OvPos *OvPosGet(const wchar_t *stem, const wchar_t *mon, BOOL create) {
 static void OvPosApply(const wchar_t *mon) {                  // подставить сохранённые для монитора положения (нет записи - остаются прежние)
     for (int i = 0; i < g_novc; i++) { OvPos *p = OvPosGet(g_ovc[i].stem, mon, FALSE); if (p) { g_ovc[i].x = p->x; g_ovc[i].y = p->y; g_ovc[i].sc = p->sc; } }
 }
+static BOOL g_rLvl = TRUE;   // [Record] Levels: столбики уровня звука по дорожкам справа от кнопки записи
 static wchar_t g_rTrk[3][80]; static BOOL g_rBeep = TRUE; static int g_rBeepHz = 15000;   // [Record] Track2..4: доп. дорожки звука (sys / sys:имя / mic:имя), TakeBeep/TakeBeepHz: сигнал метки дубля
 static wchar_t g_rMic[80], g_rDir[MAX_PATH];   // [Record] в ini: без панели задач, курсор, кадры/с, позиция кнопки
 static BOOL g_dLive; static int g_dCol, g_dWid = 1; static wchar_t g_dSaveDir[MAX_PATH];   // [Draw] в ini: режим, цвет, толщина, папка
@@ -268,6 +269,7 @@ X(L_REC_TRK_SYS, "rec.track_sys", L"Системный звук (по умолч
 X(L_REC_TRK_SYSN, "rec.track_sysn", L"Системный звук: %s") \
 X(L_REC_TRK_MIC, "rec.track_mic", L"Микрофон: %s") \
 X(L_REC_BEEP, "rec.beep", L"Сигнал на дорожках при метке дубля") \
+X(L_REC_LVL, "rec.levels", L"Уровень звука у кнопки записи") \
 X(L_REC_TAKE, "rec.take", L"Метка дубля %d") \
 X(L_REC_FXCFG, "rec.fxcfg", L"Настройки курсора и кликов…") \
 X(L_FX_TITLE, "fx.title", L"Курсор мыши в записи") \
@@ -282,6 +284,7 @@ X(L_FX_CL, "fx.colleft", L"Левый клик") \
 X(L_FX_CR, "fx.colright", L"Правый клик") \
 X(L_REC_FPS, "rec.fps", L"%d кадров/с") \
 X(L_REC_ALL, "rec.desktop", L"Весь рабочий стол") \
+X(L_REC_AREA, "rec.area", L"Выбрать область…") \
 X(L_REC_BTN, "rec.btn_monitor", L"Монитор с кнопкой") \
 X(L_REC_MON, "rec.monitor", L"Монитор %d (%dx%d)") \
 X(L_REC_MIC, "rec.mic", L"Микрофон") \
@@ -1112,6 +1115,7 @@ PowerShell=powershell.exe
 [Record]
 ; Запись экрана в mp4 (действие record): кнопка-кружок - клик старт/стоп, Ctrl+клик - пауза (на паузе клик - продолжить, Ctrl+клик - стоп),
 ;   Shift+клик - выбрать область (Shift при рисовании - пропорции экрана; клик без рамки - сбросить область); хоткей при записи = стоп.
+;   Пока выбрана область и есть кнопка записи, всё вне области слегка затемнено маской (~10%, в видео не попадает).
 ; NoTaskbar: 1 не снимать панель задач | 0 снимать весь монитор
 ;NoTaskbar=1
 ; Cursor: 1 снимать курсор мыши | 0 нет
@@ -1139,6 +1143,8 @@ PowerShell=powershell.exe
 ;Dir=D:\Videos
 ; Track2, Track3, Track4: дополнительные дорожки звука в видео и диктофоне (проще выбрать в меню "Микрофон"); пусто - нет, sys - системный звук,
 ;   sys:имя - звук устройства вывода, mic:имя - другой микрофон. Дорожка 1 - микрофон (Mic)
+; Levels: 1 справа от кнопки записи (видео и диктофон) показывать столбики уровня звука - по одному на каждую выбранную дорожку (пока кнопка на экране) | 0 нет (проще в меню "Микрофон")
+;Levels=1
 ; TakeBeep: 1 метка дубля (Win+D при записи, пауза) пишет короткий тихий сигнал на все дорожки | 0 только файл меток (одноимённый .txt)
 ; TakeBeepHz: частота сигнала, Гц (AAC обрезает всё выше ~15 кГц при 96-128 кбит/с, поэтому по умолчанию 15000)
 ; Точность: время в .txt - момент нажатия, сигнал начинается с ближайшего пакета звука, на 10-20 мс позже; точный якорь - сам сигнал, .txt даёт примерное место
@@ -1501,7 +1507,7 @@ static void CfgDefaults(void) {
     lstrcpyW(g_lang, L"ru"); g_mouseSlow = 4; g_histOn = 0; g_histMax = 50; g_pasteDelay = 300; g_copyTimeout = 600; lstrcpyW(g_python, L"python.exe");
     g_pyPause = 1; g_toasts = 1; g_editor[0] = 0; g_bufMax = 10; g_layoutWord = 0; g_layoutSwitch = 1;
     g_dLive = FALSE; g_dCol = 0; g_dWid = 1; g_dSaveDir[0] = 0;
-    g_rNoTb = TRUE; g_rCur = TRUE; g_rFx = TRUE; g_ringOn = TRUE; g_ringUp = TRUE; g_fxAll = TRUE; g_hlR = 22; g_hlA = 24; g_ringMs = 450; g_ringSz = 34; g_hlCol = 0xFFD60A; g_clL = 0x0A84FF; g_clR = 0xFF453A; g_rScr = 0; g_rMic[0] = 0; g_rDir[0] = 0; g_rTrk[0][0] = g_rTrk[1][0] = g_rTrk[2][0] = 0; g_rBeep = TRUE; g_rBeepHz = 15000; g_rAk = 128; g_rFps = 30; g_rPos[0] = g_rPos[1] = -99999;
+    g_rNoTb = TRUE; g_rCur = TRUE; g_rFx = TRUE; g_ringOn = TRUE; g_ringUp = TRUE; g_fxAll = TRUE; g_hlR = 22; g_hlA = 24; g_ringMs = 450; g_ringSz = 34; g_hlCol = 0xFFD60A; g_clL = 0x0A84FF; g_clR = 0xFF453A; g_rScr = 0; g_rMic[0] = 0; g_rDir[0] = 0; g_rTrk[0][0] = g_rTrk[1][0] = g_rTrk[2][0] = 0; g_rBeep = TRUE; g_rLvl = TRUE; g_rBeepHz = 15000; g_rAk = 128; g_rFps = 30; g_rPos[0] = g_rPos[1] = -99999;
     g_rPwd = TRUE; g_rShow = FALSE; g_novc = 0; g_nopos = 0;
     memset(&g_aud, 0, sizeof g_aud); g_aud.vLim = 50; g_aud.dLat = 20;
     g_tmFg = RGB(255, 255, 255); g_tmBg = RGB(0, 0, 0); g_tmAlpha = 60; g_tmSize = 48; g_tmNFav = 0;
@@ -1584,6 +1590,7 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
         else if (!lstrcmpiW(k, L"Track3")) lstrcpynW(g_rTrk[1], v, 80);
         else if (!lstrcmpiW(k, L"Track4")) lstrcpynW(g_rTrk[2], v, 80);
         else if (!lstrcmpiW(k, L"TakeBeep")) g_rBeep = ToInt(v) != 0;
+        else if (!lstrcmpiW(k, L"Levels")) g_rLvl = ToInt(v) != 0;
         else if (!lstrcmpiW(k, L"TakeBeepHz")) g_rBeepHz = Clamp(ToInt(v), 4000, 20000);
         else if (!lstrcmpiW(k, L"Dir")) lstrcpynW(g_rDir, v, MAX_PATH);
         else if (!lstrcmpiW(k, L"AudioKbps")) { g_rAk = ToInt(v); if (g_rAk != 96 && g_rAk != 192) g_rAk = 128; }
@@ -6879,7 +6886,7 @@ static BOOL AddAac(int bps, int *stream) {                    // дорожка 
     return ok;
 }
 static void AudStreams(int bps) {                             // по дорожке на каждый источник (первый - основной микрофон); не добавилась - источник отключается
-    for (int i = 0; i < 4; i++) {
+    for (int i = 3; i >= 0; i--) {                                // микрофон добавляем последним: проигрыватель Windows (Media Foundation) по умолчанию берёт последнюю дорожку звука
         if (!asr[i].cap) continue;
         if (!AddAac(bps, &asr[i].stream)) {
             if (i) { asr[i].cap->Release(); asr[i].cap = NULL; asr[i].cl->Release(); asr[i].cl = NULL; } else asr[i].cap = NULL;
@@ -7141,6 +7148,36 @@ static void StartAud(void) {
     }
     recording = TRUE; Repaint();
 }
+/* --- маска на время записи области: всё вне области затемнено на ~10%; клики насквозь, в видео не попадает --- */
+static HWND dimw; static RECT dimHole;
+static LRESULT CALLBACK DimProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    switch (m) {
+    case WM_ERASEBKGND: {
+        HDC dc = (HDC)w; RECT all; GetClientRect(h, &all);
+        HBRUSH bk = CreateSolidBrush(RGB(0, 0, 0)); FillRect(dc, &all, bk); DeleteObject(bk);
+        HBRUSH key = CreateSolidBrush(RGB(255, 0, 255)); FillRect(dc, &dimHole, key); DeleteObject(key);        // "дырка" - прозрачный цвет окна
+        return 1;
+    }
+    case WM_NCHITTEST: return HTTRANSPARENT;
+    case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+static void DimStop(void) { if (dimw) { HWND h = dimw; dimw = NULL; DestroyWindow(h); } }
+static void DimStart(const RECT *a) {
+    DimStop();
+    MONITORINFO mi; mi.cbSize = sizeof mi; if (!GetMonitorInfoW(MonitorFromRect(a, MONITOR_DEFAULTTONEAREST), &mi)) return;
+    dimHole = *a; OffsetRect(&dimHole, -mi.rcMonitor.left, -mi.rcMonitor.top);
+    RegClass(L"DKRecDim", DimProc, 0);
+    dimw = CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"DKRecDim", L"", WS_POPUP,
+        mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top, NULL, NULL, g_inst, NULL);
+    if (!dimw) return;
+    SetWindowDisplayAffinity(dimw, 0x11);                          // WDA_EXCLUDEFROMCAPTURE: маска в видео не попадает
+    SetLayeredWindowAttributes(dimw, RGB(255, 0, 255), 26, LWA_COLORKEY | LWA_ALPHA);     // 26/255 ~ 10%
+    ShowWindow(dimw, SW_SHOWNOACTIVATE);
+    if (hw) SetWindowPos(dimw, hw, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);   // маска под кнопкой записи
+}
+static void DimSync(void) { if (hw && !aud && areaOn) DimStart(&area); else DimStop(); }     // маска видна, пока есть кнопка записи и выбрана область
 static void Start(void) {
     if (recording || !hw || ovBusy() || g_voiceSt) return;
     if (aud) { StartAud(); return; }
@@ -7221,7 +7258,7 @@ static LRESULT CALLBACK SelProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
         return 0;
     case WM_KEYDOWN: case WM_RBUTTONUP: if (m == WM_RBUTTONUP || w == VK_ESCAPE) DestroyWindow(h); return 0;
-    case WM_DESTROY: selw = NULL; if (hw) { ShowWindow(hw, SW_SHOWNOACTIVATE); Repaint(); } return 0;
+    case WM_DESTROY: selw = NULL; if (hw) { ShowWindow(hw, SW_SHOWNOACTIVATE); Repaint(); } DimSync(); return 0;
     }
     return DefWindowProcW(h, m, w, l);
 }
@@ -7285,7 +7322,7 @@ static void LiveStart(void) {
 struct ShowW { HWND h; Ov o; HDC dc; HBITMAP hb; void *bits; GpBitmap *bmp; GpGraphics *g; int W, H, X, Y; };
 static ShowW sw[NOVL]; static int nsw; static ULONG_PTR stok; static BOOL stokOn;
 static void ShowFree(void) {
-    LiveStop();
+    LiveStop(); DimStop();
     for (int i = 0; i < nsw; i++) {
         ShowW *s = &sw[i]; HWND h = s->h; s->h = NULL; if (h) DestroyWindow(h);
         if (s->g) GdipDeleteGraphics(s->g); if (s->bmp) GdipDisposeImage((GpImage *)s->bmp);
@@ -7308,7 +7345,7 @@ static LRESULT CALLBACK ShowProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     return DefWindowProcW(h, m, w, l);
 }
 static void ShowSync(void) {                                  // пересоздаёт окна по текущим настройкам (включены только режимом "на видео")
-    ShowFree();
+    ShowFree(); DimSync();
     if (ow || !hw) return;                                    // только пока кнопка записи на экране
     LiveStart();
     if (!g_rShow) return;
@@ -7445,7 +7482,7 @@ static void OvConfig(void) {
     ForceFg(ocw[ncw - 1].h); SetFocus(ocw[ncw - 1].h); Toast(Tr(L_REC_OV_HINT));
 }
 static HMONITOR dragMon;
-static HMENU Menu(void); static void Cmd(int c);
+static HMENU Menu(void); static void Cmd(int c); static void LvSync(void);
 static void SavePos(void) {
     RECT r; if (!hw || !GetWindowRect(hw, &r)) return;
     wchar_t v[32]; wsprintfW(v, L"%d,%d", r.left, r.top); IniSet(L"Record", L"Pos", v); g_rPos[0] = r.left; g_rPos[1] = r.top;
@@ -7473,7 +7510,7 @@ static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
             POINT p; GetCursorPos(&p);
             if (!moved && (p.x - dn.x) * (p.x - dn.x) + (p.y - dn.y) * (p.y - dn.y) > 36) moved = TRUE;
             if (moved) {
-                SetWindowPos(h, NULL, wp.x + p.x - dn.x, wp.y + p.y - dn.y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                SetWindowPos(h, NULL, wp.x + p.x - dn.x, wp.y + p.y - dn.y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE); LvSync();
                 HMONITOR cm = MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST);
                 if (cm != dragMon) { dragMon = cm; if (!recording && g_rScr == 0 && g_rShow && !aud) ShowSync(); }     // оверлеи на экране прыгают за кнопкой на другой монитор
             }
@@ -7492,13 +7529,99 @@ static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         HMENU mn = Menu(); int c = (int)TrackPopupMenu(mn, TPM_RETURNCMD | TPM_RIGHTBUTTON, p.x, p.y, 0, h, NULL);
         DestroyMenu(mn); PostMessageW(h, WM_NULL, 0, 0); if (c) Cmd(c); return 0;
     }
-    case WM_DESTROY: Stop(); aud = FALSE; SavePos(); hw = NULL; ShowFree(); return 0;
+    case WM_DESTROY: Stop(); aud = FALSE; SavePos(); hw = NULL; LvSync(); ShowFree(); return 0;
     }
     return DefWindowProcW(h, m, w, l);
 }
+/* --- уровни звука справа от кнопки: по столбику на дорожку (микрофон и Track2..4), пока кнопка на экране; меряем пик устройства, запись не нужна --- */
+struct LvSrc { IAudioMeterInformation *mt; IAudioClient *cl; float v; };
+static HWND lvw; static LvSrc lvs[4]; static int lvn, lvTick; static wchar_t lvSig[420];
+static void LvFree(void) {
+    for (int i = 0; i < lvn; i++) { if (lvs[i].cl) { lvs[i].cl->Stop(); lvs[i].cl->Release(); } if (lvs[i].mt) lvs[i].mt->Release(); }
+    memset(lvs, 0, sizeof lvs); lvn = 0; lvSig[0] = 0;
+}
+static LRESULT CALLBACK LvProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    switch (m) {
+    case WM_ERASEBKGND: return 1;
+    case WM_NCHITTEST: return HTTRANSPARENT;
+    case WM_TIMER: {
+        BOOL ch = FALSE;
+        for (int i = 0; i < lvn; i++) {
+            float p = 0, q, v, o = lvs[i].v; if (lvs[i].mt) lvs[i].mt->GetPeakValue(&p);
+            q = 1.f - p; q *= q; v = 1.f - q * q;                   // пик речи мал - чуть растягиваем шкалу
+            lvs[i].v = v > o ? v : o * 0.86f; if ((int)(lvs[i].v * 60) != (int)(o * 60)) ch = TRUE;
+        }
+        if (ch) InvalidateRect(h, NULL, FALSE);
+        if (++lvTick >= 10) { lvTick = 0; LvSync(); }               // подхватить смену настроек и показ кнопки
+        return 0;
+    }
+    case WM_PAINT: {
+        PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); RECT r; GetClientRect(h, &r); int W = r.right, H = r.bottom;
+        HBRUSH bg = CreateSolidBrush(RGB(32, 33, 36)), tr = CreateSolidBrush(RGB(58, 59, 63)), gr = CreateSolidBrush(RGB(52, 199, 89)), ye = CreateSolidBrush(RGB(255, 204, 0)), rd = CreateSolidBrush(RGB(255, 59, 48));
+        FillRect(dc, &r, bg);
+        int gap = H / 16 < 2 ? 2 : H / 16, pad = gap + 1, n = lvn ? lvn : 1, bw = (W - 2 * pad - (n - 1) * gap) / n, top = pad + 1, ht = H - 2 * top;
+        for (int i = 0; i < lvn; i++) {
+            int x = pad + i * (bw + gap), fh = (int)(lvs[i].v * ht); RECT s = {x, top, x + bw, top + ht}; FillRect(dc, &s, tr);
+            for (int y = 0; y < fh; y++) {                          // зелёный до 70 %, жёлтый до 90 %, дальше красный
+                int pc = y * 100 / ht; RECT t = {x, top + ht - 1 - y, x + bw, top + ht - y}; FillRect(dc, &t, pc < 70 ? gr : pc < 90 ? ye : rd);
+            }
+        }
+        DeleteObject(bg); DeleteObject(tr); DeleteObject(gr); DeleteObject(ye); DeleteObject(rd);
+        EndPaint(h, &ps); return 0;
+    }
+    case WM_DESTROY: KillTimer(h, 1); LvFree(); lvw = NULL; return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+static void LvSync(void) {
+    if (!hw || !g_rLvl) { if (lvw) DestroyWindow(lvw); return; }
+    wchar_t sp[4][100], sig[420]; int n = 0; sig[0] = 0;
+    BOOL off = g_rMic[0] == L'-' && !g_rMic[1];
+    if (aud || !off) { lstrcpyW(sp[n], L"mic:"); if (!off) Cat(sp[n], 100, g_rMic); n++; }
+    for (int i = 0; i < 3; i++) if (g_rTrk[i][0]) lstrcpynW(sp[n++], g_rTrk[i], 100);
+    for (int i = 0; i < n; i++) { Cat(sig, 420, sp[i]); Cat(sig, 420, L"|"); }
+    if (!n) { if (lvw) DestroyWindow(lvw); return; }
+    if (lstrcmpW(sig, lvSig)) {
+        LvFree(); lstrcpyW(lvSig, sig);
+        IMMDeviceEnumerator *en = NULL;
+        if (SUCCEEDED(CoCreateInstance(CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, IID_IMMDeviceEnumerator, (void **)&en))) {
+            for (int i = 0; i < n; i++) {
+                BOOL sys = sp[i][0] == L's'; const wchar_t *name = sp[i]; while (*name && *name != L':') name++; if (*name == L':') name++;
+                IMMDevice *d = FindDev(en, sys ? eRender : eCapture, name); LvSrc *s = &lvs[lvn++];
+                if (!d) continue;
+                d->Activate(IID_IAudioMeterInformation, CLSCTX_ALL, NULL, (void **)&s->mt);
+                if (!sys && SUCCEEDED(d->Activate(IID_IAudioClient, CLSCTX_ALL, NULL, (void **)&s->cl))) {   // у микрофона пик есть, только пока из него кто-то читает
+                    WAVEFORMATEX *wf = NULL;
+                    if (FAILED(s->cl->GetMixFormat(&wf)) || FAILED(s->cl->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 10000000, 0, wf, NULL)) || FAILED(s->cl->Start())) { s->cl->Release(); s->cl = NULL; }
+                    if (wf) CoTaskMemFree(wf);
+                }
+                d->Release();
+            }
+            en->Release();
+        }
+    }
+    RECT r; GetWindowRect(hw, &r); int S = r.bottom - r.top, gap = S / 16 < 2 ? 2 : S / 16, bw = S / 7 < 6 ? 6 : S / 7, W = 2 * (gap + 1) + n * bw + (n - 1) * gap;
+    MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoW(MonitorFromWindow(hw, MONITOR_DEFAULTTONEAREST), &mi);
+    int x = r.right + gap + 2; if (x + W > mi.rcMonitor.right) x = r.left - gap - 2 - W;
+    if (!IsWindowVisible(hw)) { if (lvw) ShowWindow(lvw, SW_HIDE); return; }
+    BOOL fresh = !lvw;
+    if (fresh) {
+        RegClass(L"DKRecLvl", LvProc, 0);
+        lvw = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"DKRecLvl", L"", WS_POPUP, x, r.top, W, S, NULL, NULL, g_inst, NULL);
+        if (!lvw) return;
+        SetWindowDisplayAffinity(lvw, 0x11);                     // в видео не попадает
+        SetWindowRgn(lvw, CreateRoundRectRgn(0, 0, W + 1, S + 1, 8, 8), TRUE);
+        SetTimer(lvw, 1, 40, NULL);
+    } else {
+        RECT c; GetWindowRect(lvw, &c);
+        if (c.right - c.left != W || c.bottom - c.top != S) SetWindowRgn(lvw, CreateRoundRectRgn(0, 0, W + 1, S + 1, 8, 8), TRUE);
+    }
+    SetWindowPos(lvw, HWND_TOPMOST, x, r.top, W, S, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    InvalidateRect(lvw, NULL, FALSE);
+}
 static void OpenMode(BOOL a) {                                    // a: диктофон; повторный вызов - старт, потом стоп; другой режим - переключает кнопку
     if (recording) { Stop(); return; }
-    if (hw) { if (aud != a) { aud = a; Repaint(); if (a) ShowFree(); else ShowSync(); if (g_cmdGo) Start(); } else Start(); return; }
+    if (hw) { if (aud != a) { aud = a; Repaint(); LvSync(); if (a) ShowFree(); else ShowSync(); if (g_cmdGo) Start(); } else Start(); return; }
     aud = a;
     POINT pt; GetCursorPos(&pt);
     MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoW(MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST), &mi);
@@ -7510,7 +7633,7 @@ static void OpenMode(BOOL a) {                                    // a: дикт
     if (!hw) return;
     SetWindowRgn(hw, CreateEllipticRgn(0, 0, S + 1, S + 1), TRUE);
     SetWindowDisplayAffinity(hw, 0x11);                      // WDA_EXCLUDEFROMCAPTURE: кнопка не попадает в видео
-    ShowWindow(hw, SW_SHOWNOACTIVATE);
+    ShowWindow(hw, SW_SHOWNOACTIVATE); LvSync();
     if (!aud) ShowSync();
     if (g_cmdGo) Start();                                           // голосовая команда: сразу начать запись
 }
@@ -7568,6 +7691,7 @@ static HMENU MicMenu(void) {
         AppendMenuW(m, MF_POPUP, (UINT_PTR)sm, lab);
     }
     AppendMenuW(m, MF_STRING | (g_rBeep ? MF_CHECKED : 0), 1090, Tr(L_REC_BEEP));
+    AppendMenuW(m, MF_STRING | (g_rLvl ? MF_CHECKED : 0), 1091, Tr(L_REC_LVL));
     return m;
 }
 /* --- окно настроек курсора и кликов: предпросмотр, размеры кнопками -/+, цвета; всё сразу пишется в ini --- */
@@ -7696,6 +7820,7 @@ static HMENU Menu(void) {
           AppendMenuW(m, MF_STRING | (g_rScr == i + 1 ? MF_CHECKED : 0), 50 + i, e);
       } }
     AppendMenuW(m, MF_STRING | (g_rScr < 0 ? MF_CHECKED : 0), 26, Tr(L_REC_ALL));
+    AppendMenuW(m, MF_STRING | (areaOn ? MF_CHECKED : 0) | (aud || recording ? MF_GRAYED : 0), 28, Tr(L_REC_AREA));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_POPUP, (UINT_PTR)MicMenu(), Tr(L_REC_MIC));
     AppendMenuW(m, MF_POPUP, (UINT_PTR)OvMenu(), Tr(L_REC_OV));
@@ -7715,22 +7840,24 @@ static void Cmd(int c) {
     if (c == 20) { g_rNoTb = !g_rNoTb; IniSet(L"Record", L"NoTaskbar", g_rNoTb ? L"1" : L"0"); }
     else if (c == 21) { g_rCur = !g_rCur; IniSet(L"Record", L"Cursor", g_rCur ? L"1" : L"0"); }
     else if (c == 1090) { g_rBeep = !g_rBeep; IniSet(L"Record", L"TakeBeep", g_rBeep ? L"1" : L"0"); }
+    else if (c == 1091) { g_rLvl = !g_rLvl; IniSet(L"Record", L"Levels", g_rLvl ? L"1" : L"0"); LvSync(); }
     else if (c >= 1100 && c < 1280) {
         int t = (c - 1100) / 60, e = (c - 1100) % 60; wchar_t *d = g_rTrk[t];
         if (e == 0) d[0] = 0; else if (e == 1) lstrcpyW(d, L"sys");
         else if (e < 18) wsprintfW(d, L"sys:%s", rndList[e - 2]); else wsprintfW(d, L"mic:%s", micList[e - 18]);
-        wchar_t k[12]; wsprintfW(k, L"Track%d", t + 2); IniSet(L"Record", k, d);
+        wchar_t k[12]; wsprintfW(k, L"Track%d", t + 2); IniSet(L"Record", k, d); LvSync();
     }
     else if (c == 68) FxOpen();
     else if (c == 67) { g_fxAll = !g_fxAll; IniSet(L"Record", L"Effects", g_fxAll ? L"1" : L"0"); ShowSync(); }
     else if (c >= 64 && c <= 66) { g_rAk = c == 64 ? 96 : c == 65 ? 128 : 192; wsprintfW(v, L"%d", g_rAk); IniSet(L"Record", L"AudioKbps", v); }
     else if (c >= 22 && c <= 24) { g_rFps = c == 22 ? 15 : c == 23 ? 30 : 60; wsprintfW(v, L"%d", g_rFps); IniSet(L"Record", L"Fps", v); }
+    else if (c == 28) SelectArea();
     else if (c == 26 || c == 27 || (c >= 50 && c < 58)) {
         g_rScr = c == 26 ? -1 : c == 27 ? 0 : c - 49; wsprintfW(v, L"%d", g_rScr); IniSet(L"Record", L"Screen", c == 26 ? L"all" : v);
     }
     else if (c >= 30 && c < 48) {
         if (c == 30) g_rMic[0] = 0; else if (c == 31) { g_rMic[0] = L'-'; g_rMic[1] = 0; } else lstrcpynW(g_rMic, micList[c - 32], 80);
-        IniSet(L"Record", L"Mic", g_rMic);
+        IniSet(L"Record", L"Mic", g_rMic); LvSync();
     }
     else if (c == 60) { g_rPwd = !g_rPwd; IniSet(L"Overlay", L"HidePasswords", g_rPwd ? L"1" : L"0"); }
     else if (c == 62) { g_rShow = !g_rShow; IniSet(L"Overlay", L"Show", g_rShow ? L"1" : L"0"); ShowSync(); }
