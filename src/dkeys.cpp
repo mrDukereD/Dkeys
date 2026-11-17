@@ -150,7 +150,18 @@ static OvCfg *OvCfgGet(const wchar_t *stem, BOOL create) {
     for (int i = 0; i < g_novc; i++) if (!lstrcmpiW(g_ovc[i].stem, stem)) return &g_ovc[i];
     if (!create || g_novc >= 24) return NULL;
     OvCfg *c = &g_ovc[g_novc++]; lstrcpynW(c->stem, stem, 64); c->mode = 0; c->x = 700; c->y = 650; c->sc = 100; return c;
-} static wchar_t g_rMic[80], g_rDir[MAX_PATH];   // [Record] в ini: без панели задач, курсор, кадры/с, позиция кнопки
+}
+struct OvPos { wchar_t stem[64], mon[24]; int x, y, sc; };    // положение оверлея для конкретного монитора ([OverlayPos] имя|монитор=x,y,масштаб)
+static OvPos g_opos[96]; static int g_nopos;
+static OvPos *OvPosGet(const wchar_t *stem, const wchar_t *mon, BOOL create) {
+    for (int i = 0; i < g_nopos; i++) if (!lstrcmpiW(g_opos[i].stem, stem) && !lstrcmpiW(g_opos[i].mon, mon)) return &g_opos[i];
+    if (!create || g_nopos >= 96) return NULL;
+    OvPos *p = &g_opos[g_nopos++]; lstrcpynW(p->stem, stem, 64); lstrcpynW(p->mon, mon, 24); p->x = 700; p->y = 650; p->sc = 100; return p;
+}
+static void OvPosApply(const wchar_t *mon) {                  // подставить сохранённые для монитора положения (нет записи - остаются прежние)
+    for (int i = 0; i < g_novc; i++) { OvPos *p = OvPosGet(g_ovc[i].stem, mon, FALSE); if (p) { g_ovc[i].x = p->x; g_ovc[i].y = p->y; g_ovc[i].sc = p->sc; } }
+}
+static wchar_t g_rMic[80], g_rDir[MAX_PATH];   // [Record] в ini: без панели задач, курсор, кадры/с, позиция кнопки
 static BOOL g_dLive; static int g_dCol, g_dWid = 1; static wchar_t g_dSaveDir[MAX_PATH];   // [Draw] в ini: режим, цвет, толщина, папка
 static COLORREF g_tmFg = RGB(255, 255, 255), g_tmBg = RGB(0, 0, 0);               // [Timer] в ini
 static int g_tmFav[10], g_tmNFav;                                                  // избранное: секунды
@@ -1087,6 +1098,7 @@ PowerShell=powershell.exe
 ; Оверлей ввода при записи (пресеты input-overlay: папка overlays\*\имя.json + имя.png). Строка на пресет: имя=режим,x,y,масштаб
 ;   режим: 0 выкл | 1 на видео | 2 отдельный mp4 на зелёном фоне (хромакей); x,y - положение в промилле кадра; масштаб в %
 ;   x,y и масштаб задаются в меню "Настроить положение и размер всех" (все включённые оверлеи сразу)
+;   для каждого монитора положение хранится отдельно: секция [OverlayPos], имя_пресета|DISPLAYn=x,y,масштаб (создаётся при настройке)
 ;имя_пресета=1,700,650,100
 ; Show: 1 пока на экране кнопка записи, показывать на экране оверлеи "на видео" (в запись не попадают) - видно, что они перекрывают | 0 нет
 ;Show=0
@@ -1434,7 +1446,7 @@ static void CfgDefaults(void) {
     g_pyPause = 1; g_toasts = 1; g_editor[0] = 0; g_bufMax = 10; g_layoutWord = 0; g_layoutSwitch = 1;
     g_dLive = FALSE; g_dCol = 0; g_dWid = 1; g_dSaveDir[0] = 0;
     g_rNoTb = TRUE; g_rCur = TRUE; g_rScr = 0; g_rMic[0] = 0; g_rDir[0] = 0; g_rAk = 128; g_rFps = 30; g_rPos[0] = g_rPos[1] = -99999;
-    g_rPwd = TRUE; g_rShow = FALSE; g_novc = 0;
+    g_rPwd = TRUE; g_rShow = FALSE; g_novc = 0; g_nopos = 0;
     memset(&g_aud, 0, sizeof g_aud); g_aud.vLim = 50; g_aud.dLat = 20;
     g_tmFg = RGB(255, 255, 255); g_tmBg = RGB(0, 0, 0); g_tmAlpha = 60; g_tmSize = 48; g_tmNFav = 0;
     for (int i = 0; i < 5; i++) {
@@ -1511,6 +1523,15 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
         else { OvCfg *c = OvCfgGet(k, TRUE); if (c) { const wchar_t *q = v; c->mode = ToInt(q) & 3; if (c->mode == 3) c->mode = 1; int *f[3] = {&c->x, &c->y, &c->sc};
             for (int i = 0; i < 3; i++) { while (*q && *q != L',') q++; if (!*q) break; q++; *f[i] = ToInt(q); }
             if (c->sc < 10) c->sc = 10; if (c->sc > 600) c->sc = 600; } }
+    } else if (!lstrcmpiW(s, L"OverlayPos")) {
+        wchar_t st[64]; const wchar_t *bar = NULL; for (const wchar_t *q = k; *q; q++) if (*q == L'|') bar = q;
+        if (bar && bar > k && bar[1]) {
+            lstrcpynW(st, k, (int)(bar - k) + 1 < 64 ? (int)(bar - k) + 1 : 64);
+            OvPos *p = OvPosGet(st, bar + 1, TRUE);
+            if (p) { const wchar_t *q = v; int *f[3] = {&p->x, &p->y, &p->sc}; *f[0] = ToInt(q);
+                for (int i = 1; i < 3; i++) { while (*q && *q != L',') q++; if (!*q) break; q++; *f[i] = ToInt(q); }
+                if (p->sc < 10) p->sc = 10; if (p->sc > 600) p->sc = 600; }
+        }
     } else if (!lstrcmpiW(s, L"Volume")) {
         if (!lstrcmpiW(k, L"Enabled")) g_aud.vOn = ToInt(v) != 0;
         else if (!lstrcmpiW(k, L"Limit")) { g_aud.vLim = ToInt(v); if (g_aud.vLim < 1) g_aud.vLim = 1; if (g_aud.vLim > 100) g_aud.vLim = 100; }
@@ -6856,6 +6877,17 @@ static void CalcCr(RECT *r) {                                // что буде�
     else if (g_rScr > 0) { HMONITOR hm[8]; int n = Mons(hm); if (g_rScr <= n) { MONITORINFO m2; m2.cbSize = sizeof m2; if (GetMonitorInfoW(hm[g_rScr - 1], &m2)) *r = g_rNoTb ? m2.rcWork : m2.rcMonitor; } }
     if (areaOn) *r = area;                                    // выбранная область важнее настроек монитора
 }
+static void MonKey(wchar_t *k) {                             // ключ монитора, который будет снят (как в CalcCr): DISPLAYn или "all"
+    if (g_rScr < 0) { lstrcpyW(k, L"all"); return; }
+    POINT pt; GetCursorPos(&pt); HMONITOR m = NULL;
+    if (g_rScr > 0) { HMONITOR hm[8]; int n = Mons(hm); if (g_rScr <= n) m = hm[g_rScr - 1]; }
+    if (!m) m = hw ? MonitorFromWindow(hw, MONITOR_DEFAULTTONEAREST) : MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+    MONITORINFOEXW mi; mi.cbSize = sizeof mi; k[0] = 0;
+    if (GetMonitorInfoW(m, (MONITORINFO *)&mi)) { const wchar_t *d = mi.szDevice; if (d[0] == L'\\' && d[1] == L'\\' && d[2] == L'.' && d[3] == L'\\') d += 4; lstrcpynW(k, d, 24); }
+    if (!k[0]) lstrcpyW(k, L"main");
+}
+static wchar_t ocKey[24];
+static void OvApplyMon(void) { wchar_t k[24]; MonKey(k); OvPosApply(k); }
 static BOOL aud, csOk;                                                                  // aud: кнопка работает как диктофон (запись звука в .m4a)
 static DWORD WINAPI AudRec(LPVOID) {
     CoInitializeEx(NULL, COINIT_MULTITHREADED);
@@ -6907,7 +6939,7 @@ static void StartAud(void) {
 static void Start(void) {
     if (recording || !hw || ovBusy() || g_voiceSt) return;
     if (aud) { StartAud(); return; }
-    CalcCr(&cr); ScanOv();
+    CalcCr(&cr); ScanOv(); OvApplyMon();
     if (!csOk) { InitializeCriticalSection(&cs); csOk = TRUE; }
     paused = 0;
     cr.right -= (cr.right - cr.left) & 1; cr.bottom -= (cr.bottom - cr.top) & 1;     // H.264: чётные размеры
@@ -7029,7 +7061,7 @@ static void ShowSync(void) {                                  // пересоз�
     ScanOv();
     GdiplusStartupInput in; if (GdiplusStartup(&stok, &in, NULL) != Ok) return;
     stokOn = TRUE;
-    RECT r; CalcCr(&r);
+    RECT r; CalcCr(&r); OvApplyMon();
     RegClass(L"DKRecShow", ShowProc, 0);
     HDC sd = GetDC(NULL);
     for (int i = 0; i < npre && nsw < NOVL; i++) {
@@ -7087,6 +7119,8 @@ static void OvSave(void) {
         OvWin *z = &ocw[i];
         z->c->x = MulDiv(z->x - ocr.left, 1000, W); z->c->y = MulDiv(z->y - ocr.top, 1000, H); z->c->sc = (int)(z->sc * 100 + 0.5f);
         OvCfgSave(z->c);
+        OvPos *p = OvPosGet(z->c->stem, ocKey, TRUE);                       // и для этого монитора отдельно
+        if (p) { p->x = z->c->x; p->y = z->c->y; p->sc = z->c->sc; wchar_t kk[100], vv[48]; wsprintfW(kk, L"%s|%s", z->c->stem, ocKey); wsprintfW(vv, L"%d,%d,%d", p->x, p->y, p->sc); IniSet(L"OverlayPos", kk, vv); }
     }
 }
 static void OvClose(void) {
@@ -7139,7 +7173,7 @@ static void OvConfig(void) {
     ScanOv();
     GdiplusStartupInput in;
     if (GdiplusStartup(&otok, &in, NULL) != Ok) { Toast(Tr(L_D_GDIFAIL)); return; }
-    ShowFree(); CalcCr(&ocr); ncw = 0; memset(ocw, 0, sizeof ocw);
+    ShowFree(); CalcCr(&ocr); OvApplyMon(); MonKey(ocKey); ncw = 0; memset(ocw, 0, sizeof ocw);
     RegClass(L"DKRecOv", OvProc, 0);
     for (int i = 0; i < npre && ncw < NOVL; i++) {
         OvCfg *c = OvCfgGet(pre[i].stem, FALSE); if (!c || !c->mode) continue;
@@ -7156,6 +7190,7 @@ static void OvConfig(void) {
     for (int i = 0; i < ncw; i++) { OvPaint(i); ShowWindow(ocw[i].h, SW_SHOW); }
     ForceFg(ocw[ncw - 1].h); SetFocus(ocw[ncw - 1].h); Toast(Tr(L_REC_OV_HINT));
 }
+static HMONITOR dragMon;
 static void SavePos(void) {
     RECT r; if (!hw || !GetWindowRect(hw, &r)) return;
     wchar_t v[32]; wsprintfW(v, L"%d,%d", r.left, r.top); IniSet(L"Record", L"Pos", v); g_rPos[0] = r.left; g_rPos[1] = r.top;
@@ -7177,12 +7212,16 @@ static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (areaOn && !recording && !aud) { HPEN pa = CreatePen(PS_SOLID, 1, RGB(255, 255, 255)); HGDIOBJ o1 = SelectObject(dc, pa), o2 = SelectObject(dc, GetStockObject(NULL_BRUSH)); Rectangle(dc, S * 62 / 100, S * 62 / 100, S * 86 / 100, S * 82 / 100); SelectObject(dc, o1); SelectObject(dc, o2); DeleteObject(pa); }
         EndPaint(h, &ps); return 0;
     }
-    case WM_LBUTTONDOWN: { GetCursorPos(&dn); RECT r; GetWindowRect(h, &r); wp.x = r.left; wp.y = r.top; moved = FALSE; SetCapture(h); return 0; }
+    case WM_LBUTTONDOWN: { GetCursorPos(&dn); RECT r; GetWindowRect(h, &r); wp.x = r.left; wp.y = r.top; moved = FALSE; dragMon = MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST); SetCapture(h); return 0; }
     case WM_MOUSEMOVE:
         if (GetCapture() == h) {
             POINT p; GetCursorPos(&p);
             if (!moved && (p.x - dn.x) * (p.x - dn.x) + (p.y - dn.y) * (p.y - dn.y) > 36) moved = TRUE;
-            if (moved) SetWindowPos(h, NULL, wp.x + p.x - dn.x, wp.y + p.y - dn.y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            if (moved) {
+                SetWindowPos(h, NULL, wp.x + p.x - dn.x, wp.y + p.y - dn.y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                HMONITOR cm = MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST);
+                if (cm != dragMon) { dragMon = cm; if (!recording && g_rScr == 0 && g_rShow && !aud) ShowSync(); }     // оверлеи на экране прыгают за кнопкой на другой монитор
+            }
         }
         return 0;
     case WM_LBUTTONUP:
