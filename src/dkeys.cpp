@@ -1141,6 +1141,7 @@ PowerShell=powershell.exe
 ;   sys:имя - звук устройства вывода, mic:имя - другой микрофон. Дорожка 1 - микрофон (Mic)
 ; TakeBeep: 1 метка дубля (Win+D при записи, пауза) пишет короткий тихий сигнал на все дорожки | 0 только файл меток (одноимённый .txt)
 ; TakeBeepHz: частота сигнала, Гц (AAC обрезает всё выше ~15 кГц при 96-128 кбит/с, поэтому по умолчанию 15000)
+; Точность: время в .txt - момент нажатия, сигнал начинается с ближайшего пакета звука, на 10-20 мс позже; точный якорь - сам сигнал, .txt даёт примерное место
 ;Track2=sys
 ;TakeBeep=1
 ;TakeBeepHz=15000
@@ -3413,7 +3414,7 @@ static void RunScriptN(int n) {                                                 
     for (int i = 0; i < cnt; i++) Free(a[i]);
     Free(a);
 }
-static void TrayMenu(void);
+static void TrayMenu(void); static BOOL g_trayOpen;
 static UINT g_trayAlign;                                  // 0 - меню от курсора (клик по значку), иначе выравнивание по центру курсора (хоткей)
 static void ExecBind(const Bind *b) {
     Log(L"ExecBind act=%d n=%d", b->act, b->n);
@@ -3447,7 +3448,7 @@ static void ExecBind(const Bind *b) {
     case A_VOICE: VoiceToggle(); break;
     case A_VOICECMD: VoiceCmdToggle(); break;
     case A_CALENDAR: CalAction(b->arg); break;
-    case A_TRAYMENU: if (RecBusy()) { RecMark(); break; } g_trayAlign = TPM_CENTERALIGN | TPM_VCENTERALIGN; TrayMenu(); break;     // во время записи этот хоткей ставит метку дубля
+    case A_TRAYMENU: if (g_trayOpen) { EndMenu(); break; } if (RecBusy()) { RecMark(); break; } g_trayAlign = TPM_CENTERALIGN | TPM_VCENTERALIGN; TrayMenu(); break;     // во время записи этот хоткей ставит метку дубля
     case A_TAKE: RecMark(); break;
     case A_EXIT: DestroyWindow(g_hwnd); break;
     case A_SCRIPTN: RunScriptN(b->n); break;
@@ -6903,7 +6904,7 @@ static void AEmit(ASrc *s, const BYTE *d, UINT32 fr, long long ts) {
             double w = 6.283185307179586 * g_rBeepHz / 48000.0;
             for (UINT32 i = 0; i < c && s->bpos + (int)i < BEEPN; i++) {
                 int p = s->bpos + (int)i, rem = BEEPN - p; double env = p < 240 ? p / 240.0 : rem < 240 ? rem / 240.0 : 1.0;   // плавные края - без щелчков
-                int v = (int)(8000 * env * SinD(w * p));
+                int v = (int)(3000 * env * SinD(w * p));
                 for (int ch = 0; ch < 2; ch++) { int x = tmp[2 * i + ch] + v; tmp[2 * i + ch] = (short)(x > 32767 ? 32767 : x < -32768 ? -32768 : x); }
             }
             s->bpos += (int)c; if (s->bpos >= BEEPN) s->bpos = -1;
@@ -10931,9 +10932,9 @@ static void TrayMenuAt(POINT pt, int again) {
     SetForegroundWindow(g_hwnd);
     g_navN = 0;
     if (again && FindPath(m, again, 0) && g_navN) SetTimer(g_hwnd, TID_NAV, 40, NULL);
-    g_menuOpen = TRUE;
+    g_menuOpen = TRUE; g_trayOpen = TRUE;
     int c = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON | g_trayAlign, pt.x, pt.y, 0, g_hwnd, NULL);
-    g_menuOpen = FALSE;
+    g_menuOpen = FALSE; g_trayOpen = FALSE;
     KillTimer(g_hwnd, TID_NAV);
     PostMessageW(g_hwnd, WM_NULL, 0, 0);
     DestroyMenu(m);
@@ -10968,7 +10969,7 @@ static void TrayMenuAt(POINT pt, int again) {
     case 13: ShellExecuteW(NULL, L"open", g_memDir, NULL, NULL, SW_SHOWNORMAL); break;
     case 14: Reload(); break;
     case 18: {
-        wchar_t t[1200]; wsprintfW(t, Tr(L_ABOUT_TXT), L"1.7"); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_BODY)); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_AUTH)); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_ASK));
+        wchar_t t[1200]; wsprintfW(t, Tr(L_ABOUT_TXT), L"1.8"); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_BODY)); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_AUTH)); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_ASK));
         MSGBOXPARAMSW mp; memset(&mp, 0, sizeof mp);                                  // со значком программы (ресурс 1)
         mp.cbSize = sizeof mp; mp.hwndOwner = g_hwnd; mp.hInstance = GetModuleHandleW(NULL); mp.lpszText = t; mp.lpszCaption = Tr(L_TRAY_ABOUT);
         mp.dwStyle = MB_YESNO | MB_USERICON | MB_SETFOREGROUND | MB_TOPMOST; mp.lpszIcon = MAKEINTRESOURCEW(1);
