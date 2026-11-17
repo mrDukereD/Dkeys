@@ -138,7 +138,9 @@ static volatile LONG g_pickActive;
 static int g_rAk = 128;                                                              // [Record] AudioKbps: качество диктофона
 static int g_mHover = 300, g_mPos[2] = {-99999, -99999};              // запись действий: порог остановки курсора (мс), позиция кнопки
 static BOOL g_rNoTb = TRUE, g_rCur = TRUE; static int g_rFps = 30, g_rPos[2] = {-99999, -99999}, g_rScr;   // g_rScr: 0 - монитор с кнопкой, -1 - весь рабочий стол, N - монитор N
-static BOOL g_rDummy;
+static BOOL g_rDummy, g_rFx = TRUE, g_ringOn = TRUE;                                 // g_rFx: подсветка курсора в записи, g_ringOn: кольцо при клике
+static int g_hlR = 22, g_hlA = 24, g_ringMs = 450, g_ringSz = 34;                    // радиус и яркость (%) подсветки, длительность (мс) и размер кольца
+static DWORD g_hlCol = 0xFFD60A, g_clL = 0x0A84FF, g_clR = 0xFF453A;                 // цвета 0xRRGGBB: подсветка, левый и правый клик
 struct OvCfg { wchar_t stem[64]; int mode, x, y, sc; };      // mode: 0 выкл, 1 на видео, 2 отдельный файл; x,y - доля кадра в ‰; sc - масштаб в %
 static OvCfg g_ovc[24]; static int g_novc; static BOOL g_rPwd = TRUE, g_rShow;
 static void RecShowSync(void);
@@ -255,6 +257,17 @@ X(L_VOL_TOASTON, "vol.toast_on", L"Стабильная громкость: вк
 X(L_VOL_TOASTOFF, "vol.toast_off", L"Стабильная громкость: выключена") \
 X(L_REC_NOTB, "rec.no_taskbar", L"Не снимать панель задач") \
 X(L_REC_CUR, "rec.cursor", L"Снимать курсор мыши") \
+X(L_REC_FX, "rec.halo", L"Подсвечивать курсор") \
+X(L_REC_FXCFG, "rec.fxcfg", L"Настройки курсора и кликов…") \
+X(L_FX_TITLE, "fx.title", L"Курсор мыши в записи") \
+X(L_FX_RING, "fx.ring", L"Кольцо при клике") \
+X(L_FX_R, "fx.radius", L"Размер подсветки") \
+X(L_FX_A, "fx.opacity", L"Яркость подсветки, %") \
+X(L_FX_MS, "fx.ms", L"Длительность кольца, мс") \
+X(L_FX_SZ, "fx.size", L"Размер кольца") \
+X(L_FX_CH, "fx.colhalo", L"Цвет подсветки") \
+X(L_FX_CL, "fx.colleft", L"Левый клик") \
+X(L_FX_CR, "fx.colright", L"Правый клик") \
 X(L_REC_FPS, "rec.fps", L"%d кадров/с") \
 X(L_REC_ALL, "rec.desktop", L"Весь рабочий стол") \
 X(L_REC_BTN, "rec.btn_monitor", L"Монитор с кнопкой") \
@@ -607,6 +620,13 @@ static int ToInt(const wchar_t *s) {
     int v = 0; while (*s >= L'0' && *s <= L'9') v = v * 10 + (*s++ - L'0');
     return v * sg;
 }
+static DWORD HexVal(const wchar_t *s) {
+    if (*s == L'#') s++;
+    DWORD v = 0;
+    for (;; s++) { int d; wchar_t c = *s; if (c >= L'0' && c <= L'9') d = c - L'0'; else if ((c | 32) >= L'a' && (c | 32) <= L'f') d = (c | 32) - L'a' + 10; else break; v = v * 16 + d; }
+    return v & 0xFFFFFF;
+}
+static int Clamp(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 static wchar_t Low(wchar_t c) { return (wchar_t)(UINT_PTR)CharLowerW((LPWSTR)(UINT_PTR)c); }
 static BOOL ContainsI(const wchar_t *h, const wchar_t *nd) {
     if (!*nd) return TRUE;
@@ -1083,6 +1103,18 @@ PowerShell=powershell.exe
 ;NoTaskbar=1
 ; Cursor: 1 снимать курсор мыши | 0 нет
 ;Cursor=1
+; Подсветка курсора и кликов в видео (удобнее настроить в меню записи: "Настройки курсора и кликов…")
+; Highlight: 1 подсвечивать курсор кружком | 0 нет;  HighlightRadius 8-80 px;  HighlightOpacity 5-80 %;  HighlightColor RRGGBB
+; ClickRing: 1 показывать клик расходящимся кольцом | 0 нет;  ClickMs 150-1500 мс;  ClickSize 12-120 px;  ClickColorLeft / ClickColorRight RRGGBB
+;Highlight=1
+;HighlightRadius=22
+;HighlightOpacity=24
+;HighlightColor=FFD60A
+;ClickRing=1
+;ClickMs=450
+;ClickSize=34
+;ClickColorLeft=0A84FF
+;ClickColorRight=FF453A
 ; Fps: 15 | 30 | 60
 ;Fps=30
 ; Screen: 0 монитор с кнопкой | 1-8 монитор по номеру | all весь рабочий стол
@@ -1445,7 +1477,7 @@ static void CfgDefaults(void) {
     lstrcpyW(g_lang, L"ru"); g_mouseSlow = 4; g_histOn = 0; g_histMax = 50; g_pasteDelay = 300; g_copyTimeout = 600; lstrcpyW(g_python, L"python.exe");
     g_pyPause = 1; g_toasts = 1; g_editor[0] = 0; g_bufMax = 10; g_layoutWord = 0; g_layoutSwitch = 1;
     g_dLive = FALSE; g_dCol = 0; g_dWid = 1; g_dSaveDir[0] = 0;
-    g_rNoTb = TRUE; g_rCur = TRUE; g_rScr = 0; g_rMic[0] = 0; g_rDir[0] = 0; g_rAk = 128; g_rFps = 30; g_rPos[0] = g_rPos[1] = -99999;
+    g_rNoTb = TRUE; g_rCur = TRUE; g_rFx = TRUE; g_ringOn = TRUE; g_hlR = 22; g_hlA = 24; g_ringMs = 450; g_ringSz = 34; g_hlCol = 0xFFD60A; g_clL = 0x0A84FF; g_clR = 0xFF453A; g_rScr = 0; g_rMic[0] = 0; g_rDir[0] = 0; g_rAk = 128; g_rFps = 30; g_rPos[0] = g_rPos[1] = -99999;
     g_rPwd = TRUE; g_rShow = FALSE; g_novc = 0; g_nopos = 0;
     memset(&g_aud, 0, sizeof g_aud); g_aud.vLim = 50; g_aud.dLat = 20;
     g_tmFg = RGB(255, 255, 255); g_tmBg = RGB(0, 0, 0); g_tmAlpha = 60; g_tmSize = 48; g_tmNFav = 0;
@@ -1510,6 +1542,15 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
     } else if (!lstrcmpiW(s, L"Record")) {
         if (!lstrcmpiW(k, L"NoTaskbar")) g_rNoTb = ToInt(v) != 0;
         else if (!lstrcmpiW(k, L"Cursor")) g_rCur = ToInt(v) != 0;
+        else if (!lstrcmpiW(k, L"Highlight")) g_rFx = ToInt(v) != 0;
+        else if (!lstrcmpiW(k, L"HighlightRadius")) g_hlR = Clamp(ToInt(v), 8, 80);
+        else if (!lstrcmpiW(k, L"HighlightOpacity")) g_hlA = Clamp(ToInt(v), 5, 80);
+        else if (!lstrcmpiW(k, L"HighlightColor")) g_hlCol = HexVal(v);
+        else if (!lstrcmpiW(k, L"ClickRing")) g_ringOn = ToInt(v) != 0;
+        else if (!lstrcmpiW(k, L"ClickMs")) g_ringMs = Clamp(ToInt(v), 150, 1500);
+        else if (!lstrcmpiW(k, L"ClickSize")) g_ringSz = Clamp(ToInt(v), 12, 120);
+        else if (!lstrcmpiW(k, L"ClickColorLeft")) g_clL = HexVal(v);
+        else if (!lstrcmpiW(k, L"ClickColorRight")) g_clR = HexVal(v);
         else if (!lstrcmpiW(k, L"AllScreens")) { if (ToInt(v)) g_rScr = -1; }
         else if (!lstrcmpiW(k, L"Screen")) g_rScr = !lstrcmpiW(v, L"all") ? -1 : ToInt(v) > 0 && ToInt(v) <= 8 ? ToInt(v) : 0;
         else if (!lstrcmpiW(k, L"Mic")) lstrcpynW(g_rMic, v, 80);
@@ -6624,6 +6665,29 @@ static void DrawOv(GpGraphics *g, Ov *o, float ox, float oy, float s, int fl) { 
         }
     }
 }
+static DWORD fxHit[3]; static POINT fxPos[3];
+static void FxHalo(GpGraphics *g, int cx, int cy, BOOL down) {     // подсветка вокруг курсора (при зажатой кнопке ярче)
+    GpSolidFill *b = NULL; int a = g_hlA * 255 / 100; if (down) a = a * 19 / 10; if (a > 255) a = 255;
+    GdipSetSmoothingMode(g, SmoothingModeAntiAlias);
+    GdipCreateSolidFill(((DWORD)a << 24) | g_hlCol, &b);
+    if (b) { GdipFillEllipseI(g, b, cx - g_hlR, cy - g_hlR, 2 * g_hlR, 2 * g_hlR); GdipDeleteBrush(b); }
+}
+static void FxRing(GpGraphics *g, int x, int y, int k, DWORD age) {   // расходящееся кольцо клика (1 - левая, 2 - правая)
+    if (age >= (DWORD)g_ringMs) return;
+    float t = (float)age / g_ringMs; int r = (int)(10 + g_ringSz * t), a = (int)(220 * (1.f - t)); GpPen *p = NULL;
+    GdipSetSmoothingMode(g, SmoothingModeAntiAlias);
+    GdipCreatePen1(((DWORD)a << 24) | (k == 1 ? g_clL : g_clR), 3, UnitPixel, &p);
+    if (p) { GdipDrawEllipseI(g, p, x - r, y - r, 2 * r, 2 * r); GdipDeletePen(p); }
+}
+static void DrawFx(GpGraphics *g, int cx, int cy) {                // курсор в кадре записи: подсветка и кольца
+    DWORD now = GetTickCount();
+    if (g_rFx) FxHalo(g, cx, cy, g_ioMouse[1] || g_ioMouse[2]);
+    for (int k = 1; k <= 2; k++) {
+        DWORD h = g_ioMHit[k];
+        if (h != fxHit[k]) { fxHit[k] = h; fxPos[k].x = cx; fxPos[k].y = cy; }
+        if (g_ringOn && h) FxRing(g, fxPos[k].x, fxPos[k].y, k, now - h);
+    }
+}
 static BOOL PreFits(const wchar_t *png, const wchar_t *stem, int *len) {        // имя png (без .png) - начало имени json
     int l = lstrlenW(png) - 4; if (l <= 0 || l > lstrlenW(stem)) return FALSE;
     if (CompareStringOrdinal(png, l, stem, l, TRUE) != CSTR_EQUAL) return FALSE;
@@ -6811,7 +6875,7 @@ static DWORD WINAPI Worker(LPVOID) {
     if (started) {
         HDC mdc = NULL; HBITMAP hb = NULL; void *bits = NULL; GpBitmap *fb = NULL; GpGraphics *fg = NULL;
         if (MkDib(sdc, w, h, &mdc, &hb, &bits)) {
-            if (nov) MkGp(bits, w, h, PixelFormat32bppRGB, &fb, &fg);
+            if (nov || g_rFx || g_ringOn) MkGp(bits, w, h, PixelFormat32bppRGB, &fb, &fg);
             DWORD bytes = (DWORD)w * h * 4;
             QueryPerformanceFrequency(&fq); QueryPerformanceCounter(&t0); pauseAcc = 0; paused = 0; pwdStop = 0; pwdNow = 0;
             if (aStream >= 0) ath = CreateThread(NULL, 0, AudioWorker, NULL, 0, NULL);
@@ -6822,6 +6886,10 @@ static DWORD WINAPI Worker(LPVOID) {
                 if (paused) { Sleep(20); next = Now(); continue; }
                 long long tn = Now();
                 BitBlt(mdc, 0, 0, w, h, sdc, cr.left, cr.top, SRCCOPY | CAPTUREBLT);
+                if (fg && (g_rFx || g_ringOn)) {
+                    POINT cp; GetCursorPos(&cp); GdiFlush();
+                    DrawFx(fg, cp.x - cr.left, cp.y - cr.top); GdipFlush(fg, FlushIntentionSync);
+                }
                 if (g_rCur) {
                     CURSORINFO ci; ci.cbSize = sizeof ci; ICONINFO ii;
                     if (GetCursorInfo(&ci) && (ci.flags & CURSOR_SHOWING) && GetIconInfo(ci.hCursor, &ii)) {
@@ -7031,9 +7099,54 @@ static void SelectArea(void) {
     ShowWindow(hw, SW_HIDE); ShowWindow(selw, SW_SHOW); ForceFg(selw); SetFocus(selw);
 }
 /* --- оверлеи на экране ("Показывать на экране"): не попадают в запись, клики проходят насквозь --- */
+/* --- подсветка курсора и кликов на экране, пока есть кнопка записи: окно идёт за курсором, клики проходят насквозь, в запись не попадает --- */
+static HWND lw; static HDC ldc; static HBITMAP lhb; static void *lbits; static GpBitmap *lbmp; static GpGraphics *lg; static int LS; static ULONG_PTR ltok; static BOOL ltokOn;
+static DWORD lvHit[3]; static POINT lvPos[3];
+static void LivePaint(void) {
+    if (!lg) return;
+    POINT cp; GetCursorPos(&cp); int c = LS / 2; DWORD now = GetTickCount();
+    GdipGraphicsClear(lg, 0);
+    if (g_rFx) FxHalo(lg, c, c, g_ioMouse[1] || g_ioMouse[2]);
+    for (int k = 1; k <= 2; k++) {
+        DWORD h = g_ioMHit[k];
+        if (h != lvHit[k]) { lvHit[k] = h; lvPos[k] = cp; }
+        if (g_ringOn && h) FxRing(lg, lvPos[k].x - cp.x + c, lvPos[k].y - cp.y + c, k, now - h);
+    }
+    GdipFlush(lg, FlushIntentionSync);
+    POINT pt = {cp.x - c, cp.y - c}, p0 = {0, 0}; SIZE sz = {LS, LS}; BLENDFUNCTION bf = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+    UpdateLayeredWindow(lw, NULL, &pt, &sz, ldc, &p0, 0, &bf, ULW_ALPHA);
+}
+static LRESULT CALLBACK LiveProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    if (m == WM_TIMER) { LivePaint(); return 0; }
+    if (m == WM_NCHITTEST) return HTTRANSPARENT;
+    if (m == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
+    return DefWindowProcW(h, m, w, l);
+}
+static void LiveStop(void) {
+    if (lw) { HWND h = lw; lw = NULL; KillTimer(h, 1); DestroyWindow(h); }
+    if (lg) { GdipDeleteGraphics(lg); lg = NULL; } if (lbmp) { GdipDisposeImage((GpImage *)lbmp); lbmp = NULL; }
+    if (ldc) { DeleteDC(ldc); ldc = NULL; } if (lhb) { DeleteObject(lhb); lhb = NULL; }
+    if (ltokOn) { GdiplusShutdown(ltok); ltokOn = FALSE; }
+}
+static void LiveStart(void) {
+    LiveStop();
+    if (!hw || aud || (!g_rFx && !g_ringOn)) return;
+    GdiplusStartupInput in; if (GdiplusStartup(&ltok, &in, NULL) != Ok) return;
+    ltokOn = TRUE;
+    int R = (g_hlR > 10 + g_ringSz ? g_hlR : 10 + g_ringSz) + 8; LS = 2 * R;
+    HDC sd = GetDC(NULL); BOOL ok = MkDib(sd, LS, LS, &ldc, &lhb, &lbits) && MkGp(lbits, LS, LS, PixelFormat32bppPARGB, &lbmp, &lg); ReleaseDC(NULL, sd);
+    if (!ok) { LiveStop(); return; }
+    RegClass(L"DKRecLive", LiveProc, 0);
+    lw = CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"DKRecLive", L"", WS_POPUP, 0, 0, LS, LS, NULL, NULL, g_inst, NULL);
+    if (!lw) { LiveStop(); return; }
+    SetWindowDisplayAffinity(lw, 0x11);                            // WDA_EXCLUDEFROMCAPTURE
+    lvHit[1] = g_ioMHit[1]; lvHit[2] = g_ioMHit[2];
+    LivePaint(); ShowWindow(lw, SW_SHOWNOACTIVATE); SetTimer(lw, 1, 15, NULL);
+}
 struct ShowW { HWND h; Ov o; HDC dc; HBITMAP hb; void *bits; GpBitmap *bmp; GpGraphics *g; int W, H, X, Y; };
 static ShowW sw[NOVL]; static int nsw; static ULONG_PTR stok; static BOOL stokOn;
 static void ShowFree(void) {
+    LiveStop();
     for (int i = 0; i < nsw; i++) {
         ShowW *s = &sw[i]; HWND h = s->h; s->h = NULL; if (h) DestroyWindow(h);
         if (s->g) GdipDeleteGraphics(s->g); if (s->bmp) GdipDisposeImage((GpImage *)s->bmp);
@@ -7057,7 +7170,9 @@ static LRESULT CALLBACK ShowProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 }
 static void ShowSync(void) {                                  // пересоздаёт окна по текущим настройкам (включены только режимом "на видео")
     ShowFree();
-    if (!g_rShow || ow || !hw) return;                        // только пока кнопка записи на экране
+    if (ow || !hw) return;                                    // только пока кнопка записи на экране
+    LiveStart();
+    if (!g_rShow) return;
     ScanOv();
     GdiplusStartupInput in; if (GdiplusStartup(&stok, &in, NULL) != Ok) return;
     stokOn = TRUE;
@@ -7191,6 +7306,7 @@ static void OvConfig(void) {
     ForceFg(ocw[ncw - 1].h); SetFocus(ocw[ncw - 1].h); Toast(Tr(L_REC_OV_HINT));
 }
 static HMONITOR dragMon;
+static HMENU Menu(void); static void Cmd(int c);
 static void SavePos(void) {
     RECT r; if (!hw || !GetWindowRect(hw, &r)) return;
     wchar_t v[32]; wsprintfW(v, L"%d,%d", r.left, r.top); IniSet(L"Record", L"Pos", v); g_rPos[0] = r.left; g_rPos[1] = r.top;
@@ -7232,6 +7348,11 @@ static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
         return 0;
     case WM_RBUTTONUP: if (!recording) DestroyWindow(h); return 0;
+    case WM_MBUTTONUP: {                                              // средний клик - настройки записи
+        POINT p; GetCursorPos(&p); ForceFg(h);
+        HMENU mn = Menu(); int c = (int)TrackPopupMenu(mn, TPM_RETURNCMD | TPM_RIGHTBUTTON, p.x, p.y, 0, h, NULL);
+        DestroyMenu(mn); PostMessageW(h, WM_NULL, 0, 0); if (c) Cmd(c); return 0;
+    }
     case WM_DESTROY: Stop(); aud = FALSE; SavePos(); hw = NULL; ShowFree(); return 0;
     }
     return DefWindowProcW(h, m, w, l);
@@ -7280,6 +7401,88 @@ static HMENU MicMenu(void) {
     }
     return m;
 }
+/* --- окно настроек курсора и кликов: предпросмотр, размеры кнопками -/+, цвета; всё сразу пишется в ini --- */
+static HWND fxw; static ULONG_PTR fxtok;
+static const int kFxLo[4] = {8, 5, 150, 12}, kFxHi[4] = {80, 80, 1500, 120}, kFxSt[4] = {2, 5, 50, 4};
+static int *FxVal(int i) { return i == 0 ? &g_hlR : i == 1 ? &g_hlA : i == 2 ? &g_ringMs : &g_ringSz; }
+static const wchar_t *const kFxKey[4] = {L"HighlightRadius", L"HighlightOpacity", L"ClickMs", L"ClickSize"};
+static const wchar_t *FxLab(int i) { return Tr(i == 0 ? L_FX_R : i == 1 ? L_FX_A : i == 2 ? L_FX_MS : L_FX_SZ); }
+static DWORD *FxCol(int i) { return i == 0 ? &g_hlCol : i == 1 ? &g_clL : &g_clR; }
+static const wchar_t *const kFxColKey[3] = {L"HighlightColor", L"ClickColorLeft", L"ClickColorRight"};
+static COLORREF FxRgb(DWORD c) { return RGB((c >> 16) & 255, (c >> 8) & 255, c & 255); }
+static const RECT kFxPrev = {10, 10, 320, 110}, kFxRows = {0, 150, 215, 290}, kFxSw = {0, 322, 340, 330};
+static LRESULT CALLBACK FxProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    switch (m) {
+    case WM_PAINT: {
+        PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps);
+        int PW = kFxPrev.right - kFxPrev.left, PH = kFxPrev.bottom - kFxPrev.top;
+        HDC md = CreateCompatibleDC(dc); HBITMAP hb = CreateCompatibleBitmap(dc, PW, PH); HGDIOBJ ob = SelectObject(md, hb);
+        RECT all = {0, 0, PW, PH}; HBRUSH bk = CreateSolidBrush(RGB(38, 42, 50)); FillRect(md, &all, bk); DeleteObject(bk);
+        GpGraphics *g = NULL; GdipCreateFromHDC(md, &g);
+        DWORD ph = GetTickCount() % 2400; int cy = PH / 2, cx = ph < 1200 ? PW / 3 : PW * 2 / 3, k = ph < 1200 ? 1 : 2; DWORD age = ph % 1200 > 300 ? ph % 1200 - 300 : 0xFFFF;
+        if (g) {
+            if (g_rFx) FxHalo(g, cx, cy, age < 120);
+            if (g_ringOn && age != 0xFFFF) FxRing(g, cx, cy, k, age);
+            GdipDeleteGraphics(g);
+        }
+        DrawIconEx(md, cx, cy, LoadCursorW(NULL, IDC_ARROW), 0, 0, 0, NULL, DI_NORMAL);
+        BitBlt(dc, kFxPrev.left, kFxPrev.top, PW, PH, md, 0, 0, SRCCOPY);
+        SelectObject(md, ob); DeleteObject(hb); DeleteDC(md);
+        HGDIOBJ of = SelectObject(dc, GetStockObject(DEFAULT_GUI_FONT)); SetBkMode(dc, TRANSPARENT);
+        for (int i = 0; i < 4; i++) { wchar_t t[80]; wsprintfW(t, L"%s: %d", FxLab(i), *FxVal(i)); TextOutW(dc, 10, 179 + 28 * i, t, lstrlenW(t)); }
+        for (int i = 0; i < 3; i++) { HBRUSH sb = CreateSolidBrush(FxRgb(*FxCol(i))); RECT r = {10 + 105 * i, kFxSw.top, 110 + 105 * i, kFxSw.bottom}; FillRect(dc, &r, sb); DeleteObject(sb); }
+        SelectObject(dc, of); EndPaint(h, &ps); return 0;
+    }
+    case WM_TIMER: { RECT r = kFxPrev; InvalidateRect(h, &r, FALSE); return 0; }
+    case WM_COMMAND: {
+        int id = LOWORD(w); wchar_t v[16];
+        if (id == 1) { g_rFx = SendMessageW((HWND)l, BM_GETCHECK, 0, 0) == BST_CHECKED; IniSet(L"Record", L"Highlight", g_rFx ? L"1" : L"0"); }
+        else if (id == 2) { g_ringOn = SendMessageW((HWND)l, BM_GETCHECK, 0, 0) == BST_CHECKED; IniSet(L"Record", L"ClickRing", g_ringOn ? L"1" : L"0"); }
+        else if ((id >= 10 && id < 14) || (id >= 20 && id < 24)) {
+            int i = id % 10, *p = FxVal(i); *p = Clamp(*p + (id < 20 ? -kFxSt[i] : kFxSt[i]), kFxLo[i], kFxHi[i]);
+            wsprintfW(v, L"%d", *p); IniSet(L"Record", kFxKey[i], v); RECT r = kFxRows; InvalidateRect(h, &r, TRUE);
+        } else if (id >= 30 && id < 33) {
+            static COLORREF cust[16]; DWORD *c = FxCol(id - 30);
+            CHOOSECOLORW cc; memset(&cc, 0, sizeof cc);
+            cc.lStructSize = sizeof cc; cc.hwndOwner = h; cc.rgbResult = FxRgb(*c); cc.lpCustColors = cust; cc.Flags = CC_RGBINIT | CC_FULLOPEN;
+            if (ChooseColorW(&cc)) {
+                *c = ((DWORD)GetRValue(cc.rgbResult) << 16) | ((DWORD)GetGValue(cc.rgbResult) << 8) | GetBValue(cc.rgbResult);
+                wsprintfW(v, L"%06X", *c); IniSet(L"Record", kFxColKey[id - 30], v); RECT r = kFxSw; r.right = 340; InvalidateRect(h, &r, FALSE);
+            }
+        }
+        ShowSync();                           // экранная подсветка подхватывает новые настройки
+        return 0;
+    }
+    case WM_CLOSE: DestroyWindow(h); return 0;
+    case WM_DESTROY: KillTimer(h, 1); fxw = NULL; GdiplusShutdown(fxtok); return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+static void FxOpen(void) {
+    if (fxw) { ForceFg(fxw); return; }
+    GdiplusStartupInput in;
+    if (GdiplusStartup(&fxtok, &in, NULL) != Ok) { Toast(Tr(L_D_GDIFAIL)); return; }
+    RegClass(L"DKRecFx", FxProc, 0);
+    POINT pt; GetCursorPos(&pt); MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoW(MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST), &mi);
+    RECT wr = {0, 0, 330, 340}; AdjustWindowRect(&wr, WS_CAPTION | WS_SYSMENU, FALSE);
+    int W = wr.right - wr.left, H = wr.bottom - wr.top;
+    fxw = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, L"DKRecFx", Tr(L_FX_TITLE), WS_POPUP | WS_CAPTION | WS_SYSMENU, (mi.rcWork.left + mi.rcWork.right - W) / 2, (mi.rcWork.top + mi.rcWork.bottom - H) / 2, W, H, NULL, NULL, g_inst, NULL);
+    if (!fxw) { GdiplusShutdown(fxtok); return; }
+    HFONT f = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    struct { int id, x, y, w, st; const wchar_t *t; } cs[] = {
+        {1, 10, 118, 300, BS_AUTOCHECKBOX, Tr(L_REC_FX)}, {2, 10, 142, 300, BS_AUTOCHECKBOX, Tr(L_FX_RING)},
+        {10, 214, 175, 28, 0, L"-"}, {11, 214, 203, 28, 0, L"-"}, {12, 214, 231, 28, 0, L"-"}, {13, 214, 259, 28, 0, L"-"},
+        {20, 246, 175, 28, 0, L"+"}, {21, 246, 203, 28, 0, L"+"}, {22, 246, 231, 28, 0, L"+"}, {23, 246, 259, 28, 0, L"+"},
+        {30, 10, 290, 100, 0, Tr(L_FX_CH)}, {31, 115, 290, 100, 0, Tr(L_FX_CL)}, {32, 220, 290, 100, 0, Tr(L_FX_CR)}};
+    for (int i = 0; i < (int)(sizeof cs / sizeof cs[0]); i++) {
+        HWND c = CreateWindowExW(0, L"BUTTON", cs[i].t, WS_CHILD | WS_VISIBLE | WS_TABSTOP | (cs[i].st ? cs[i].st : BS_PUSHBUTTON), cs[i].x, cs[i].y, cs[i].w, cs[i].id >= 30 ? 28 : cs[i].id >= 10 ? 24 : 22, fxw, (HMENU)(INT_PTR)cs[i].id, g_inst, NULL);
+        SendMessageW(c, WM_SETFONT, (WPARAM)f, TRUE);
+        if (cs[i].id == 1) SendMessageW(c, BM_SETCHECK, g_rFx ? BST_CHECKED : BST_UNCHECKED, 0);
+        if (cs[i].id == 2) SendMessageW(c, BM_SETCHECK, g_ringOn ? BST_CHECKED : BST_UNCHECKED, 0);
+    }
+    SetTimer(fxw, 1, 33, NULL);
+    ShowWindow(fxw, SW_SHOW); ForceFg(fxw);
+}
 static HMENU OvMenu(void) {
     HMENU m = CreatePopupMenu(); ScanOv(); BOOL done[24]; memset(done, 0, sizeof done);
     if (!npre) AppendMenuW(m, MF_STRING | MF_GRAYED, 0, Tr(L_REC_OV_NONE));
@@ -7302,7 +7505,6 @@ static HMENU OvMenu(void) {
         }
     }
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(m, MF_STRING, 63, Tr(L_REC_OV_CFG));
     AppendMenuW(m, MF_STRING | (g_rShow ? MF_CHECKED : 0), 62, Tr(L_REC_OV_SHOW));
     AppendMenuW(m, MF_STRING | (g_rPwd ? MF_CHECKED : 0), 60, Tr(L_REC_OV_PWD));
     AppendMenuW(m, MF_STRING, 61, Tr(L_REC_OV_DIR));
@@ -7312,6 +7514,8 @@ static HMENU Menu(void) {
     HMENU m = CreatePopupMenu(); wchar_t t[64];
     AppendMenuW(m, MF_STRING | (g_rNoTb ? MF_CHECKED : 0), 20, Tr(L_REC_NOTB));
     AppendMenuW(m, MF_STRING | (g_rCur ? MF_CHECKED : 0), 21, Tr(L_REC_CUR));
+    AppendMenuW(m, MF_STRING | (g_rFx ? MF_CHECKED : 0), 67, Tr(L_REC_FX));
+    AppendMenuW(m, MF_STRING, 68, Tr(L_REC_FXCFG));
     AppendMenuW(m, MF_STRING | (g_rScr == 0 ? MF_CHECKED : 0), 27, Tr(L_REC_BTN));
     { HMONITOR hm[8]; int n = Mons(hm);
       for (int i = 0; i < n; i++) {
@@ -7323,6 +7527,7 @@ static HMENU Menu(void) {
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_POPUP, (UINT_PTR)MicMenu(), Tr(L_REC_MIC));
     AppendMenuW(m, MF_POPUP, (UINT_PTR)OvMenu(), Tr(L_REC_OV));
+    AppendMenuW(m, MF_STRING, 63, Tr(L_REC_OV_CFG));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     static const int f[3] = {15, 30, 60};
     for (int i = 0; i < 3; i++) { wsprintfW(t, Tr(L_REC_FPS), f[i]); AppendMenuW(m, MF_STRING | (g_rFps == f[i] ? MF_CHECKED : 0), 22 + i, t); }
@@ -7337,6 +7542,8 @@ static void Cmd(int c) {
     wchar_t v[8];
     if (c == 20) { g_rNoTb = !g_rNoTb; IniSet(L"Record", L"NoTaskbar", g_rNoTb ? L"1" : L"0"); }
     else if (c == 21) { g_rCur = !g_rCur; IniSet(L"Record", L"Cursor", g_rCur ? L"1" : L"0"); }
+    else if (c == 68) FxOpen();
+    else if (c == 67) { g_rFx = !g_rFx; IniSet(L"Record", L"Highlight", g_rFx ? L"1" : L"0"); ShowSync(); }
     else if (c >= 64 && c <= 66) { g_rAk = c == 64 ? 96 : c == 65 ? 128 : 192; wsprintfW(v, L"%d", g_rAk); IniSet(L"Record", L"AudioKbps", v); }
     else if (c >= 22 && c <= 24) { g_rFps = c == 22 ? 15 : c == 23 ? 30 : 60; wsprintfW(v, L"%d", g_rFps); IniSet(L"Record", L"Fps", v); }
     else if (c == 26 || c == 27 || (c >= 50 && c < 58)) {
@@ -10478,12 +10685,12 @@ static void RemStart(void) { RemNs::Start(); }
    keep: после выбора меню открывается снова на том же пункте (переключатели настроек). */
 static BOOL KeepAll(int) { return TRUE; }
 static BOOL KeepNone(int) { return FALSE; }
-static BOOL RecKeep(int c) { return c >= 300 ? (c - 300) % 8 < 4 : c != 25 && c != 61 && c != 63; }   // папки и окно настройки оверлеев - закрыть меню
+static BOOL RecKeep(int c) { return c >= 300 ? (c - 300) % 8 < 4 : c != 25 && c != 61 && c != 63 && c != 68; }   // папки и окно настройки оверлеев - закрыть меню
 static BOOL VolKeep(int c) { return c != 601; }
 static BOOL TmKeep(int) { return FALSE; }
 static void HidCmd(int c) { ShowHidden(c - 200); }
 static const struct MenuMod { int lo, hi; void (*cmd)(int); BOOL (*keep)(int); } kMenuMods[] = {
-    {20, 67, RecNs::Cmd, RecKeep}, {300, 500, RecNs::Cmd, RecKeep},                // запись: настройки, микрофоны 30..47, мониторы 50..57, оверлеи
+    {20, 69, RecNs::Cmd, RecKeep}, {300, 500, RecNs::Cmd, RecKeep},                // запись: настройки, микрофоны 30..47, мониторы 50..57, оверлеи
     {200, 232, HidCmd, KeepNone}, {1000, 1064, QrCmd, KeepNone},          // скрытые окна; быстрый запуск ([QuickRun], до 64)                                                   // скрытые окна (g_hid[32])
     {600, 700, VolNs::Cmd, VolKeep}, {700, 760, DupNs::Cmd, KeepAll},
     {899, 964, SchCmd, KeepAll}, {TM_ID, TM_ID + 80, TmCommand, TmKeep},
