@@ -79,7 +79,7 @@ X(A_RUN, "run", AK_CMD) X(A_ADMIN, "admin", AK_CMD) X(A_PY, "py", AK_CMD) X(A_PY
 X(A_TOTRAY, "totray", AK_NONE) X(A_LAYOUT, "layout", AK_NONE) X(A_PAUSE, "pause", AK_NONE) X(A_WEBCAM, "webcam", AK_NONE) X(A_STOPWATCH, "stopwatch", AK_NONE) \
 X(A_TIMER, "timer", AK_DUR) X(A_DRAW, "draw", AK_NONE) X(A_PICKER, "picker", AK_NONE) X(A_RECORD, "record", AK_NONE) X(A_SCRIPTS, "scripts", AK_NONE) \
 X(A_VOL, "volume", AK_NONE) X(A_VOLSET, "volumeset", AK_NONE) X(A_DUP, "duplicate", AK_NONE) X(A_MACRO, "macro", AK_NONE) X(A_RECORDS, "records", AK_NONE) \
-X(A_AUDIO, "audio", AK_NONE) X(A_VOICE, "voice", AK_NONE) X(A_SCRIPTN, "script", AK_SCRN) X(A_VOICECMD, "voicecmd", AK_NONE) X(A_TRAYMENU, "traymenu", AK_NONE) X(A_CALENDAR, "calendar", AK_CMD) X(A_EXIT, "exit", AK_NONE)
+X(A_AUDIO, "audio", AK_NONE) X(A_VOICE, "voice", AK_NONE) X(A_SCRIPTN, "script", AK_SCRN) X(A_VOICECMD, "voicecmd", AK_NONE) X(A_TRAYMENU, "traymenu", AK_NONE) X(A_TAKE, "take", AK_NONE) X(A_CALENDAR, "calendar", AK_CMD) X(A_EXIT, "exit", AK_NONE)
 #define ACT_ID(id, nm, k) id,
 enum { A_NONE, ACTION_LIST(ACT_ID) A_COUNT };
 #undef ACT_ID
@@ -138,12 +138,15 @@ static volatile LONG g_pickActive;
 static int g_rAk = 128;                                                              // [Record] AudioKbps: качество диктофона
 static int g_mHover = 300, g_mPos[2] = {-99999, -99999};              // запись действий: порог остановки курсора (мс), позиция кнопки
 static BOOL g_rNoTb = TRUE, g_rCur = TRUE; static int g_rFps = 30, g_rPos[2] = {-99999, -99999}, g_rScr;   // g_rScr: 0 - монитор с кнопкой, -1 - весь рабочий стол, N - монитор N
-static BOOL g_rDummy, g_rFx = TRUE, g_ringOn = TRUE;                                 // g_rFx: подсветка курсора в записи, g_ringOn: кольцо при клике
+static BOOL g_rDummy, g_rFx = TRUE, g_ringOn = TRUE, g_ringUp = TRUE, g_fxAll = TRUE;   // g_fxAll: общий выключатель эффектов; g_rFx: подсветка курсора, g_ringOn: кольцо при клике, g_ringUp: кольцо при отпускании
+#define FX_HALO (g_fxAll && g_rFx)
+#define FX_RING (g_fxAll && g_ringOn)
+#define FX_UP (g_fxAll && g_ringOn && g_ringUp)
 static int g_hlR = 22, g_hlA = 24, g_ringMs = 450, g_ringSz = 34;                    // радиус и яркость (%) подсветки, длительность (мс) и размер кольца
 static DWORD g_hlCol = 0xFFD60A, g_clL = 0x0A84FF, g_clR = 0xFF453A;                 // цвета 0xRRGGBB: подсветка, левый и правый клик
 struct OvCfg { wchar_t stem[64]; int mode, x, y, sc; };      // mode: 0 выкл, 1 на видео, 2 отдельный файл; x,y - доля кадра в ‰; sc - масштаб в %
 static OvCfg g_ovc[24]; static int g_novc; static BOOL g_rPwd = TRUE, g_rShow;
-static void RecShowSync(void);
+static void RecShowSync(void); static BOOL RecBusy(void); static void RecMark(void);
 static volatile LONG g_vOn; static int g_vLim = 50, g_vCeil, g_vBoost; static wchar_t g_vDev[80];     // стабильная громкость: вкл, порог пика %, потолок громкости %, подтяжка тихого %, устройство
 static void VolToggle(void); static void VolOpen(void); static void VolSync(void);
 static volatile LONG g_dOn; static wchar_t g_dSrc[80], g_dDst[80]; static int g_dLat = 20; static void DupSync(void), DupToggle(void), MacroToggle(DWORD mods);      // дублирование звука: вкл, источник (пусто - по умолчанию), приёмник
@@ -163,6 +166,7 @@ static OvPos *OvPosGet(const wchar_t *stem, const wchar_t *mon, BOOL create) {
 static void OvPosApply(const wchar_t *mon) {                  // подставить сохранённые для монитора положения (нет записи - остаются прежние)
     for (int i = 0; i < g_novc; i++) { OvPos *p = OvPosGet(g_ovc[i].stem, mon, FALSE); if (p) { g_ovc[i].x = p->x; g_ovc[i].y = p->y; g_ovc[i].sc = p->sc; } }
 }
+static wchar_t g_rTrk[3][80]; static BOOL g_rBeep = TRUE; static int g_rBeepHz = 15000;   // [Record] Track2..4: доп. дорожки звука (sys / sys:имя / mic:имя), TakeBeep/TakeBeepHz: сигнал метки дубля
 static wchar_t g_rMic[80], g_rDir[MAX_PATH];   // [Record] в ini: без панели задач, курсор, кадры/с, позиция кнопки
 static BOOL g_dLive; static int g_dCol, g_dWid = 1; static wchar_t g_dSaveDir[MAX_PATH];   // [Draw] в ini: режим, цвет, толщина, папка
 static COLORREF g_tmFg = RGB(255, 255, 255), g_tmBg = RGB(0, 0, 0);               // [Timer] в ini
@@ -258,9 +262,17 @@ X(L_VOL_TOASTOFF, "vol.toast_off", L"Стабильная громкость: в
 X(L_REC_NOTB, "rec.no_taskbar", L"Не снимать панель задач") \
 X(L_REC_CUR, "rec.cursor", L"Снимать курсор мыши") \
 X(L_REC_FX, "rec.halo", L"Подсвечивать курсор") \
+X(L_REC_TRK, "rec.track", L"Дорожка %d") \
+X(L_REC_TRK_OFF, "rec.track_off", L"Нет") \
+X(L_REC_TRK_SYS, "rec.track_sys", L"Системный звук (по умолчанию)") \
+X(L_REC_TRK_SYSN, "rec.track_sysn", L"Системный звук: %s") \
+X(L_REC_TRK_MIC, "rec.track_mic", L"Микрофон: %s") \
+X(L_REC_BEEP, "rec.beep", L"Сигнал на дорожках при метке дубля") \
+X(L_REC_TAKE, "rec.take", L"Метка дубля %d") \
 X(L_REC_FXCFG, "rec.fxcfg", L"Настройки курсора и кликов…") \
 X(L_FX_TITLE, "fx.title", L"Курсор мыши в записи") \
 X(L_FX_RING, "fx.ring", L"Кольцо при клике") \
+X(L_FX_REL, "fx.release", L"Кольцо при отпускании") \
 X(L_FX_R, "fx.radius", L"Размер подсветки") \
 X(L_FX_A, "fx.opacity", L"Яркость подсветки, %") \
 X(L_FX_MS, "fx.ms", L"Длительность кольца, мс") \
@@ -896,6 +908,7 @@ Language=ru
 ;     records                   меню записей (папка records)
 ;     audio (или dictaphone)    диктофон: запись звука с микрофона в .m4a; те же кнопка и управление, что у записи экрана (микрофон, папка, качество - в «Настройки записи»)
 ;     voice (или dictation), voicecmd (голосовая команда)     голосовой набор: 1-е нажатие - запись с микрофона, 2-е - распознавание (whisper.cpp, без интернета), текст вставляется в место курсора; язык - по раскладке (секция [Voice])
+;     take                      метка дубля во время записи экрана / диктофона (сигнал на дорожках и строка в одноимённом .txt); traymenu во время записи делает то же
 ;     exit                          закрыть DKeys (например, DKeys.exe do exit перед заменой exe)
 ; Win+цифры буферов перекрывают запуск закреплённых программ на панели задач.
 ; В меню буфера: Del - удалить, F2 - править, Ins - новая запись, Ctrl+Вверх/Вниз - переставить,
@@ -1104,13 +1117,16 @@ PowerShell=powershell.exe
 ; Cursor: 1 снимать курсор мыши | 0 нет
 ;Cursor=1
 ; Подсветка курсора и кликов в видео (удобнее настроить в меню записи: "Настройки курсора и кликов…")
+; Effects: 1 общий выключатель (пункт "Подсвечивать курсор" в меню) | 0 все эффекты выключены
 ; Highlight: 1 подсвечивать курсор кружком | 0 нет;  HighlightRadius 8-80 px;  HighlightOpacity 5-80 %;  HighlightColor RRGGBB
-; ClickRing: 1 показывать клик расходящимся кольцом | 0 нет;  ClickMs 150-1500 мс;  ClickSize 12-120 px;  ClickColorLeft / ClickColorRight RRGGBB
+; ClickRing: 1 показывать клик расходящимся кольцом | 0 нет;  ClickRelease: 1 и кольцо при отпускании кнопки | 0 нет;  ClickMs 150-1500 мс;  ClickSize 12-120 px;  ClickColorLeft / ClickColorRight RRGGBB
+;Effects=1
 ;Highlight=1
 ;HighlightRadius=22
 ;HighlightOpacity=24
 ;HighlightColor=FFD60A
 ;ClickRing=1
+;ClickRelease=1
 ;ClickMs=450
 ;ClickSize=34
 ;ClickColorLeft=0A84FF
@@ -1121,6 +1137,13 @@ PowerShell=powershell.exe
 ;Screen=0
 ; Dir: папка для видео (пусто - стандартная "Видео" пользователя)
 ;Dir=D:\Videos
+; Track2, Track3, Track4: дополнительные дорожки звука в видео и диктофоне (проще выбрать в меню "Микрофон"); пусто - нет, sys - системный звук,
+;   sys:имя - звук устройства вывода, mic:имя - другой микрофон. Дорожка 1 - микрофон (Mic)
+; TakeBeep: 1 метка дубля (Win+D при записи, пауза) пишет короткий тихий сигнал на все дорожки | 0 только файл меток (одноимённый .txt)
+; TakeBeepHz: частота сигнала, Гц (AAC обрезает всё выше ~15 кГц при 96-128 кбит/с, поэтому по умолчанию 15000)
+;Track2=sys
+;TakeBeep=1
+;TakeBeepHz=15000
 ; Mic: пусто - микрофон по умолчанию | - без звука | точное имя устройства (проще выбрать в меню)
 ;Mic=
 ; Pos: положение кнопки записи x,y
@@ -1477,7 +1500,7 @@ static void CfgDefaults(void) {
     lstrcpyW(g_lang, L"ru"); g_mouseSlow = 4; g_histOn = 0; g_histMax = 50; g_pasteDelay = 300; g_copyTimeout = 600; lstrcpyW(g_python, L"python.exe");
     g_pyPause = 1; g_toasts = 1; g_editor[0] = 0; g_bufMax = 10; g_layoutWord = 0; g_layoutSwitch = 1;
     g_dLive = FALSE; g_dCol = 0; g_dWid = 1; g_dSaveDir[0] = 0;
-    g_rNoTb = TRUE; g_rCur = TRUE; g_rFx = TRUE; g_ringOn = TRUE; g_hlR = 22; g_hlA = 24; g_ringMs = 450; g_ringSz = 34; g_hlCol = 0xFFD60A; g_clL = 0x0A84FF; g_clR = 0xFF453A; g_rScr = 0; g_rMic[0] = 0; g_rDir[0] = 0; g_rAk = 128; g_rFps = 30; g_rPos[0] = g_rPos[1] = -99999;
+    g_rNoTb = TRUE; g_rCur = TRUE; g_rFx = TRUE; g_ringOn = TRUE; g_ringUp = TRUE; g_fxAll = TRUE; g_hlR = 22; g_hlA = 24; g_ringMs = 450; g_ringSz = 34; g_hlCol = 0xFFD60A; g_clL = 0x0A84FF; g_clR = 0xFF453A; g_rScr = 0; g_rMic[0] = 0; g_rDir[0] = 0; g_rTrk[0][0] = g_rTrk[1][0] = g_rTrk[2][0] = 0; g_rBeep = TRUE; g_rBeepHz = 15000; g_rAk = 128; g_rFps = 30; g_rPos[0] = g_rPos[1] = -99999;
     g_rPwd = TRUE; g_rShow = FALSE; g_novc = 0; g_nopos = 0;
     memset(&g_aud, 0, sizeof g_aud); g_aud.vLim = 50; g_aud.dLat = 20;
     g_tmFg = RGB(255, 255, 255); g_tmBg = RGB(0, 0, 0); g_tmAlpha = 60; g_tmSize = 48; g_tmNFav = 0;
@@ -1542,6 +1565,8 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
     } else if (!lstrcmpiW(s, L"Record")) {
         if (!lstrcmpiW(k, L"NoTaskbar")) g_rNoTb = ToInt(v) != 0;
         else if (!lstrcmpiW(k, L"Cursor")) g_rCur = ToInt(v) != 0;
+        else if (!lstrcmpiW(k, L"Effects")) g_fxAll = ToInt(v) != 0;
+        else if (!lstrcmpiW(k, L"ClickRelease")) g_ringUp = ToInt(v) != 0;
         else if (!lstrcmpiW(k, L"Highlight")) g_rFx = ToInt(v) != 0;
         else if (!lstrcmpiW(k, L"HighlightRadius")) g_hlR = Clamp(ToInt(v), 8, 80);
         else if (!lstrcmpiW(k, L"HighlightOpacity")) g_hlA = Clamp(ToInt(v), 5, 80);
@@ -1554,6 +1579,11 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
         else if (!lstrcmpiW(k, L"AllScreens")) { if (ToInt(v)) g_rScr = -1; }
         else if (!lstrcmpiW(k, L"Screen")) g_rScr = !lstrcmpiW(v, L"all") ? -1 : ToInt(v) > 0 && ToInt(v) <= 8 ? ToInt(v) : 0;
         else if (!lstrcmpiW(k, L"Mic")) lstrcpynW(g_rMic, v, 80);
+        else if (!lstrcmpiW(k, L"Track2")) lstrcpynW(g_rTrk[0], v, 80);
+        else if (!lstrcmpiW(k, L"Track3")) lstrcpynW(g_rTrk[1], v, 80);
+        else if (!lstrcmpiW(k, L"Track4")) lstrcpynW(g_rTrk[2], v, 80);
+        else if (!lstrcmpiW(k, L"TakeBeep")) g_rBeep = ToInt(v) != 0;
+        else if (!lstrcmpiW(k, L"TakeBeepHz")) g_rBeepHz = Clamp(ToInt(v), 4000, 20000);
         else if (!lstrcmpiW(k, L"Dir")) lstrcpynW(g_rDir, v, MAX_PATH);
         else if (!lstrcmpiW(k, L"AudioKbps")) { g_rAk = ToInt(v); if (g_rAk != 96 && g_rAk != 192) g_rAk = 128; }
         else if (!lstrcmpiW(k, L"Fps")) { g_rFps = ToInt(v); if (g_rFps != 15 && g_rFps != 60) g_rFps = 30; }
@@ -3417,7 +3447,8 @@ static void ExecBind(const Bind *b) {
     case A_VOICE: VoiceToggle(); break;
     case A_VOICECMD: VoiceCmdToggle(); break;
     case A_CALENDAR: CalAction(b->arg); break;
-    case A_TRAYMENU: g_trayAlign = TPM_CENTERALIGN | TPM_VCENTERALIGN; TrayMenu(); break;
+    case A_TRAYMENU: if (RecBusy()) { RecMark(); break; } g_trayAlign = TPM_CENTERALIGN | TPM_VCENTERALIGN; TrayMenu(); break;     // во время записи этот хоткей ставит метку дубля
+    case A_TAKE: RecMark(); break;
     case A_EXIT: DestroyWindow(g_hwnd); break;
     case A_SCRIPTN: RunScriptN(b->n); break;
     case A_PAUSE: InterlockedExchange(&g_paused, !g_paused); Toast(g_paused ? Tr(L_T_PAUSED) : Tr(L_T_WORKING)); break;
@@ -6683,13 +6714,13 @@ static void FxRelease(GpGraphics *g, int x, int y, int k, DWORD age) { FxRing(g,
 static DWORD fxUp[3]; static POINT fxUpPos[3];
 static void DrawFx(GpGraphics *g, int cx, int cy) {                // курсор в кадре записи: подсветка и кольца
     DWORD now = GetTickCount();
-    if (g_rFx) FxHalo(g, cx, cy, g_ioMouse[1] || g_ioMouse[2]);
+    if (FX_HALO) FxHalo(g, cx, cy, g_ioMouse[1] || g_ioMouse[2]);
     for (int k = 1; k <= 2; k++) {
         DWORD h = g_ioMHit[k], u = g_ioMUp[k];
         if (h != fxHit[k]) { fxHit[k] = h; fxPos[k].x = cx; fxPos[k].y = cy; }
         if (u != fxUp[k]) { fxUp[k] = u; fxUpPos[k].x = cx; fxUpPos[k].y = cy; }
-        if (g_ringOn && h) FxRing(g, fxPos[k].x, fxPos[k].y, k, now - h);
-        if (g_ringOn && u) FxRelease(g, fxUpPos[k].x, fxUpPos[k].y, k, now - u);
+        if (FX_RING && h) FxRing(g, fxPos[k].x, fxPos[k].y, k, now - h);
+        if (FX_UP && u) FxRelease(g, fxUpPos[k].x, fxUpPos[k].y, k, now - u);
     }
 }
 static BOOL PreFits(const wchar_t *png, const wchar_t *stem, int *len) {        // имя png (без .png) - начало имени json
@@ -6784,22 +6815,145 @@ static BOOL AudioInit(BOOL force = FALSE) {                                     
     if (!ok) { if (aclip) { aclip->Release(); aclip = NULL; } if (aclient) { aclient->Release(); aclient = NULL; } }
     return ok;
 }
+/* --- несколько дорожек звука: [0] основной микрофон, [1..3] Track2..4 (системный звук / другие устройства); метки дублей --- */
+struct ASrc { IAudioClient *cl; IAudioCaptureClient *cap; int stream; BOOL loop; long long lastEnd; int bpos; LONG seen; };
+static ASrc asr[4]; static volatile LONG markSeq; static int markN;
+static IMMDevice *FindDev(IMMDeviceEnumerator *en, EDataFlow fl, const wchar_t *name) {
+    IMMDevice *dev = NULL;
+    if (name && name[0]) {
+        IMMDeviceCollection *col = NULL; UINT n = 0;
+        if (SUCCEEDED(en->EnumAudioEndpoints(fl, DEVICE_STATE_ACTIVE, &col))) {
+            col->GetCount(&n);
+            for (UINT i = 0; i < n && !dev; i++) {
+                IMMDevice *d = NULL; IPropertyStore *ps = NULL; PROPVARIANT pv; PropVariantInit(&pv);
+                if (SUCCEEDED(col->Item(i, &d)) && SUCCEEDED(d->OpenPropertyStore(STGM_READ, &ps)) && SUCCEEDED(ps->GetValue(kFriendly, &pv)) && pv.vt == VT_LPWSTR && !lstrcmpW(pv.pwszVal, name)) { dev = d; d = NULL; }
+                PropVariantClear(&pv); if (ps) ps->Release(); if (d) d->Release();
+            }
+            col->Release();
+        }
+    }
+    if (!dev) en->GetDefaultAudioEndpoint(fl, eConsole, &dev);
+    return dev;
+}
+static BOOL InitExtra(ASrc *s, const wchar_t *spec) {          // spec: sys | sys:имя | mic | mic:имя
+    BOOL sys = spec[0] == L's' && spec[1] == L'y' && spec[2] == L's', ok = FALSE;
+    const wchar_t *name = spec; while (*name && *name != L':') name++; if (*name == L':') name++;
+    IMMDeviceEnumerator *en = NULL;
+    if (FAILED(CoCreateInstance(CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, IID_IMMDeviceEnumerator, (void **)&en))) return FALSE;
+    IMMDevice *dev = FindDev(en, sys ? eRender : eCapture, name);
+    if (dev) {
+        WAVEFORMATEX wf; memset(&wf, 0, sizeof wf); wf.wFormatTag = WAVE_FORMAT_PCM; wf.nChannels = 2; wf.nSamplesPerSec = 48000; wf.wBitsPerSample = 16; wf.nBlockAlign = 4; wf.nAvgBytesPerSec = 192000;
+        if (SUCCEEDED(dev->Activate(IID_IAudioClient, CLSCTX_ALL, NULL, (void **)&s->cl))
+            && SUCCEEDED(s->cl->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY | (sys ? AUDCLNT_STREAMFLAGS_LOOPBACK : 0), 10000000, 0, &wf, NULL))
+            && SUCCEEDED(s->cl->GetService(IID_IAudioCaptureClient, (void **)&s->cap))) { ok = TRUE; s->loop = sys; }
+        dev->Release();
+    }
+    en->Release();
+    if (!ok) { if (s->cap) { s->cap->Release(); s->cap = NULL; } if (s->cl) { s->cl->Release(); s->cl = NULL; } }
+    return ok;
+}
+static BOOL AudSetup(BOOL mic) {                              // собрать источники: микрофон (уже открыт AudioInit) и Track2..4; TRUE - есть хоть один
+    memset(asr, 0, sizeof asr); BOOL any = FALSE;
+    for (int i = 0; i < 4; i++) { asr[i].stream = -1; asr[i].bpos = -1; }
+    if (mic && aclient && aclip) { asr[0].cl = aclient; asr[0].cap = aclip; any = TRUE; }
+    for (int i = 0; i < 3; i++) if (g_rTrk[i][0] && InitExtra(&asr[i + 1], g_rTrk[i])) any = TRUE;
+    return any;
+}
+static void AudFree(void) {
+    for (int i = 1; i < 4; i++) { if (asr[i].cap) { asr[i].cap->Release(); asr[i].cap = NULL; } if (asr[i].cl) { asr[i].cl->Release(); asr[i].cl = NULL; } }
+}
+static BOOL AudAny(void) { for (int i = 0; i < 4; i++) if (asr[i].stream >= 0) return TRUE; return FALSE; }
+static BOOL AddAac(int bps, int *stream) {                    // дорожка AAC (вход PCM 48 кГц, 16 бит, стерео) в писателе swr
+    IMFMediaType *ao = NULL, *ai = NULL; DWORD sa = 0; BOOL ok = FALSE;
+    if (SUCCEEDED(MFCreateMediaType(&ao)) && SUCCEEDED(MFCreateMediaType(&ai))) {
+        ao->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio); ao->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_AAC);
+        ao->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16); ao->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, 48000); ao->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, 2);
+        ao->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, bps); ao->SetUINT32(MF_MT_AAC_PAYLOAD_TYPE, 0);
+        ai->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio); ai->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_PCM);
+        ai->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16); ai->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, 48000); ai->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, 2);
+        ai->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, 4); ai->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 192000);
+        if (SUCCEEDED(swr->AddStream(ao, &sa)) && SUCCEEDED(swr->SetInputMediaType(sa, ai, NULL))) { *stream = (int)sa; ok = TRUE; }
+    }
+    if (ao) ao->Release(); if (ai) ai->Release();
+    return ok;
+}
+static void AudStreams(int bps) {                             // по дорожке на каждый источник (первый - основной микрофон); не добавилась - источник отключается
+    for (int i = 0; i < 4; i++) {
+        if (!asr[i].cap) continue;
+        if (!AddAac(bps, &asr[i].stream)) {
+            if (i) { asr[i].cap->Release(); asr[i].cap = NULL; asr[i].cl->Release(); asr[i].cl = NULL; } else asr[i].cap = NULL;
+        }
+    }
+    aStream = asr[0].stream;
+}
+static double SinD(double x) {                                // sin без CRT: приведение к [-pi/2, pi/2] и ряд Тейлора
+    const double PI = 3.141592653589793, TP = 6.283185307179586;
+    x -= TP * (double)(long long)(x / TP); if (x > PI) x -= TP; else if (x < -PI) x += TP;
+    if (x > PI / 2) x = PI - x; else if (x < -PI / 2) x = -PI - x;
+    double x2 = x * x; return x * (1 - x2 / 6 * (1 - x2 / 20 * (1 - x2 / 42 * (1 - x2 / 72 * (1 - x2 / 110)))));
+}
+#define BEEPN 5760                                            // длина сигнала: 120 мс при 48 кГц (накладывается на звук, запись не удлиняет)
+static void AEmit(ASrc *s, const BYTE *d, UINT32 fr, long long ts) {
+    static short tmp[4800 * 2];
+    while (fr) {
+        UINT32 c = fr > 4800 ? 4800 : fr; const void *src = d;
+        if (markSeq != s->seen) { s->seen = markSeq; s->bpos = 0; }
+        if (s->bpos >= 0 && g_rBeep) {
+            if (d) memcpy(tmp, d, c * 4); else memset(tmp, 0, c * 4);
+            double w = 6.283185307179586 * g_rBeepHz / 48000.0;
+            for (UINT32 i = 0; i < c && s->bpos + (int)i < BEEPN; i++) {
+                int p = s->bpos + (int)i, rem = BEEPN - p; double env = p < 240 ? p / 240.0 : rem < 240 ? rem / 240.0 : 1.0;   // плавные края - без щелчков
+                int v = (int)(8000 * env * SinD(w * p));
+                for (int ch = 0; ch < 2; ch++) { int x = tmp[2 * i + ch] + v; tmp[2 * i + ch] = (short)(x > 32767 ? 32767 : x < -32768 ? -32768 : x); }
+            }
+            s->bpos += (int)c; if (s->bpos >= BEEPN) s->bpos = -1;
+            src = tmp;
+        } else if (s->bpos >= 0) s->bpos = -1;
+        long long dur = (long long)c * 10000000LL / 48000;
+        WriteBuf(swr, s->stream, src, c * 4, ts, dur);
+        s->lastEnd = ts + dur; ts += dur; fr -= c; if (d) d += c * 4;
+    }
+}
 static DWORD WINAPI AudioWorker(LPVOID) {
     CoInitializeEx(NULL, COINIT_MULTITHREADED);
     long long t0u = ToU(t0.QuadPart);
-    aclient->Start();
+    for (int i = 0; i < 4; i++) { asr[i].seen = markSeq; asr[i].bpos = -1; asr[i].lastEnd = 0; if (asr[i].stream >= 0 && asr[i].cl) asr[i].cl->Start(); }
     while (!stopF) {
         Sleep(10);
-        UINT32 n = 0;
-        while (SUCCEEDED(aclip->GetNextPacketSize(&n)) && n) {
-            BYTE *d = NULL; UINT32 fr = 0; DWORD fl = 0; UINT64 dpos = 0, qpc = 0;
-            if (FAILED(aclip->GetBuffer(&d, &fr, &fl, &dpos, &qpc))) break;
-            if (!paused && fr) WriteBuf(swr, aStream, (fl & AUDCLNT_BUFFERFLAGS_SILENT) ? NULL : d, fr * 4, (long long)qpc - t0u - ToU(pauseAcc), (long long)fr * 10000000LL / 48000);
-            aclip->ReleaseBuffer(fr);
+        for (int i = 0; i < 4; i++) {
+            ASrc *s = &asr[i]; if (s->stream < 0 || !s->cap) continue;
+            UINT32 n = 0;
+            while (SUCCEEDED(s->cap->GetNextPacketSize(&n)) && n) {
+                BYTE *d = NULL; UINT32 fr = 0; DWORD fl = 0; UINT64 dpos = 0, qpc = 0;
+                if (FAILED(s->cap->GetBuffer(&d, &fr, &fl, &dpos, &qpc))) break;
+                if (!paused && fr) AEmit(s, (fl & AUDCLNT_BUFFERFLAGS_SILENT) ? NULL : d, fr, (long long)qpc - t0u - ToU(pauseAcc));
+                s->cap->ReleaseBuffer(fr);
+            }
+            if (s->loop && !paused) {                              // системный звук молчит - пакетов нет: заполняем тишиной, чтобы дорожка шла по времени
+                long long cur = ToU(Now() - t0.QuadPart) - ToU(pauseAcc);
+                if (cur - s->lastEnd > 1500000) { long long fr = (cur - 500000 - s->lastEnd) * 48000 / 10000000; if (fr > 0) AEmit(s, NULL, (UINT32)fr, s->lastEnd); }
+            }
         }
     }
-    aclient->Stop();
+    for (int i = 0; i < 4; i++) if (asr[i].stream >= 0 && asr[i].cl) asr[i].cl->Stop();
     CoUninitialize(); return 0;
+}
+static void MkLine(char *b, int *n, int take, int ms) {
+    *n += wsprintfA(b + *n, "%d\t%02d:%02d:%02d.%03d\r\n", take, ms / 3600000, ms / 60000 % 60, ms / 1000 % 60, ms % 1000);
+}
+static void Mark(void) {                                      // метка дубля: строка в одноимённом .txt и сигнал на дорожках (на паузе - в начале следующего куска)
+    if (!recording) return;
+    long long tu = paused ? ToU(pauseStart - t0.QuadPart - pauseAcc) : ToU(Now() - t0.QuadPart - pauseAcc);
+    int ms = tu < 0 ? 0 : (int)(tu / 10000);
+    wchar_t p2[MAX_PATH]; lstrcpynW(p2, path, MAX_PATH); p2[lstrlenW(p2) - 4] = 0; Cat(p2, MAX_PATH, L".txt");
+    HANDLE f = CreateFileW(p2, GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_ALWAYS, 0, NULL);
+    if (f != INVALID_HANDLE_VALUE) {
+        char b[96]; int n = 0; SetFilePointer(f, 0, NULL, FILE_END);
+        if (!markN) MkLine(b, &n, 1, 0);
+        MkLine(b, &n, markN + 2, ms); DWORD wr = 0; WriteFile(f, b, n, &wr, NULL); CloseHandle(f);
+    }
+    markN++; InterlockedIncrement(&markSeq);
+    wchar_t m[48]; wsprintfW(m, Tr(L_REC_TAKE), markN + 1); Toast(m);
 }
 // Видеодорожка H.264 в писателе: вход RGB32 (снизу вверх), выход H.264
 static BOOL AddVid(IMFSinkWriter *wr, int w, int h, DWORD *si) {
@@ -6843,26 +6997,14 @@ static DWORD WINAPI Worker(LPVOID) {
     int w = cr.right - cr.left, h = cr.bottom - cr.top;
     Ov ov[NOVL]; OvOut oo[NOVL]; int nov = 0; memset(ov, 0, sizeof ov); memset(oo, 0, sizeof oo);
     HDC sdc = GetDC(NULL);
-    swr = NULL; aStream = -1;
+    swr = NULL; aStream = -1; markN = 0;
     if (mf) {
         DWORD si = 0;
-        audio = AudioInit();
+        audio = AudSetup(AudioInit());
         if (gp) for (int i = 0; i < npre && nov < NOVL; i++) { OvCfg *c = OvCfgGet(pre[i].stem, FALSE); if (c && c->mode && OvLoad(&pre[i], c, &ov[nov])) nov++; }
         if (SUCCEEDED(MFCreateSinkWriterFromURL(path, NULL, NULL, &swr)) && AddVid(swr, w, h, &si)) {
             started = TRUE;
-            if (audio) {                                               // звук - вторая дорожка (AAC); не получилось - пишем без звука
-                IMFMediaType *ao = NULL, *ai = NULL; DWORD sa = 0;
-                if (SUCCEEDED(MFCreateMediaType(&ao)) && SUCCEEDED(MFCreateMediaType(&ai))) {
-                    ao->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio); ao->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_AAC);
-                    ao->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16); ao->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, 48000); ao->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, 2);
-                    ao->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 16000); ao->SetUINT32(MF_MT_AAC_PAYLOAD_TYPE, 0);
-                    ai->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio); ai->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_PCM);
-                    ai->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16); ai->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, 48000); ai->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, 2);
-                    ai->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, 4); ai->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 192000);
-                    if (SUCCEEDED(swr->AddStream(ao, &sa)) && SUCCEEDED(swr->SetInputMediaType(sa, ai, NULL))) aStream = (int)sa;
-                }
-                if (ao) ao->Release(); if (ai) ai->Release();
-            }
+            if (audio) AudStreams(16000);                                // звук - дорожки AAC (микрофон и доп. источники); не получилось - пишем без звука
             started = SUCCEEDED(swr->BeginWriting());
         }
         for (int k = 0; started && k < nov; k++) if (ov[k].c->mode & 2) {   // оверлей отдельным файлом на зелёном фоне (хромакей)
@@ -6879,10 +7021,10 @@ static DWORD WINAPI Worker(LPVOID) {
     if (started) {
         HDC mdc = NULL; HBITMAP hb = NULL; void *bits = NULL; GpBitmap *fb = NULL; GpGraphics *fg = NULL;
         if (MkDib(sdc, w, h, &mdc, &hb, &bits)) {
-            if (nov || g_rFx || g_ringOn) MkGp(bits, w, h, PixelFormat32bppRGB, &fb, &fg);
+            if (nov || FX_HALO || FX_RING) MkGp(bits, w, h, PixelFormat32bppRGB, &fb, &fg);
             DWORD bytes = (DWORD)w * h * 4;
             QueryPerformanceFrequency(&fq); QueryPerformanceCounter(&t0); pauseAcc = 0; paused = 0; pwdStop = 0; pwdNow = 0;
-            if (aStream >= 0) ath = CreateThread(NULL, 0, AudioWorker, NULL, 0, NULL);
+            if (AudAny()) ath = CreateThread(NULL, 0, AudioWorker, NULL, 0, NULL);
             if (nov && g_rPwd) pth = CreateThread(NULL, 0, PwdWorker, NULL, 0, NULL);
             long long interval = fq.QuadPart / fps, next = t0.QuadPart, dur = 10000000LL / fps;
             timeBeginPeriod(1);
@@ -6890,7 +7032,7 @@ static DWORD WINAPI Worker(LPVOID) {
                 if (paused) { Sleep(20); next = Now(); continue; }
                 long long tn = Now();
                 BitBlt(mdc, 0, 0, w, h, sdc, cr.left, cr.top, SRCCOPY | CAPTUREBLT);
-                if (fg && (g_rFx || g_ringOn)) {
+                if (fg && (FX_HALO || FX_RING)) {
                     POINT cp; GetCursorPos(&cp); GdiFlush();
                     DrawFx(fg, cp.x - cr.left, cp.y - cr.top); GdipFlush(fg, FlushIntentionSync);
                 }
@@ -6932,7 +7074,7 @@ static DWORD WINAPI Worker(LPVOID) {
     for (int k = 0; k < nov; k++) OvFree(&ov[k]);
     if (sdc) ReleaseDC(NULL, sdc);
     if (swr) { if (started) swr->Finalize(); swr->Release(); swr = NULL; }
-    if (aclip) { aclip->Release(); aclip = NULL; } if (aclient) { aclient->Release(); aclient = NULL; }
+    if (aclip) { aclip->Release(); aclip = NULL; } if (aclient) { aclient->Release(); aclient = NULL; } AudFree();
     if (gp) GdiplusShutdown(gtok);
     if (mf) MFShutdown();
     CoUninitialize(); return 0;
@@ -6964,23 +7106,13 @@ static BOOL aud, csOk;                                                          
 static DWORD WINAPI AudRec(LPVOID) {
     CoInitializeEx(NULL, COINIT_MULTITHREADED);
     BOOL mf = SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_LITE)), started = FALSE;
-    swr = NULL; aStream = -1;
-    if (mf && AudioInit(TRUE)) {
+    swr = NULL; aStream = -1; markN = 0;
+    if (mf && AudSetup(AudioInit(TRUE))) {
         IMFAttributes *at = NULL; MFCreateAttributes(&at, 1);
         if (at) at->SetGUID(MF_TRANSCODE_CONTAINERTYPE, MFTranscodeContainerType_MPEG4);
         if (SUCCEEDED(MFCreateSinkWriterFromURL(path, NULL, at, &swr))) {
-            IMFMediaType *ao = NULL, *ai = NULL; DWORD sa = 0;
-            if (SUCCEEDED(MFCreateMediaType(&ao)) && SUCCEEDED(MFCreateMediaType(&ai))) {
-                ao->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio); ao->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_AAC);
-                ao->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16); ao->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, 48000); ao->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, 2);
-                ao->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, g_rAk * 125); ao->SetUINT32(MF_MT_AAC_PAYLOAD_TYPE, 0);
-                ai->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio); ai->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_PCM);
-                ai->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16); ai->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, 48000); ai->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, 2);
-                ai->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, 4); ai->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 192000);
-                if (SUCCEEDED(swr->AddStream(ao, &sa)) && SUCCEEDED(swr->SetInputMediaType(sa, ai, NULL))) aStream = (int)sa;
-            }
-            if (ao) ao->Release(); if (ai) ai->Release();
-            started = aStream >= 0 && SUCCEEDED(swr->BeginWriting());
+            AudStreams(g_rAk * 125);
+            started = AudAny() && SUCCEEDED(swr->BeginWriting());
         }
         if (at) at->Release();
     }
@@ -6988,7 +7120,7 @@ static DWORD WINAPI AudRec(LPVOID) {
     okF = started; SetEvent(ev);
     if (started) AudioWorker(NULL);                                                     // пишет, пока не поднят stopF
     if (swr) { if (started) swr->Finalize(); swr->Release(); swr = NULL; }
-    if (aclip) { aclip->Release(); aclip = NULL; } if (aclient) { aclient->Release(); aclient = NULL; }
+    if (aclip) { aclip->Release(); aclip = NULL; } if (aclient) { aclient->Release(); aclient = NULL; } AudFree();
     if (mf) MFShutdown();
     CoUninitialize(); return 0;
 }
@@ -7031,7 +7163,7 @@ static void Start(void) {
 }
 static void Pause(void) {
     if (!recording) return;
-    if (!paused) { pauseStart = Now(); paused = 1; }
+    if (!paused) { pauseStart = Now(); paused = 1; Mark(); }
     else { pauseAcc += Now() - pauseStart; paused = 0; }
     Repaint();
 }
@@ -7110,13 +7242,13 @@ static void LivePaint(void) {
     if (!lg) return;
     POINT cp; GetCursorPos(&cp); int c = LS / 2; DWORD now = GetTickCount();
     GdipGraphicsClear(lg, 0);
-    if (g_rFx) FxHalo(lg, c, c, g_ioMouse[1] || g_ioMouse[2]);
+    if (FX_HALO) FxHalo(lg, c, c, g_ioMouse[1] || g_ioMouse[2]);
     for (int k = 1; k <= 2; k++) {
         DWORD h = g_ioMHit[k], u = g_ioMUp[k];
         if (h != lvHit[k]) { lvHit[k] = h; lvPos[k] = cp; }
         if (u != lvUp[k]) { lvUp[k] = u; lvUpPos[k] = cp; }
-        if (g_ringOn && h) FxRing(lg, lvPos[k].x - cp.x + c, lvPos[k].y - cp.y + c, k, now - h);
-        if (g_ringOn && u) FxRelease(lg, lvUpPos[k].x - cp.x + c, lvUpPos[k].y - cp.y + c, k, now - u);
+        if (FX_RING && h) FxRing(lg, lvPos[k].x - cp.x + c, lvPos[k].y - cp.y + c, k, now - h);
+        if (FX_UP && u) FxRelease(lg, lvUpPos[k].x - cp.x + c, lvUpPos[k].y - cp.y + c, k, now - u);
     }
     GdipFlush(lg, FlushIntentionSync);
     POINT pt = {cp.x - c, cp.y - c}, p0 = {0, 0}; SIZE sz = {LS, LS}; BLENDFUNCTION bf = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
@@ -7136,7 +7268,7 @@ static void LiveStop(void) {
 }
 static void LiveStart(void) {
     LiveStop();
-    if (!hw || aud || (!g_rFx && !g_ringOn)) return;
+    if (!hw || aud || (!FX_HALO && !FX_RING)) return;
     GdiplusStartupInput in; if (GdiplusStartup(&ltok, &in, NULL) != Ok) return;
     ltokOn = TRUE;
     int R = (g_hlR > 10 + g_ringSz ? g_hlR : 10 + g_ringSz) + 8; LS = 2 * R;
@@ -7384,8 +7516,10 @@ static void OpenMode(BOOL a) {                                    // a: дикт
 static void Open(void) { OpenMode(FALSE); }
 static void OpenAudio(void) { OpenMode(TRUE); }
 static wchar_t micList[16][80];
+static wchar_t rndList[16][80];
+static void EscAmp(const wchar_t *s, wchar_t *e, int max) { int o = 0; for (int j = 0; s[j] && o < max - 2; j++) { if (s[j] == L'&') e[o++] = L'&'; e[o++] = s[j]; } e[o] = 0; }
 static HMENU MicMenu(void) {
-    HMENU m = CreatePopupMenu(); BOOL off = g_rMic[0] == L'-' && !g_rMic[1], def = !g_rMic[0]; int nm = 0;
+    HMENU m = CreatePopupMenu(); BOOL off = g_rMic[0] == L'-' && !g_rMic[1], def = !g_rMic[0]; int nm = 0, nr = 0;
     AppendMenuW(m, MF_STRING | (def ? MF_CHECKED : 0), 30, Tr(L_REC_MICDEF));
     AppendMenuW(m, MF_STRING | (off ? MF_CHECKED : 0), 31, Tr(L_REC_MICOFF));
     IMMDeviceEnumerator *en = NULL; IMMDeviceCollection *col = NULL; UINT n = 0;
@@ -7403,8 +7537,36 @@ static HMENU MicMenu(void) {
             }
             col->Release();
         }
+        col = NULL; n = 0;
+        if (SUCCEEDED(en->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &col))) {            // устройства вывода - для записи системного звука (loopback)
+            col->GetCount(&n);
+            for (UINT i = 0; i < n && nr < 16; i++) {
+                IMMDevice *d = NULL; IPropertyStore *ps = NULL; PROPVARIANT pv; PropVariantInit(&pv);
+                if (SUCCEEDED(col->Item(i, &d)) && SUCCEEDED(d->OpenPropertyStore(STGM_READ, &ps)) && SUCCEEDED(ps->GetValue(kFriendly, &pv)) && pv.vt == VT_LPWSTR) { lstrcpynW(rndList[nr], pv.pwszVal, 80); nr++; }
+                PropVariantClear(&pv); if (ps) ps->Release(); if (d) d->Release();
+            }
+            col->Release();
+        }
         en->Release();
     }
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    for (int t = 0; t < 3; t++) {                                                              // дорожки 2-4: нет / системный звук / устройство
+        HMENU sm = CreatePopupMenu(); const wchar_t *sp = g_rTrk[t]; wchar_t e[200], e2[170], lab[96];
+        AppendMenuW(sm, MF_STRING | (!sp[0] ? MF_CHECKED : 0), 1100 + t * 60, Tr(L_REC_TRK_OFF));
+        AppendMenuW(sm, MF_STRING | (!lstrcmpW(sp, L"sys") ? MF_CHECKED : 0), 1100 + t * 60 + 1, Tr(L_REC_TRK_SYS));
+        for (int j = 0; j < nr; j++) {
+            wchar_t full[100]; wsprintfW(full, L"sys:%s", rndList[j]); EscAmp(rndList[j], e2, 170); wsprintfW(e, Tr(L_REC_TRK_SYSN), e2);
+            AppendMenuW(sm, MF_STRING | (!lstrcmpW(sp, full) ? MF_CHECKED : 0), 1100 + t * 60 + 2 + j, e);
+        }
+        for (int j = 0; j < nm; j++) {
+            wchar_t full[100]; wsprintfW(full, L"mic:%s", micList[j]); EscAmp(micList[j], e2, 170); wsprintfW(e, Tr(L_REC_TRK_MIC), e2);
+            AppendMenuW(sm, MF_STRING | (!lstrcmpW(sp, full) ? MF_CHECKED : 0), 1100 + t * 60 + 18 + j, e);
+        }
+        wsprintfW(lab, Tr(L_REC_TRK), t + 2);
+        if (sp[0]) { int o = lstrlenW(lab); lab[o] = L' '; lab[o + 1] = 0x2713; lab[o + 2] = 0; }
+        AppendMenuW(m, MF_POPUP, (UINT_PTR)sm, lab);
+    }
+    AppendMenuW(m, MF_STRING | (g_rBeep ? MF_CHECKED : 0), 1090, Tr(L_REC_BEEP));
     return m;
 }
 /* --- окно настроек курсора и кликов: предпросмотр, размеры кнопками -/+, цвета; всё сразу пишется в ini --- */
@@ -7429,6 +7591,7 @@ static LRESULT CALLBACK FxProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (g) {
             if (g_rFx) FxHalo(g, cx, cy, age < 120);
             if (g_ringOn && age != 0xFFFF) FxRing(g, cx, cy, k, age);
+            if (g_ringOn && g_ringUp && ph % 1200 > 700) FxRelease(g, cx, cy, k, ph % 1200 - 700);
             GdipDeleteGraphics(g);
         }
         DrawIconEx(md, cx, cy, LoadCursorW(NULL, IDC_ARROW), 0, 0, 0, NULL, DI_NORMAL);
@@ -7444,6 +7607,7 @@ static LRESULT CALLBACK FxProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         int id = LOWORD(w); wchar_t v[16];
         if (id == 1) { g_rFx = SendMessageW((HWND)l, BM_GETCHECK, 0, 0) == BST_CHECKED; IniSet(L"Record", L"Highlight", g_rFx ? L"1" : L"0"); }
         else if (id == 2) { g_ringOn = SendMessageW((HWND)l, BM_GETCHECK, 0, 0) == BST_CHECKED; IniSet(L"Record", L"ClickRing", g_ringOn ? L"1" : L"0"); }
+        else if (id == 3) { g_ringUp = SendMessageW((HWND)l, BM_GETCHECK, 0, 0) == BST_CHECKED; IniSet(L"Record", L"ClickRelease", g_ringUp ? L"1" : L"0"); }
         else if ((id >= 10 && id < 14) || (id >= 20 && id < 24)) {
             int i = id % 10, *p = FxVal(i); *p = Clamp(*p + (id < 20 ? -kFxSt[i] : kFxSt[i]), kFxLo[i], kFxHi[i]);
             wsprintfW(v, L"%d", *p); IniSet(L"Record", kFxKey[i], v); RECT r = kFxRows; InvalidateRect(h, &r, TRUE);
@@ -7476,7 +7640,7 @@ static void FxOpen(void) {
     if (!fxw) { GdiplusShutdown(fxtok); return; }
     HFONT f = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
     struct { int id, x, y, w, st; const wchar_t *t; } cs[] = {
-        {1, 10, 118, 300, BS_AUTOCHECKBOX, Tr(L_REC_FX)}, {2, 10, 142, 300, BS_AUTOCHECKBOX, Tr(L_FX_RING)},
+        {1, 10, 118, 300, BS_AUTOCHECKBOX, Tr(L_REC_FX)}, {2, 10, 142, 150, BS_AUTOCHECKBOX, Tr(L_FX_RING)}, {3, 165, 142, 155, BS_AUTOCHECKBOX, Tr(L_FX_REL)},
         {10, 214, 175, 28, 0, L"-"}, {11, 214, 203, 28, 0, L"-"}, {12, 214, 231, 28, 0, L"-"}, {13, 214, 259, 28, 0, L"-"},
         {20, 246, 175, 28, 0, L"+"}, {21, 246, 203, 28, 0, L"+"}, {22, 246, 231, 28, 0, L"+"}, {23, 246, 259, 28, 0, L"+"},
         {30, 10, 290, 100, 0, Tr(L_FX_CH)}, {31, 115, 290, 100, 0, Tr(L_FX_CL)}, {32, 220, 290, 100, 0, Tr(L_FX_CR)}};
@@ -7485,6 +7649,7 @@ static void FxOpen(void) {
         SendMessageW(c, WM_SETFONT, (WPARAM)f, TRUE);
         if (cs[i].id == 1) SendMessageW(c, BM_SETCHECK, g_rFx ? BST_CHECKED : BST_UNCHECKED, 0);
         if (cs[i].id == 2) SendMessageW(c, BM_SETCHECK, g_ringOn ? BST_CHECKED : BST_UNCHECKED, 0);
+        if (cs[i].id == 3) SendMessageW(c, BM_SETCHECK, g_ringUp ? BST_CHECKED : BST_UNCHECKED, 0);
     }
     SetTimer(fxw, 1, 33, NULL);
     ShowWindow(fxw, SW_SHOW); ForceFg(fxw);
@@ -7520,7 +7685,7 @@ static HMENU Menu(void) {
     HMENU m = CreatePopupMenu(); wchar_t t[64];
     AppendMenuW(m, MF_STRING | (g_rNoTb ? MF_CHECKED : 0), 20, Tr(L_REC_NOTB));
     AppendMenuW(m, MF_STRING | (g_rCur ? MF_CHECKED : 0), 21, Tr(L_REC_CUR));
-    AppendMenuW(m, MF_STRING | (g_rFx ? MF_CHECKED : 0), 67, Tr(L_REC_FX));
+    AppendMenuW(m, MF_STRING | (g_fxAll ? MF_CHECKED : 0), 67, Tr(L_REC_FX));
     AppendMenuW(m, MF_STRING, 68, Tr(L_REC_FXCFG));
     AppendMenuW(m, MF_STRING | (g_rScr == 0 ? MF_CHECKED : 0), 27, Tr(L_REC_BTN));
     { HMONITOR hm[8]; int n = Mons(hm);
@@ -7548,8 +7713,15 @@ static void Cmd(int c) {
     wchar_t v[8];
     if (c == 20) { g_rNoTb = !g_rNoTb; IniSet(L"Record", L"NoTaskbar", g_rNoTb ? L"1" : L"0"); }
     else if (c == 21) { g_rCur = !g_rCur; IniSet(L"Record", L"Cursor", g_rCur ? L"1" : L"0"); }
+    else if (c == 1090) { g_rBeep = !g_rBeep; IniSet(L"Record", L"TakeBeep", g_rBeep ? L"1" : L"0"); }
+    else if (c >= 1100 && c < 1280) {
+        int t = (c - 1100) / 60, e = (c - 1100) % 60; wchar_t *d = g_rTrk[t];
+        if (e == 0) d[0] = 0; else if (e == 1) lstrcpyW(d, L"sys");
+        else if (e < 18) wsprintfW(d, L"sys:%s", rndList[e - 2]); else wsprintfW(d, L"mic:%s", micList[e - 18]);
+        wchar_t k[12]; wsprintfW(k, L"Track%d", t + 2); IniSet(L"Record", k, d);
+    }
     else if (c == 68) FxOpen();
-    else if (c == 67) { g_rFx = !g_rFx; IniSet(L"Record", L"Highlight", g_rFx ? L"1" : L"0"); ShowSync(); }
+    else if (c == 67) { g_fxAll = !g_fxAll; IniSet(L"Record", L"Effects", g_fxAll ? L"1" : L"0"); ShowSync(); }
     else if (c >= 64 && c <= 66) { g_rAk = c == 64 ? 96 : c == 65 ? 128 : 192; wsprintfW(v, L"%d", g_rAk); IniSet(L"Record", L"AudioKbps", v); }
     else if (c >= 22 && c <= 24) { g_rFps = c == 22 ? 15 : c == 23 ? 30 : 60; wsprintfW(v, L"%d", g_rFps); IniSet(L"Record", L"Fps", v); }
     else if (c == 26 || c == 27 || (c >= 50 && c < 58)) {
@@ -7982,6 +8154,8 @@ static void MacroToggle(DWORD mods) {                                           
 static void RecOpen(void) { RecNs::Open(); }
 static void RecAudioOpen(void) { RecNs::OpenAudio(); }
 static void RecShowSync(void) { RecNs::ShowSync(); }
+static BOOL RecBusy(void) { return RecNs::recording; }
+static void RecMark(void) { RecNs::Mark(); }
 
 /* ---------- голосовой набор: микрофон -> WAV 16 кГц -> whisper.cpp (whisper\whisper-cli.exe + модель) -> текст в место курсора ---------- */
 namespace VoiceNs {
@@ -10691,12 +10865,12 @@ static void RemStart(void) { RemNs::Start(); }
    keep: после выбора меню открывается снова на том же пункте (переключатели настроек). */
 static BOOL KeepAll(int) { return TRUE; }
 static BOOL KeepNone(int) { return FALSE; }
-static BOOL RecKeep(int c) { return c >= 300 ? (c - 300) % 8 < 4 : c != 25 && c != 61 && c != 63 && c != 68; }   // папки и окно настройки оверлеев - закрыть меню
+static BOOL RecKeep(int c) { return c >= 1090 ? TRUE : c >= 300 ? (c - 300) % 8 < 4 : c != 25 && c != 61 && c != 63 && c != 68; }   // папки и окно настройки оверлеев - закрыть меню
 static BOOL VolKeep(int c) { return c != 601; }
 static BOOL TmKeep(int) { return FALSE; }
 static void HidCmd(int c) { ShowHidden(c - 200); }
 static const struct MenuMod { int lo, hi; void (*cmd)(int); BOOL (*keep)(int); } kMenuMods[] = {
-    {20, 69, RecNs::Cmd, RecKeep}, {300, 500, RecNs::Cmd, RecKeep},                // запись: настройки, микрофоны 30..47, мониторы 50..57, оверлеи
+    {20, 69, RecNs::Cmd, RecKeep}, {300, 500, RecNs::Cmd, RecKeep}, {1090, 1280, RecNs::Cmd, RecKeep},                // запись: настройки, микрофоны 30..47, мониторы 50..57, оверлеи
     {200, 232, HidCmd, KeepNone}, {1000, 1064, QrCmd, KeepNone},          // скрытые окна; быстрый запуск ([QuickRun], до 64)                                                   // скрытые окна (g_hid[32])
     {600, 700, VolNs::Cmd, VolKeep}, {700, 760, DupNs::Cmd, KeepAll},
     {899, 964, SchCmd, KeepAll}, {TM_ID, TM_ID + 80, TmCommand, TmKeep},
