@@ -5245,12 +5245,15 @@ static void TmFmt(int sec, wchar_t *b) {
     if (sec >= 3600) wsprintfW(b, L"%d:%02d:%02d", sec / 3600, sec / 60 % 60, sec % 60); else wsprintfW(b, L"%d:%02d", sec / 60, sec % 60);
 }
 static int ParseTime(const wchar_t *s) {       // секунды: "5" - минуты, "1:30" - м:с, "1:02:03" или "1 2 3" - ч:м:с
-    int v[3], n = 0;
+    int v[3], n = 0, len0 = 0;
     while (*s && n < 3) {
         while (*s && (*s < L'0' || *s > L'9')) s++;
         if (!*s) break;
         v[n] = ToInt(s); if (v[n] > 99999) v[n] = 99999; n++;
-        while (*s >= L'0' && *s <= L'9') s++;
+        while (*s >= L'0' && *s <= L'9') { s++; if (n == 1) len0++; }
+    }
+    if (n == 1 && len0 >= 4) {                    // "4000" без разделителей - 40:00, "13045" - 1:30:45 (справа: сс, мм, ч)
+        int x = v[0]; v[2] = x % 100; v[1] = x / 100 % 100; v[0] = x / 10000; n = 3;
     }
     int t = n == 1 ? v[0] * 60 : n == 2 ? v[0] * 60 + v[1] : n == 3 ? v[0] * 3600 + v[1] * 60 + v[2] : 0;
     return t > 359999 ? 359999 : t;
