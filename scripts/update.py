@@ -55,7 +55,9 @@ def main():
         return 4
     if '--norun' in sys.argv:
         return 0
-    if ctypes.windll.shell32.IsUserAnAdmin():
+    if os.environ.get('DKEYS_ADMIN') == '0':                                         # [General] Admin=0: без прав (DKeys сам сбросит их, если запущен от админа)
+        subprocess.Popen([EXE, '/noadmin'], cwd=DIR, creationflags=NOWIN | 0x00000008)
+    elif ctypes.windll.shell32.IsUserAnAdmin():
         subprocess.Popen([EXE], cwd=DIR, creationflags=NOWIN | 0x00000008)           # DETACHED_PROCESS
     else:
         ctypes.windll.shell32.ShellExecuteW(None, 'runas', EXE, None, DIR, 1)        # запрос UAC: DKeys нужно запускать от администратора

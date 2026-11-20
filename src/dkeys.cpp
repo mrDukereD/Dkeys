@@ -24,6 +24,8 @@
 #include <uiautomation.h>
 #include <wtsapi32.h>
 #include <propidl.h>
+#include <exdisp.h>
+#include <shldisp.h>
 DEFINE_GUID(CLSID_MMDeviceEnumerator, 0xBCDE0395, 0xE52F, 0x467C, 0x8E, 0x3D, 0xC4, 0x57, 0x92, 0x91, 0x69, 0x2E);
 DEFINE_GUID(IID_IMMDeviceEnumerator, 0xA95664D2, 0x9614, 0x4F35, 0xA7, 0x46, 0xDE, 0x8D, 0xB6, 0x36, 0x17, 0xE6);
 DEFINE_GUID(IID_IAudioMeterInformation, 0xC02216F6, 0x8C67, 0x4B5B, 0x9D, 0x00, 0xD0, 0x08, 0xE7, 0x3E, 0x00, 0x64);
@@ -132,6 +134,8 @@ static volatile LONG g_caps;
 static DWORD g_hookTid;
 static UINT g_msgTaskbar;
 static BOOL g_elev;
+static int g_admin = 1, g_admCmd = -1;   // [General] Admin: 0 - не работать от администратора (запущенный от админа перезапустится без прав); g_admCmd - ключ /admin или /noadmin (важнее ini)
+static BOOL WantAdmin(void) { return g_admCmd >= 0 ? g_admCmd : g_admin; }
 static HICON g_icon, g_iconRec; static BOOL g_recDot;
 static int g_mouseSlow = 4;   // [General] MouseSlow: во сколько раз замедлять мышь при зажатом Alt в пипетке (0/1 - выкл)
 static volatile LONG g_pickActive;
@@ -442,6 +446,8 @@ X(L_SCH_NONE, "schedule.none", L"Нет заданий (секция [Schedule] 
 X(L_SCH_RUN, "schedule.run", L"Расписание: %s") \
 X(L_SCH_BAD, "schedule.bad", L"Расписание: не понял условие «%s»") \
 X(L_TRAY_ELEV, "tray.elevate", L"Перезапустить от администратора") \
+X(L_TRAY_UNELEV, "tray.unelevate", L"Перезапустить без прав администратора") \
+X(L_T_UNELEVFAIL, "toast.unelevate_failed", L"Не удалось запустить DKeys без прав администратора") \
 X(L_TRAY_NONAME, "tray.noname", L"(без названия)") \
 X(L_TRAY_HIDDEN, "tray.hidden", L"Спрятанные окна") \
 X(L_TRAY_INI, "tray.open_ini", L"Открыть DKeys.ini") \
@@ -867,6 +873,9 @@ PyRunPause=1
 Toasts=1
 ; В пипетке при зажатом Alt мышь движется медленнее в N раз (точное наведение). 0 или 1 - выключено
 MouseSlow=4
+; 0 - работать без прав администратора: DKeys, запущенный от админа (автозапуск, обновление, сборка), перезапустится без прав.
+;   Тогда хуки не видят окон, запущенных от админа. Только для одного запуска: DKeys.exe /noadmin (или /admin)
+Admin=1
 ; Язык интерфейса: файл langs\<язык>.ini (создаётся сам; для перевода скопируйте ru.ini и поменяйте тексты)
 Language=ru
 
@@ -889,6 +898,7 @@ Language=ru
 ;                               повторное нажатие сразу после этого возвращает текст обратно
 ;     run КОМАНДА [@ ПАПКА]     запустить программу/файл/ссылку (ПАПКА - рабочая папка)
 ;     admin КОМАНДА [@ ПАПКА]   то же от администратора
+;     run noadmin КОМАНДА       без прав администратора, даже если DKeys работает от админа (и в [Scripts], [Launcher]: noadmin скрипт.py)
 ;     py СКРИПТ [арг] [@ ПАПКА] скрипт из папки scripts (*.py, *.bat, *.cmd, *.ps1, *.vbs, *.dpy). Выделенный текст: переменные окружения DKEYS_SEL и DKEYS_SEL_FILE
 ;     pyrun                     выделенный текст выполнить как скрипт Python (scripts\tmp.py)
 ;     topmost                   окно "поверх всех" вкл/выкл
@@ -1504,7 +1514,7 @@ static void CalDiscover(void) {
 }
 // Значения по умолчанию для всего, что задаётся в ini (те же, что в объявлениях): ключ, удалённый из ini, после перечитки не должен оставлять старое значение.
 static void CfgDefaults(void) {
-    lstrcpyW(g_lang, L"ru"); g_mouseSlow = 4; g_histOn = 0; g_histMax = 50; g_pasteDelay = 300; g_copyTimeout = 600; lstrcpyW(g_python, L"python.exe");
+    lstrcpyW(g_lang, L"ru"); g_admin = 1; g_mouseSlow = 4; g_histOn = 0; g_histMax = 50; g_pasteDelay = 300; g_copyTimeout = 600; lstrcpyW(g_python, L"python.exe");
     g_pyPause = 1; g_toasts = 1; g_editor[0] = 0; g_bufMax = 10; g_layoutWord = 0; g_layoutSwitch = 1;
     g_dLive = FALSE; g_dCol = 0; g_dWid = 1; g_dSaveDir[0] = 0;
     g_rNoTb = TRUE; g_rCur = TRUE; g_rFx = TRUE; g_ringOn = TRUE; g_ringUp = TRUE; g_fxAll = TRUE; g_hlR = 22; g_hlA = 24; g_ringMs = 450; g_ringSz = 34; g_hlCol = 0xFFD60A; g_clL = 0x0A84FF; g_clR = 0xFF453A; g_rScr = 0; g_rMic[0] = 0; g_rDir[0] = 0; g_rTrk[0][0] = g_rTrk[1][0] = g_rTrk[2][0] = 0; g_rBeep = TRUE; g_rLvl = TRUE; g_rBeepHz = 15000; g_rAk = 128; g_rFps = 30; g_rPos[0] = g_rPos[1] = -99999;
@@ -1548,6 +1558,7 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
     }
     if (!lstrcmpiW(s, L"General")) {
         if (!lstrcmpiW(k, L"Language")) lstrcpynW(g_lang, v, 16);
+        else if (!lstrcmpiW(k, L"Admin")) g_admin = ToInt(v) != 0;
         else if (!lstrcmpiW(k, L"MouseSlow")) { g_mouseSlow = ToInt(v); if (g_mouseSlow < 0 || g_mouseSlow > 20) g_mouseSlow = 4; }
         else if (!lstrcmpiW(k, L"HistoryEnabled")) g_histOn = ToInt(v) != 0;
         else if (!lstrcmpiW(k, L"HistoryMax")) { g_histMax = ToInt(v); if (g_histMax < 5) g_histMax = 5; if (g_histMax > 1000) g_histMax = 1000; }
@@ -3052,9 +3063,15 @@ static void SplitCmd(wchar_t *s, wchar_t **file, wchar_t **par) {
 }
 static void RunPy(const wchar_t *arg, const wchar_t *dir, BOOL hold);
 static BOOL HasSep(const wchar_t *s) { for (; *s; s++) if (*s == L'\\' || *s == L'/' || *s == L':') return TRUE; return FALSE; }
+static BOOL ShellRunUser(const wchar_t *file, const wchar_t *args, const wchar_t *dir);
+static BOOL NoAdminWord(wchar_t **file, wchar_t **par) {                             // префикс noadmin: запустить без прав администратора (если сам DKeys от админа)
+    if (lstrcmpiW(*file, L"noadmin") || !**par) return FALSE;
+    SplitCmd(*par, file, par); return TRUE;
+}
 static void RunShell(const wchar_t *spec, const wchar_t *dir, BOOL admin) {
     wchar_t *s = Dup(spec), *file, *par;
     SplitCmd(s, &file, &par);
+    BOOL user = NoAdminWord(&file, &par) && g_elev;
     wchar_t rp[MAX_PATH];                                                             // имя без пути, которого нет рядом: ищем в папке runs
     if (!HasSep(file) && lstrlenW(file) + lstrlenW(g_runDir) < MAX_PATH - 1) {
         lstrcpyW(rp, g_runDir); lstrcatW(rp, file);
@@ -3066,6 +3083,11 @@ static void RunShell(const wchar_t *spec, const wchar_t *dir, BOOL admin) {
             file = rp;
             if (!dir || !*dir) dir = g_runDir;
         }
+    }
+    if (user && !admin) {
+        wchar_t ex[MAX_PATH]; ExpandEnvironmentStringsW(file, ex, MAX_PATH);
+        if (!ShellRunUser(ex, par, dir)) { wchar_t m[200]; wsprintfW(m, Tr(L_T_RUNFAIL), file); Toast(m); }
+        Free(s); return;
     }
     SHELLEXECUTEINFOW e; memset(&e, 0, sizeof e);
     e.cbSize = sizeof e; e.fMask = SEE_MASK_DOENVSUBST | SEE_MASK_FLAG_NO_UI;
@@ -3182,6 +3204,7 @@ static void RunPy(const wchar_t *arg, const wchar_t *dir, BOOL hold = FALSE) {  
     wchar_t *s = Dup(arg), *file, *par;
     SplitCmd(s, &file, &par);
     BOOL notify = FALSE;
+    BOOL user = NoAdminWord(&file, &par) && g_elev;                                     // noadmin скрипт: без прав администратора (выделенный текст не передаётся)
     if (!lstrcmpiW(file, L"notify") && *par) { notify = TRUE; SplitCmd(par, &file, &par); }   // py notify x.dpy [yes действие] [no действие]
     wchar_t script[MAX_PATH];
     if (file[1] == L':' || file[0] == L'\\') lstrcpynW(script, file, MAX_PATH);
@@ -3208,7 +3231,10 @@ static void RunPy(const wchar_t *arg, const wchar_t *dir, BOOL hold = FALSE) {  
     else { BufAdd(&c, L"\""); BufAdd(&c, g_python); BufAdd(&c, L"\" \""); BufAdd(&c, script); BufAdd(&c, L"\""); }
     if (*par) { BufAdd(&c, L" "); BufAdd(&c, par); }
     if (pz) BufAdd(&c, L" & pause\""); else if (kind == 1) BufAdd(&c, L"\"");
-    RunProc(c.p, dir, env, mac);
+    if (user && !mac) {                                                                // через explorer: программа - первое слово командной строки, остальное - параметры
+        wchar_t *f, *a; SplitCmd(c.p, &f, &a);
+        if (!ShellRunUser(f, a, (dir && *dir) ? dir : g_pyDir)) { wchar_t m[200]; wsprintfW(m, Tr(L_T_PYFAIL), g_python); Toast(m); }
+    } else RunProc(c.p, dir, env, mac);
     Free(c.p); Free(env); Free(sel); Free(s);
 }
 static void RunPySelection(void) {
@@ -4377,7 +4403,7 @@ static void AutoSet(BOOL on) {
     if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_SET_VALUE, &k) == ERROR_SUCCESS) { RegDeleteValueW(k, L"DKeys"); RegCloseKey(k); }
     RunHidden(L"schtasks.exe /Delete /TN DKeys /F");
     if (!on) return;
-    if (g_elev) {
+    if (g_elev && WantAdmin()) {
         wchar_t dom[128], usr[128], user[260], tmp[MAX_PATH];
         GetEnvironmentVariableW(L"USERDOMAIN", dom, 128); GetEnvironmentVariableW(L"USERNAME", usr, 128);
         wsprintfW(user, L"%s\\%s", dom, usr);
@@ -4398,9 +4424,40 @@ static void AutoSet(BOOL on) {
         RegCloseKey(k);
     }
 }
+// Запуск себя без прав администратора: просим explorer (рабочий стол, IShellDispatch2::ShellExecute) - процесс создаёт он, с его маркером и правами.
+static BOOL ShellRunUser(const wchar_t *file, const wchar_t *args, const wchar_t *dir) {
+    BOOL ok = FALSE; long hw = 0;
+    HRESULT ci = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    IShellWindows *sw = NULL; IDispatch *dsp = NULL, *bg = NULL, *ad = NULL; IServiceProvider *sp = NULL;
+    IShellBrowser *sb = NULL; IShellView *sv = NULL; IShellFolderViewDual *fv = NULL; IShellDispatch2 *sd = NULL;
+    if (FAILED(CoCreateInstance(CLSID_ShellWindows, NULL, CLSCTX_LOCAL_SERVER, IID_IShellWindows, (void **)&sw))) { if (SUCCEEDED(ci)) CoUninitialize(); return FALSE; }
+    VARIANT loc, none; VariantInit(&loc); VariantInit(&none); loc.vt = VT_I4; loc.lVal = CSIDL_DESKTOP;
+    if (sw->FindWindowSW(&loc, &none, SWC_DESKTOP, &hw, SWFO_NEEDDISPATCH, &dsp) == S_OK && dsp
+        && SUCCEEDED(dsp->QueryInterface(IID_IServiceProvider, (void **)&sp))
+        && SUCCEEDED(sp->QueryService(SID_STopLevelBrowser, IID_IShellBrowser, (void **)&sb))
+        && SUCCEEDED(sb->QueryActiveShellView(&sv))
+        && SUCCEEDED(sv->GetItemObject(SVGIO_BACKGROUND, IID_IDispatch, (void **)&bg))
+        && SUCCEEDED(bg->QueryInterface(IID_IShellFolderViewDual, (void **)&fv))
+        && SUCCEEDED(fv->get_Application(&ad))
+        && SUCCEEDED(ad->QueryInterface(IID_IShellDispatch2, (void **)&sd))) {
+        VARIANT a, d, o, w; VariantInit(&a); VariantInit(&d); VariantInit(&o); VariantInit(&w);
+        a.vt = VT_BSTR; a.bstrVal = SysAllocString(args ? args : L""); d.vt = VT_BSTR; d.bstrVal = SysAllocString(dir ? dir : L""); w.vt = VT_I4; w.lVal = SW_SHOWNORMAL;
+        BSTR f = SysAllocString(file);
+        ok = SUCCEEDED(sd->ShellExecute(f, a, d, o, w));
+        SysFreeString(f); VariantClear(&a); VariantClear(&d);
+    }
+    if (sd) sd->Release(); if (ad) ad->Release(); if (fv) fv->Release(); if (bg) bg->Release(); if (sv) sv->Release();
+    if (sb) sb->Release(); if (sp) sp->Release(); if (dsp) dsp->Release(); sw->Release();
+    if (SUCCEEDED(ci)) CoUninitialize();
+    return ok;
+}
+static BOOL RunUnelevated(const wchar_t *args) { return ShellRunUser(g_exe, args, g_dir); }
+static void RestartUnelevated(void) {
+    if (RunUnelevated(L"/wait /noadmin /deelev")) DestroyWindow(g_hwnd); else Toast(Tr(L_T_UNELEVFAIL));
+}
 static void RestartElevated(void) {
     SHELLEXECUTEINFOW e; memset(&e, 0, sizeof e);
-    e.cbSize = sizeof e; e.fMask = SEE_MASK_FLAG_NO_UI; e.lpVerb = L"runas"; e.lpFile = g_exe; e.lpParameters = L"/wait"; e.nShow = SW_SHOWNORMAL;
+    e.cbSize = sizeof e; e.fMask = SEE_MASK_FLAG_NO_UI; e.lpVerb = L"runas"; e.lpFile = g_exe; e.lpParameters = L"/wait /admin"; e.nShow = SW_SHOWNORMAL;
     if (ShellExecuteExW(&e)) DestroyWindow(g_hwnd);
 }
 static void Reload(void) {
@@ -11037,6 +11094,7 @@ static void TrayMenuAt(POINT pt, int again) {
     AddHk(m, MF_STRING | (g_paused ? MF_CHECKED : 0), 15, Tr(L_TRAY_PAUSE), A_PAUSE);
     AppendMenuW(m, MF_POPUP | (g_schOn && g_nsch ? MF_CHECKED : 0), (UINT_PTR)SchMenu(), Tr(L_TRAY_SCHED));
     if (!g_elev) AppendMenuW(m, MF_STRING, 17, Tr(L_TRAY_ELEV));
+    else AppendMenuW(m, MF_STRING, 75, Tr(L_TRAY_UNELEV));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     for (int i = g_nhid - 1; i >= 0; i--) if (!IsWindow(g_hid[i])) { memmove(g_hid + i, g_hid + i + 1, (g_nhid - i - 1) * sizeof(HWND)); g_nhid--; }
     if (g_nhid) {
@@ -11095,6 +11153,7 @@ static void TrayMenuAt(POINT pt, int again) {
     case 11: AutoSet(!AutoGet()); break;
     case 15: InterlockedExchange(&g_paused, !g_paused); break;
     case 17: RestartElevated(); break;
+    case 75: RestartUnelevated(); break;
     case 12: OpenEditor(g_ini); break;
     case 13: ShellExecuteW(NULL, L"open", g_memDir, NULL, NULL, SW_SHOWNORMAL); break;
     case 14: Reload(); break;
@@ -11264,6 +11323,7 @@ static int Run(void) {
         }
     }
     BOOL wait = ContainsI(GetCommandLineW(), L"/wait");
+    if (ContainsI(GetCommandLineW(), L"/noadmin")) g_admCmd = 0; else if (ContainsI(GetCommandLineW(), L"/admin")) g_admCmd = 1;
     HANDLE mx = NULL;
     for (int i = 0; i < 50; i++) {
         mx = CreateMutexW(NULL, TRUE, L"Local\\DKeys_single_instance");
@@ -11285,7 +11345,15 @@ static int Run(void) {
     if (CreateDirectoryW(g_pyDir, NULL)) MakeScripts();
     EnsureUpdater();
     CreateDirectoryW(g_runDir, NULL); CreateDirectoryW(g_recDir, NULL);
-    LoadConfig(); BuffersLoad(); HistLoad();
+    LoadConfig();
+    if (g_elev && !WantAdmin() && !ContainsI(GetCommandLineW(), L"/deelev")) {      // Admin=0 или /noadmin: перезапуск без прав (при автозапуске ждём explorer до 30 с)
+        for (int i = 0; i < 60; i++) {
+            if (RunUnelevated(g_admCmd == 0 ? L"/wait /noadmin /deelev" : L"/wait /deelev")) { CloseHandle(mx); return 0; }
+            Sleep(500);
+        }
+    }
+    SetEnvironmentVariableW(L"DKEYS_ADMIN", WantAdmin() ? L"1" : L"0");             // скриптам обновления: перезапускать ли DKeys от администратора
+    BuffersLoad(); HistLoad();
     RegClass(L"DKMain", MainProc, 0); RegClass(L"DKToast", ToastProc, CS_DROPSHADOW);
     RegClass(L"DKPop", PopProc, CS_DROPSHADOW); RegClass(L"DKEdit", EdProc, 0);
     g_hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, L"DKMain", L"DKeys", WS_POPUP, 0, 0, 0, 0, NULL, NULL, g_inst, NULL);
