@@ -87,7 +87,7 @@ enum { A_NONE, ACTION_LIST(ACT_ID) A_COUNT };
 #undef ACT_ID
 enum { PM_BUF, PM_HIST, PM_LAUNCH, PM_SCRIPTS, PM_RECORDS, PM_COUNT };   // режимы окна; новый режим - перед PM_COUNT и имя вкладки в kModeTab
 enum {
-    WM_APP_HOT = WM_APP + 1, WM_APP_KEY, WM_APP_CLOSE, WM_APP_PCLICK, WM_APP_PTAB, WM_APP_PIMG, WM_APP_MACRO, WM_APP_DPY, WM_APP_SPEC, WM_TRAY, WM_APP_RENDERED, WM_APP_VCMD, WM_APP_SYNC, WM_APP_SETUP, WM_APP_CALHOOK,
+    WM_APP_HOT = WM_APP + 1, WM_APP_KEY, WM_APP_CLOSE, WM_APP_PCLICK, WM_APP_PTAB, WM_APP_PIMG, WM_APP_MACRO, WM_APP_DPY, WM_APP_SPEC, WM_TRAY, WM_APP_RENDERED, WM_APP_VCMD, WM_APP_SYNC, WM_APP_SETUP, WM_APP_CALHOOK, WM_APP_SCHSTOP,
     TM_MOUSE = WM_APP + 20, TM_REHOOK
 };
 #define TID_RESTORE 1
@@ -445,6 +445,7 @@ X(L_SCH_ON, "schedule.on", L"Включено") \
 X(L_SCH_NONE, "schedule.none", L"Нет заданий (секция [Schedule] в ini)") \
 X(L_SCH_RUN, "schedule.run", L"Расписание: %s") \
 X(L_SCH_BAD, "schedule.bad", L"Расписание: не понял условие «%s»") \
+X(L_SCH_END, "schedule.end", L"Расписание: «%s» выполнено и выключено") \
 X(L_TRAY_ELEV, "tray.elevate", L"Перезапустить от администратора") \
 X(L_TRAY_UNELEV, "tray.unelevate", L"Перезапустить без прав администратора") \
 X(L_T_UNELEVFAIL, "toast.unelevate_failed", L"Не удалось запустить DKeys без прав администратора") \
@@ -998,6 +999,9 @@ static const char *kIni2 = u8R"INI(
 ;     delay 5m      выполнить не сразу, а через 5 минут после срабатывания (подходит и событиям: on start delay 5m)
 ;     catchup       если время наступило, пока компьютер спал или был выключен - выполнить один раз при включении (без него такой запуск пропускается;
 ;                   опоздание меньше 90 секунд считается нормой)
+;     times 5       выполнить 5 раз и выключить задание (слово off в ini; включить снова - из меню, отсчёт начнётся заново)
+;     until 2026-12-31 [23:59]   не выполнять после этой даты (время можно не писать - до конца дня) и выключить задание
+;     until exit 13  выключить задание, когда py/run/admin завершится с кодом 13 (в скрипте sys.exit(13); другие коды - работает дальше)
 ; Примеры (уберите «;» в начале строки):
 ;   Бэкап=every 2d at 03:00 delay 5m catchup | admin backup.bat
 ;   Курс=every 30m from 09:00 to 18:00 on weekdays | py usd.py
@@ -1459,13 +1463,33 @@ struct Sch {
     wchar_t name[64], *when, *what;
     BOOL ok, off, idleFired, weeks, catchup;
     int ev, idleSec, kind, N, at[12], nat, winFrom, winTo, delay;           // kind: 0 интервал, 1 дни/недели, 2 месяцы, 3 один раз
+    int stopCode;                                                           // until exit N: код возврата py/run, после которого задание выключается (-1 - нет)
+    int times, runs;                                                        // times N - выключить после N запусков (runs - сколько уже было)
+    ULONGLONG untilT;                                                       // until ДАТА [ЧЧ:ММ] - после этого времени выключить (0 - нет)
     unsigned wmask, dmask;                                                  // wmask: пн=бит0..вс=бит6; dmask: бит0 - последний день, бит1..31 - числа
     ULONGLONG step, onceT, last, next, pend;                                // время - секунды местного времени (шкала FILETIME)
 };
 static Sch g_sch[SCH_MAX]; static int g_nsch; static BOOL g_schOn = TRUE, g_locked, g_noGrab; static int g_acPrev = -1;
 static wchar_t g_schBad[64];
 static void SchAdd(const wchar_t *k, const wchar_t *v);
+static wchar_t g_schWatchName[64]; static int g_schWatchCode = -1;                   // на время запуска задания с until exit: за каким заданием и каким кодом следить
+struct SchWatchJob { HANDLE h; wchar_t name[64]; int code; };
+static DWORD WINAPI SchWatchThread(void *a) {                                          // ждёт конец процесса; код совпал - просит главный поток выключить задание
+    SchWatchJob *j = (SchWatchJob *)a; DWORD c = 0;
+    WaitForSingleObject(j->h, INFINITE);
+    if (GetExitCodeProcess(j->h, &c) && (int)c == j->code) PostMessageW(g_hwnd, WM_APP_SCHSTOP, 0, (LPARAM)Dup(j->name));
+    CloseHandle(j->h); Free(j);
+    return 0;
+}
+static void SchWatchStart(HANDLE proc) {                                               // вызывают RunProc/RunShell сразу после запуска (в главном потоке)
+    if (g_schWatchCode < 0 || !g_schWatchName[0] || !proc) return;
+    SchWatchJob *j = (SchWatchJob *)Alloc(sizeof *j); j->code = g_schWatchCode; lstrcpyW(j->name, g_schWatchName);
+    if (!DuplicateHandle(GetCurrentProcess(), proc, GetCurrentProcess(), &j->h, SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, 0)) { Free(j); return; }
+    HANDLE t = CreateThread(NULL, 0, SchWatchThread, j, 0, NULL);
+    if (t) CloseHandle(t); else { CloseHandle(j->h); Free(j); }
+}
 
+static void SchStopByName(const wchar_t *name);
 static void SchClear(void), SchFinish(void), SchBadToast(void), SchEvent(int ev), SchTick(void);
 // Громкость и дублирование читают свои настройки из рабочих потоков: ini разбирается в копию, а в глобальные попадают только итоговые значения.
 struct AudCfg { LONG vOn; int vLim, vCeil, vBoost; wchar_t vDev[80]; LONG dOn; wchar_t dSrc[80], dDst[80]; int dLat; };
@@ -3090,12 +3114,12 @@ static void RunShell(const wchar_t *spec, const wchar_t *dir, BOOL admin) {
         Free(s); return;
     }
     SHELLEXECUTEINFOW e; memset(&e, 0, sizeof e);
-    e.cbSize = sizeof e; e.fMask = SEE_MASK_DOENVSUBST | SEE_MASK_FLAG_NO_UI;
+    e.cbSize = sizeof e; e.fMask = SEE_MASK_DOENVSUBST | SEE_MASK_FLAG_NO_UI | (g_schWatchCode >= 0 ? SEE_MASK_NOCLOSEPROCESS : 0);
     e.lpVerb = admin ? L"runas" : NULL; e.lpFile = file; e.lpParameters = *par ? par : NULL;
     e.lpDirectory = (dir && *dir) ? dir : NULL; e.nShow = SW_SHOWNORMAL;
-    if (!ShellExecuteExW(&e) && GetLastError() != ERROR_CANCELLED) {
-        wchar_t m[200]; wsprintfW(m, Tr(L_T_RUNFAIL), file); Toast(m);
-    }
+    if (!ShellExecuteExW(&e)) {
+        if (GetLastError() != ERROR_CANCELLED) { wchar_t m[200]; wsprintfW(m, Tr(L_T_RUNFAIL), file); Toast(m); }
+    } else if (e.hProcess) { SchWatchStart(e.hProcess); CloseHandle(e.hProcess); }
     Free(s);
 }
 static wchar_t *BuildEnv(const wchar_t *sel, const wchar_t *selFile) {
@@ -3121,7 +3145,7 @@ static BOOL InDir(const wchar_t *path, const wchar_t *dir) { int n = lstrlenW(di
 static void RunProc(wchar_t *cmd, const wchar_t *dir, wchar_t *env, BOOL hidden = FALSE) {
     STARTUPINFOW si; PROCESS_INFORMATION pi; memset(&si, 0, sizeof si); si.cb = sizeof si;
     if (CreateProcessW(NULL, cmd, NULL, NULL, FALSE, CREATE_UNICODE_ENVIRONMENT | (hidden ? CREATE_NO_WINDOW : 0), env, (dir && *dir) ? dir : g_pyDir, &si, &pi)) {
-        CloseHandle(pi.hThread);
+        CloseHandle(pi.hThread); SchWatchStart(pi.hProcess);
         if (hidden) { if (g_playProc) CloseHandle(g_playProc); g_playProc = pi.hProcess; } else CloseHandle(pi.hProcess);
     } else {
         wchar_t m[200]; wsprintfW(m, Tr(L_T_PYFAIL), g_python); Toast(m);
@@ -3583,7 +3607,7 @@ static BOOL SchParse(Sch *e) {
         t[n++] = p; while (*p && *p != L' ' && *p != L'\t') p++;
         if (*p) *p++ = 0;
     }
-    e->off = FALSE; e->ev = 0; e->kind = -1; e->N = 1; e->nat = 0; e->winFrom = e->winTo = -1; e->delay = 0; e->catchup = FALSE; e->wmask = e->dmask = 0; e->weeks = FALSE; e->step = 0;
+    e->off = FALSE; e->ev = 0; e->kind = -1; e->N = 1; e->nat = 0; e->winFrom = e->winTo = -1; e->delay = 0; e->catchup = FALSE; e->wmask = e->dmask = 0; e->weeks = FALSE; e->step = 0; e->times = 0; e->untilT = 0; e->stopCode = -1;
     for (int i = 0; i < n; i++) {
         wchar_t *w = t[i], *nx = i + 1 < n ? t[i + 1] : NULL;
         if (!lstrcmpiW(w, L"every")) {
@@ -3620,6 +3644,15 @@ static BOOL SchParse(Sch *e) {
             i += 3;
         } else if (!lstrcmpiW(w, L"delay")) { LONGLONG v = nx ? SchDur(nx) : -1; if (v < 0) return FALSE; e->delay = (int)v; i++; }
         else if (!lstrcmpiW(w, L"catchup")) e->catchup = TRUE;
+        else if (!lstrcmpiW(w, L"times")) { int v = nx ? SchN(nx, lstrlenW(nx)) : -1; if (v < 1) return FALSE; e->times = v; i++; }
+        else if (!lstrcmpiW(w, L"until") && nx && !lstrcmpiW(nx, L"exit")) {
+            int v = i + 2 < n ? SchN(t[i + 2], lstrlenW(t[i + 2])) : -1; if (v < 0) return FALSE;
+            e->stopCode = v; i += 2;
+        } else if (!lstrcmpiW(w, L"until")) {
+            ULONGLONG dd = nx ? SchDate(nx) : 0; if (!dd) return FALSE;
+            i++; int tt = i + 1 < n ? SchTime(t[i + 1]) : -1; if (tt >= 0) i++;
+            e->untilT = dd * 86400ULL + (tt >= 0 ? (ULONGLONG)tt : 86399ULL);
+        }
         else if (!lstrcmpiW(w, L"off")) e->off = TRUE;
         else if (!lstrcmpiW(w, L"on")) {
             if (!nx) return FALSE;
@@ -3700,6 +3733,10 @@ static ULONGLONG SchNext(const Sch *e, ULONGLONG from) {                        
     }
     return 0;
 }
+static ULONGLONG SchNextU(const Sch *e, ULONGLONG from) {                              // SchNext с учётом until
+    ULONGLONG n = SchNext(e, from);
+    return e->untilT && n > e->untilT ? 0 : n;
+}
 static void SchU64(ULONGLONG v, wchar_t *o) {
     wchar_t t[24]; int n = 0, k = 0;
     do { t[n++] = L'0' + (wchar_t)(v % 10); v /= 10; } while (v);
@@ -3709,9 +3746,9 @@ static void SchU64(ULONGLONG v, wchar_t *o) {
 static void SchSave(void) {                                                             // memory\schedule.state: имя, время последнего запуска
     Buf b = {0};
     for (int i = 0; i < g_nsch; i++) {
-        Sch *e = &g_sch[i]; if (!e->last) continue;
-        wchar_t num[24]; SchU64(e->last, num);
-        BufAdd(&b, e->name); BufAdd(&b, L"\t"); BufAdd(&b, num); BufAdd(&b, L"\n");
+        Sch *e = &g_sch[i]; if (!e->last && !e->runs) continue;
+        wchar_t num[24], rn[24]; SchU64(e->last, num); SchU64((ULONGLONG)e->runs, rn);
+        BufAdd(&b, e->name); BufAdd(&b, L"\t"); BufAdd(&b, num); BufAdd(&b, L"\t"); BufAdd(&b, rn); BufAdd(&b, L"\n");
     }
     wchar_t p[MAX_PATH]; MemPath(p, L"schedule.state"); WriteText(p, b.p ? b.p : L""); Free(b.p);
 }
@@ -3725,9 +3762,9 @@ static void SchLoad(void) {
         wchar_t *t1 = ln; while (*t1 && *t1 != L'\t') t1++;
         if (*t1) {
             *t1++ = 0; wchar_t *t2 = t1; while (*t2 && *t2 != L'\t') t2++;
-            if (*t2) *t2 = 0;
+            int r = 0; if (*t2) { *t2++ = 0; for (wchar_t *q = t2; *q >= L'0' && *q <= L'9'; q++) r = r * 10 + (*q - L'0'); }
             ULONGLONG v = 0; for (wchar_t *q = t1; *q >= L'0' && *q <= L'9'; q++) v = v * 10 + (*q - L'0');
-            for (int i = 0; i < g_nsch; i++) if (!lstrcmpiW(g_sch[i].name, ln)) g_sch[i].last = v;
+            for (int i = 0; i < g_nsch; i++) if (!lstrcmpiW(g_sch[i].name, ln)) { g_sch[i].last = v; g_sch[i].runs = r; }
         }
         if (!sv) break;
         ln = e1 + 1;
@@ -3741,13 +3778,23 @@ static void SchFinish(void) {
         Sch *e = &g_sch[i]; e->idleFired = FALSE; e->pend = 0; e->next = 0;
         if (!e->ok) { if (!g_schBad[0]) lstrcpynW(g_schBad, e->name, 64); continue; }
         if (!e->ev && e->kind != 3 && !e->last) e->last = now;                          // начало отсчёта (интервал и «каждые N дней» держатся и после перезапуска)
-        if (!e->ev) e->next = SchNext(e, e->last ? e->last : now);
+        if (!e->ev) e->next = SchNextU(e, e->last ? e->last : now);
+        if (e->untilT && (e->ev ? now > e->untilT : !e->next)) e->off = TRUE;          // срок вышел (в ini слово off ставит SchStop при работе)
     }
     SchSave();
 }
 static void SchBadToast(void) {
     if (!g_schBad[0]) return;
     wchar_t m[160]; wsprintfW(m, Tr(L_SCH_BAD), g_schBad); g_schBad[0] = 0; Toast(m);
+}
+static void SchIniOff(const wchar_t *name, BOOL off);
+static void SchStop(Sch *e) {                                                           // конец по times / until: выключить задание (off в ini), счётчик с нуля
+    e->off = TRUE; e->runs = 0; e->next = 0; e->pend = 0;
+    SchIniOff(e->name, TRUE); SchSave();
+    wchar_t m[160]; wsprintfW(m, Tr(L_SCH_END), e->name); Toast(m);
+}
+static void SchStopByName(const wchar_t *name) {                                         // скрипт вернул код until exit
+    for (int i = 0; i < g_nsch; i++) if (!g_sch[i].off && !lstrcmpiW(g_sch[i].name, name)) { SchStop(&g_sch[i]); return; }
 }
 static void SchRun(Sch *e, ULONGLONG now) {
     if (g_modal || g_menuOpen) { e->pend = now + 5; return; }                          // открыт диалог или меню трея: клавиши ушли бы в них - следующий такт
@@ -3759,11 +3806,15 @@ static void SchRun(Sch *e, ULONGLONG now) {
     }
     Free(b.arg); Free(b.dir);
     wchar_t m[160]; wsprintfW(m, Tr(L_SCH_RUN), e->name); Toast(m);
+    if (e->stopCode >= 0) { lstrcpyW(g_schWatchName, e->name); g_schWatchCode = e->stopCode; }
     g_noGrab = TRUE; ExecSpec(e->what); g_noGrab = FALSE;
+    g_schWatchName[0] = 0; g_schWatchCode = -1;
+    if (e->times && e->runs >= e->times) SchStop(e);
 }
 static void SchTrig(Sch *e, ULONGLONG now) {
     if (e->pend) return;
-    e->last = now; SchSave();
+    if (e->untilT && now > e->untilT) { SchStop(e); return; }
+    e->last = now; e->runs++; SchSave();
     if (e->delay > 0) e->pend = now + e->delay; else SchRun(e, now);
 }
 static void SchEvent(int ev) {
@@ -3785,7 +3836,9 @@ static void SchTick(void) {
             BOOL missed = now - e->next > 90;                                           // время прошло, пока компьютер спал или был выключен
             if (!missed || e->catchup) SchTrig(e, now);
             else { if (e->kind == 0 || e->kind == 3) e->last = now; SchSave(); }
-            e->next = SchNext(e, now);
+            if (e->off) continue;                                                       // SchRun выключил задание по times
+            e->next = SchNextU(e, now);
+            if (!e->next && e->untilT) SchStop(e);
         }
     }
 }
@@ -3843,7 +3896,7 @@ static void SchCmd(int c) {
     if (c == 899) { g_schOn = !g_schOn; IniSet(L"Schedule", L"Enabled", g_schOn ? L"1" : L"0"); return; }
     int i = c - 900; if (i < 0 || i >= g_nsch) return;
     Sch *e = &g_sch[i]; e->off = !e->off; SchIniOff(e->name, e->off);
-    if (!e->off && !e->ev) { ULONGLONG now = SchNow(); if (e->kind == 0 || e->kind == 3) e->last = now; e->next = SchNext(e, now); }
+    if (!e->off && !e->ev) { ULONGLONG now = SchNow(); if (e->kind == 0 || e->kind == 3) e->last = now; e->next = SchNextU(e, now); }
     SchSave();
 }
 
@@ -11205,6 +11258,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_APP_PCLICK: PopupChoose((int)w); return 0;
     case WM_APP_PTAB: PopupTab((int)w); return 0;
     case WM_APP_PIMG: PopupImg((int)w); return 0;
+    case WM_APP_SCHSTOP: { wchar_t *t = (wchar_t *)l; if (t) { SchStopByName(t); Free(t); } return 0; }
     case WM_APP_SPEC: { wchar_t *t = (wchar_t *)l; if (t && !Defer(m, t)) { BOOL fh = t[0] == 2; g_calFromHook = fh; g_noGrab = TRUE; ExecSpec(t + fh); g_noGrab = FALSE; g_calFromHook = FALSE; Free(t); } return 0; }
     case WM_APP_DPY: { wchar_t *t = (wchar_t *)l; if (t && !Defer(m, t)) { PasteText(t); Free(t); } return 0; }
     case WM_APP_MACRO: { wchar_t *t = (wchar_t *)l; if (t) { Toast(t); Free(t); } return 0; }
