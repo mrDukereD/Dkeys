@@ -87,7 +87,7 @@ enum { A_NONE, ACTION_LIST(ACT_ID) A_COUNT };
 #undef ACT_ID
 enum { PM_BUF, PM_HIST, PM_LAUNCH, PM_SCRIPTS, PM_RECORDS, PM_COUNT };   // режимы окна; новый режим - перед PM_COUNT и имя вкладки в kModeTab
 enum {
-    WM_APP_HOT = WM_APP + 1, WM_APP_KEY, WM_APP_CLOSE, WM_APP_PCLICK, WM_APP_PTAB, WM_APP_PIMG, WM_APP_MACRO, WM_APP_DPY, WM_APP_SPEC, WM_TRAY, WM_APP_RENDERED, WM_APP_VCMD, WM_APP_SYNC, WM_APP_SETUP, WM_APP_CALHOOK, WM_APP_SCHSTOP,
+    WM_APP_HOT = WM_APP + 1, WM_APP_KEY, WM_APP_CLOSE, WM_APP_PCLICK, WM_APP_PTAB, WM_APP_PIMG, WM_APP_MACRO, WM_APP_DPY, WM_APP_SPEC, WM_TRAY, WM_APP_RENDERED, WM_APP_VCMD, WM_APP_SYNC, WM_APP_SETUP, WM_APP_CALHOOK, WM_APP_SCHSTOP, WM_APP_FG,
     TM_MOUSE = WM_APP + 20, TM_REHOOK
 };
 #define TID_RESTORE 1
@@ -2990,6 +2990,67 @@ static void ForceFg(HWND h) {
     SetForegroundWindow(h); BringWindowToTop(h);
     if (ft && ft != me) AttachThreadInput(me, ft, FALSE);
 }
+// Запуск по хоткею идёт из фонового процесса: Windows не отдаёт передний план новому окну, и оно открывается
+// неактивным. Запоминаем окна до запуска, ждём появления нового (у консоли оно своё - принадлежит conhost,
+// не программе) и просим главный поток активировать его.
+static BOOL g_noFg;                                                                    // 1: запуск не от пользователя (расписание, событие календаря) - фокус не трогаем
+#define FG_OLD_MAX 512
+struct FgJob { DWORD pid; int n; HWND *old; };                                          // в куче: поток ждёт окно уже после возврата из запуска
+static BOOL CALLBACK FgEnumOld(HWND h, LPARAM l) {
+    FgJob *j = (FgJob *)l;
+    if (j->n < FG_OLD_MAX) j->old[j->n++] = h;
+    return TRUE;
+}
+static BOOL FgWas(HWND h, const FgJob *j) { for (int i = 0; i < j->n; i++) if (j->old[i] == h) return TRUE; return FALSE; }
+static BOOL FgShellClass(const wchar_t *c) {                                            // окна оболочки - не трогаем
+    static const wchar_t *const nm[] = {L"Progman", L"WorkerW", L"Shell_TrayWnd", L"Shell_SecondaryTrayWnd", L"TaskListThumbnailWnd",
+        L"ForegroundStaging", L"Windows.UI.Core.CoreWindow", L"MultitaskingViewFrame"};
+    for (int i = 0; i < 8; i++) if (!lstrcmpW(c, nm[i])) return TRUE;
+    return FALSE;
+}
+struct FgPick { const FgJob *j; DWORD pid; HWND byPid, con, first; };
+static BOOL CALLBACK FgEnumPick(HWND h, LPARAM l) {
+    FgPick *p = (FgPick *)l;
+    if (p->byPid) return FALSE;
+    if (!IsWindowVisible(h) || FgWas(h, p->j) || GetWindow(h, GW_OWNER)) return TRUE;
+    wchar_t c[64]; GetClassNameW(h, c, 64);
+    if (FgShellClass(c)) return TRUE;
+    LONG ex = GetWindowLongW(h, GWL_EXSTYLE);
+    if (ex & (WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)) return TRUE;
+    DWORD pid = 0; GetWindowThreadProcessId(h, &pid);
+    if (pid == GetCurrentProcessId()) return TRUE;
+    if (!lstrcmpW(c, L"ConsoleWindowClass") || !lstrcmpW(c, L"PseudoConsoleWindow") || !lstrcmpW(c, L"CASCADIA_HOSTING_WINDOW_CLASS")) { if (!p->con) p->con = h; return TRUE; }
+    if (p->pid && pid == p->pid) { p->byPid = h; return FALSE; }
+    if (!p->pid && !p->first) p->first = h;
+    return TRUE;
+}
+static DWORD WINAPI FgThread(void *a) {
+    FgJob *j = (FgJob *)a; HWND h = NULL; FgPick p; int t = 0;
+    for (; t < 40 && !h; t++) {                                                         // до 4 секунд: программа или python могут стартовать не сразу
+        if (t) Sleep(100);
+        memset(&p, 0, sizeof p); p.j = j; p.pid = j->pid;
+        EnumWindows(FgEnumPick, (LPARAM)&p);
+        h = p.byPid ? p.byPid : p.con ? p.con : (j->pid ? NULL : p.first);
+    }
+    if (h) PostMessageW(g_hwnd, WM_APP_FG, 0, (LPARAM)h);
+    Free(j->old); Free(j);
+    return 0;
+}
+static FgJob *FgSnap(void) {                                                            // до запуска: какие окна уже есть
+    if (g_noFg) return NULL;
+    FgJob *j = (FgJob *)Alloc(sizeof *j);
+    j->old = (HWND *)Alloc(FG_OLD_MAX * sizeof(HWND));
+    if (!j->old) { Free(j); return NULL; }
+    EnumWindows(FgEnumOld, (LPARAM)j);
+    return j;
+}
+static void FgAfter(FgJob *j, DWORD pid, BOOL started) {                                // после запуска: его окно ждём в фоне
+    if (!j) return;
+    if (!started) { Free(j->old); Free(j); return; }
+    j->pid = pid;
+    HANDLE t = CreateThread(NULL, 0, FgThread, j, 0, NULL);
+    if (t) CloseHandle(t); else { Free(j->old); Free(j); }
+}
 // Возвращает новый текст (Alloc) или NULL, если отменено.
 static wchar_t *EditDialog(const wchar_t *title, const wchar_t *text, BOOL *check = NULL, const wchar_t *checkText = NULL,
                            int *radioA = NULL, const wchar_t **radioAText = NULL, int radioAN = 0,
@@ -3110,15 +3171,22 @@ static void RunShell(const wchar_t *spec, const wchar_t *dir, BOOL admin) {
     }
     if (user && !admin) {
         wchar_t ex[MAX_PATH]; ExpandEnvironmentStringsW(file, ex, MAX_PATH);
-        if (!ShellRunUser(ex, par, dir)) { wchar_t m[200]; wsprintfW(m, Tr(L_T_RUNFAIL), file); Toast(m); }
+        FgJob *fg = FgSnap();
+        BOOL ok = ShellRunUser(ex, par, dir);
+        FgAfter(fg, 0, ok);
+        if (!ok) { wchar_t m[200]; wsprintfW(m, Tr(L_T_RUNFAIL), file); Toast(m); }
         Free(s); return;
     }
     SHELLEXECUTEINFOW e; memset(&e, 0, sizeof e);
-    e.cbSize = sizeof e; e.fMask = SEE_MASK_DOENVSUBST | SEE_MASK_FLAG_NO_UI | (g_schWatchCode >= 0 ? SEE_MASK_NOCLOSEPROCESS : 0);
+    e.cbSize = sizeof e; e.fMask = SEE_MASK_DOENVSUBST | SEE_MASK_FLAG_NO_UI | SEE_MASK_NOCLOSEPROCESS;   // процесс нужен, чтобы найти его окно
     e.lpVerb = admin ? L"runas" : NULL; e.lpFile = file; e.lpParameters = *par ? par : NULL;
     e.lpDirectory = (dir && *dir) ? dir : NULL; e.nShow = SW_SHOWNORMAL;
-    if (!ShellExecuteExW(&e)) {
-        if (GetLastError() != ERROR_CANCELLED) { wchar_t m[200]; wsprintfW(m, Tr(L_T_RUNFAIL), file); Toast(m); }
+    FgJob *fg = FgSnap();
+    BOOL ok = ShellExecuteExW(&e) != FALSE; DWORD err = GetLastError();
+    DWORD pid = ok && e.hProcess ? GetProcessId(e.hProcess) : 0;
+    FgAfter(fg, pid, ok);
+    if (!ok) {
+        if (err != ERROR_CANCELLED) { wchar_t m[200]; wsprintfW(m, Tr(L_T_RUNFAIL), file); Toast(m); }
     } else if (e.hProcess) { SchWatchStart(e.hProcess); CloseHandle(e.hProcess); }
     Free(s);
 }
@@ -3144,10 +3212,13 @@ static BOOL PlayStop(void) {
 static BOOL InDir(const wchar_t *path, const wchar_t *dir) { int n = lstrlenW(dir); return n && lstrlenW(path) > n && CompareStringOrdinal(path, n, dir, n, TRUE) == CSTR_EQUAL; }
 static void RunProc(wchar_t *cmd, const wchar_t *dir, wchar_t *env, BOOL hidden = FALSE) {
     STARTUPINFOW si; PROCESS_INFORMATION pi; memset(&si, 0, sizeof si); si.cb = sizeof si;
+    FgJob *fg = hidden ? NULL : FgSnap();
     if (CreateProcessW(NULL, cmd, NULL, NULL, FALSE, CREATE_UNICODE_ENVIRONMENT | (hidden ? CREATE_NO_WINDOW : 0), env, (dir && *dir) ? dir : g_pyDir, &si, &pi)) {
         CloseHandle(pi.hThread); SchWatchStart(pi.hProcess);
+        FgAfter(fg, pi.dwProcessId, TRUE);
         if (hidden) { if (g_playProc) CloseHandle(g_playProc); g_playProc = pi.hProcess; } else CloseHandle(pi.hProcess);
     } else {
+        FgAfter(fg, 0, FALSE);
         wchar_t m[200]; wsprintfW(m, Tr(L_T_PYFAIL), g_python); Toast(m);
     }
 }
@@ -3257,7 +3328,10 @@ static void RunPy(const wchar_t *arg, const wchar_t *dir, BOOL hold = FALSE) {  
     if (pz) BufAdd(&c, L" & pause\""); else if (kind == 1) BufAdd(&c, L"\"");
     if (user && !mac) {                                                                // через explorer: программа - первое слово командной строки, остальное - параметры
         wchar_t *f, *a; SplitCmd(c.p, &f, &a);
-        if (!ShellRunUser(f, a, (dir && *dir) ? dir : g_pyDir)) { wchar_t m[200]; wsprintfW(m, Tr(L_T_PYFAIL), g_python); Toast(m); }
+        FgJob *fg = FgSnap();
+        BOOL ok = ShellRunUser(f, a, (dir && *dir) ? dir : g_pyDir);
+        FgAfter(fg, 0, ok);
+        if (!ok) { wchar_t m[200]; wsprintfW(m, Tr(L_T_PYFAIL), g_python); Toast(m); }
     } else RunProc(c.p, dir, env, mac);
     Free(c.p); Free(env); Free(sel); Free(s);
 }
@@ -3807,7 +3881,7 @@ static void SchRun(Sch *e, ULONGLONG now) {
     Free(b.arg); Free(b.dir);
     wchar_t m[160]; wsprintfW(m, Tr(L_SCH_RUN), e->name); Toast(m);
     if (e->stopCode >= 0) { lstrcpyW(g_schWatchName, e->name); g_schWatchCode = e->stopCode; }
-    g_noGrab = TRUE; ExecSpec(e->what); g_noGrab = FALSE;
+    g_noGrab = TRUE; g_noFg = TRUE; ExecSpec(e->what); g_noFg = FALSE; g_noGrab = FALSE;
     g_schWatchName[0] = 0; g_schWatchCode = -1;
     if (e->times && e->runs >= e->times) SchStop(e);
 }
@@ -11094,7 +11168,7 @@ static void CalHookRun(wchar_t *t) {
     static const wchar_t *const nm[6] = {L"DKEYS_EVENT_TITLE", L"DKEYS_EVENT_START", L"DKEYS_EVENT_END", L"DKEYS_EVENT_PLACE", L"DKEYS_EVENT_SOURCE", L"DKEYS_EVENT_UID"};
     wchar_t *f[7]; Cal::HookUnpack(t, f);
     for (int i = 0; i < 6; i++) SetEnvironmentVariableW(nm[i], f[i + 1]);       // скрипты получают их в окружении (RunPy и RunDpy копируют окружение при запуске)
-    g_noGrab = TRUE; ExecSpec(f[0]); g_noGrab = FALSE;
+    g_noGrab = TRUE; g_noFg = TRUE; ExecSpec(f[0]); g_noFg = FALSE; g_noGrab = FALSE;
     for (int i = 0; i < 6; i++) SetEnvironmentVariableW(nm[i], NULL);
 }
 static void RemDirty(void) { RemNs::Dirty(); }
@@ -11259,6 +11333,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_APP_PTAB: PopupTab((int)w); return 0;
     case WM_APP_PIMG: PopupImg((int)w); return 0;
     case WM_APP_SCHSTOP: { wchar_t *t = (wchar_t *)l; if (t) { SchStopByName(t); Free(t); } return 0; }
+    case WM_APP_FG: if (l && IsWindow((HWND)l)) ForceFg((HWND)l); return 0;
     case WM_APP_SPEC: { wchar_t *t = (wchar_t *)l; if (t && !Defer(m, t)) { BOOL fh = t[0] == 2; g_calFromHook = fh; g_noGrab = TRUE; ExecSpec(t + fh); g_noGrab = FALSE; g_calFromHook = FALSE; Free(t); } return 0; }
     case WM_APP_DPY: { wchar_t *t = (wchar_t *)l; if (t && !Defer(m, t)) { PasteText(t); Free(t); } return 0; }
     case WM_APP_MACRO: { wchar_t *t = (wchar_t *)l; if (t) { Toast(t); Free(t); } return 0; }
