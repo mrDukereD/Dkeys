@@ -7287,14 +7287,17 @@ static void CalcCr(RECT *r) {                                // что буде�
     if (areaOn) *r = area;                                    // выбранная область важнее настроек монитора
 }
 static void MonKey(wchar_t *k) {                             // ключ монитора, который будет снят (как в CalcCr): DISPLAYn или "all"
-    if (g_rScr < 0) { lstrcpyW(k, L"all"); return; }
-    POINT pt; GetCursorPos(&pt); HMONITOR m = NULL;
-    if (g_rScr > 0) { HMONITOR hm[8]; int n = Mons(hm); if (g_rScr <= n) m = hm[g_rScr - 1]; }
-    if (!m) m = hw ? MonitorFromWindow(hw, MONITOR_DEFAULTTONEAREST) : MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+    HMONITOR m = NULL;
+    if (areaOn) m = MonitorFromRect(&area, MONITOR_DEFAULTTONEAREST);          // у области свой монитор - он важнее выбора в меню и кнопки
+    else if (g_rScr < 0) { lstrcpyW(k, L"all"); return; }
+    else if (g_rScr > 0) { HMONITOR hm[8]; int n = Mons(hm); if (g_rScr <= n) m = hm[g_rScr - 1]; }
+    if (!m) { POINT pt; GetCursorPos(&pt); m = hw ? MonitorFromWindow(hw, MONITOR_DEFAULTTONEAREST) : MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST); }
     MONITORINFOEXW mi; mi.cbSize = sizeof mi; k[0] = 0;
     if (GetMonitorInfoW(m, (MONITORINFO *)&mi)) { const wchar_t *d = mi.szDevice; if (d[0] == L'\\' && d[1] == L'\\' && d[2] == L'.' && d[3] == L'\\') d += 4; lstrcpynW(k, d, 24); }
     if (!k[0]) lstrcpyW(k, L"main");
 }
+static int MonIdx(HMONITOR m) { HMONITOR hm[8]; int n = Mons(hm); for (int i = 0; i < n; i++) if (hm[i] == m) return i + 1; return 0; }
+static int AreaMon(void) { return areaOn && area.right > area.left ? MonIdx(MonitorFromRect(&area, MONITOR_DEFAULTTONEAREST)) : 0; }
 static wchar_t ocKey[24];
 static void OvApplyMon(void) { wchar_t k[24]; MonKey(k); OvPosApply(k); }
 static BOOL aud, csOk;                                                                  // aud: кнопка работает как диктофон (запись звука в .m4a)
@@ -7398,6 +7401,8 @@ static void Stop(void) {
     stopF = 1; WaitForSingleObject(th, 20000); CloseHandle(th); th = NULL; recording = FALSE; Repaint();
     wchar_t m[160]; wsprintfW(m, Tr(aud ? L_REC_AUDSAVED : L_REC_SAVED), fname); Toast(m);
 }
+static void ShowSync(void);
+static void MiniSync(void);
 /* --- выбор области записи: затемнение монитора, рамка мышью, Shift - пропорции экрана --- */
 static LRESULT CALLBACK SelProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     int W = selMon.right - selMon.left, H = selMon.bottom - selMon.top;
@@ -7445,19 +7450,22 @@ static LRESULT CALLBACK SelProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
         return 0;
     case WM_KEYDOWN: case WM_RBUTTONUP: if (m == WM_RBUTTONUP || w == VK_ESCAPE) DestroyWindow(h); return 0;
-    case WM_DESTROY: selw = NULL; if (hw) { ShowWindow(hw, SW_SHOWNOACTIVATE); Repaint(); } DimSync(); return 0;
+    case WM_DESTROY: selw = NULL; if (hw) { ShowWindow(hw, SW_SHOWNOACTIVATE); Repaint(); } MiniSync(); ShowSync(); return 0;     // область выбрана/сброшена - оверлеи пересчитываются
     }
     return DefWindowProcW(h, m, w, l);
 }
 static void SelectArea(void) {
     if (selw || recording || !hw) return;
-    MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoW(MonitorFromWindow(hw, MONITOR_DEFAULTTONEAREST), &mi);
+    HMONITOR sm = NULL;                                                  // рамка рисуется на выбранном мониторе, иначе на мониторе кнопки
+    if (g_rScr > 0) { HMONITOR hm[8]; int n = Mons(hm); if (g_rScr <= n) sm = hm[g_rScr - 1]; }
+    if (!sm) sm = MonitorFromWindow(hw, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoW(sm, &mi);
     selMon = mi.rcMonitor; selHas = FALSE;
     RegClass(L"DKRecSel", SelProc, 0);
     selw = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW, L"DKRecSel", L"", WS_POPUP, selMon.left, selMon.top, selMon.right - selMon.left, selMon.bottom - selMon.top, NULL, NULL, g_inst, NULL);
     if (!selw) return;
     SetLayeredWindowAttributes(selw, RGB(255, 0, 255), 130, LWA_COLORKEY | LWA_ALPHA);
-    ShowWindow(hw, SW_HIDE); ShowWindow(selw, SW_SHOW); ForceFg(selw); SetFocus(selw);
+    ShowWindow(hw, SW_HIDE); MiniSync(); ShowWindow(selw, SW_SHOW); ForceFg(selw); SetFocus(selw);
 }
 /* --- оверлеи на экране ("Показывать на экране"): не попадают в запись, клики проходят насквозь --- */
 /* --- подсветка курсора и кликов на экране, пока есть кнопка записи: окно идёт за курсором, клики проходят насквозь, в запись не попадает --- */
@@ -7604,7 +7612,7 @@ static void OvSave(void) {
 static void OvClose(void) {
     for (int i = 0; i < ncw; i++) { HWND h = ocw[i].h; ocw[i].h = NULL; if (h) DestroyWindow(h); OvFree(&ocw[i].o); }
     ncw = 0; ow = NULL; GdiplusShutdown(otok);
-    if (hw) { ShowWindow(hw, SW_SHOWNOACTIVATE); Repaint(); }
+    if (hw) { ShowWindow(hw, SW_SHOWNOACTIVATE); Repaint(); MiniSync(); }
     ShowSync();
 }
 static LRESULT CALLBACK OvProc(HWND h, UINT m, WPARAM w, LPARAM l) {
@@ -7664,12 +7672,13 @@ static void OvConfig(void) {
     }
     if (!ncw) { GdiplusShutdown(otok); ShowSync(); Toast(Tr(L_REC_OV_NOSEL)); return; }
     ow = ocw[0].h;
-    if (hw) ShowWindow(hw, SW_HIDE);
+    if (hw) { ShowWindow(hw, SW_HIDE); MiniSync(); }
     for (int i = 0; i < ncw; i++) { OvPaint(i); ShowWindow(ocw[i].h, SW_SHOW); }
     ForceFg(ocw[ncw - 1].h); SetFocus(ocw[ncw - 1].h); Toast(Tr(L_REC_OV_HINT));
 }
 static HMONITOR dragMon;
-static HMENU Menu(void); static void Cmd(int c); static void LvSync(void);
+static HMENU Menu(void); static void Cmd(int c); static void LvSync(void); static void MiniSync(void); static void PopupMenu(HWND h);
+static HWND gwh, xwh; static int bSide = 1, mGS, mXS, bGX, bGY;      // шестерёнка (настройки) и крестик (выход) рядом с кнопкой записи
 static void SavePos(void) {
     RECT r; if (!hw || !GetWindowRect(hw, &r)) return;
     wchar_t v[32]; wsprintfW(v, L"%d,%d", r.left, r.top); IniSet(L"Record", L"Pos", v); g_rPos[0] = r.left; g_rPos[1] = r.top;
@@ -7711,14 +7720,15 @@ static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
         return 0;
     case WM_RBUTTONUP: if (!recording) DestroyWindow(h); return 0;
-    case WM_MBUTTONUP: {                                              // средний клик - настройки записи
-        POINT p; GetCursorPos(&p); ForceFg(h);
-        HMENU mn = Menu(); int c = (int)TrackPopupMenu(mn, TPM_RETURNCMD | TPM_RIGHTBUTTON, p.x, p.y, 0, h, NULL);
-        DestroyMenu(mn); PostMessageW(h, WM_NULL, 0, 0); if (c) Cmd(c); return 0;
-    }
+    case WM_MBUTTONUP: PopupMenu(h); return 0;                        // средний клик - настройки записи
     case WM_DESTROY: Stop(); aud = FALSE; SavePos(); hw = NULL; LvSync(); ShowFree(); return 0;
     }
     return DefWindowProcW(h, m, w, l);
+}
+static void PopupMenu(HWND h) {                                       // меню настроек записи: средний клик и шестерёнка
+    POINT p; GetCursorPos(&p); ForceFg(h);
+    HMENU mn = Menu(); int c = (int)TrackPopupMenu(mn, TPM_RETURNCMD | TPM_RIGHTBUTTON, p.x, p.y, 0, h, NULL);
+    DestroyMenu(mn); PostMessageW(h, WM_NULL, 0, 0); if (c) Cmd(c);
 }
 /* --- уровни звука справа от кнопки: по столбику на дорожку (микрофон и Track2..4), пока кнопка на экране; меряем пик устройства, запись не нужна --- */
 struct LvSrc { IAudioMeterInformation *mt; IAudioClient *cl; float v; };
@@ -7761,13 +7771,24 @@ static LRESULT CALLBACK LvProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     return DefWindowProcW(h, m, w, l);
 }
 static void LvSync(void) {
-    if (!hw || !g_rLvl) { if (lvw) DestroyWindow(lvw); return; }
+    if (!hw) { if (lvw) DestroyWindow(lvw); MiniSync(); return; }
     wchar_t sp[4][100], sig[420]; int n = 0; sig[0] = 0;
     BOOL off = g_rMic[0] == L'-' && !g_rMic[1];
-    if (aud || !off) { lstrcpyW(sp[n], L"mic:"); if (!off) Cat(sp[n], 100, g_rMic); n++; }
-    for (int i = 0; i < 3; i++) if (g_rTrk[i][0]) lstrcpynW(sp[n++], g_rTrk[i], 100);
-    for (int i = 0; i < n; i++) { Cat(sig, 420, sp[i]); Cat(sig, 420, L"|"); }
-    if (!n) { if (lvw) DestroyWindow(lvw); return; }
+    if (g_rLvl) {
+        if (aud || !off) { lstrcpyW(sp[n], L"mic:"); if (!off) Cat(sp[n], 100, g_rMic); n++; }
+        for (int i = 0; i < 3; i++) if (g_rTrk[i][0]) lstrcpynW(sp[n++], g_rTrk[i], 100);
+        for (int i = 0; i < n; i++) { Cat(sig, 420, sp[i]); Cat(sig, 420, L"|"); }
+    }
+    RECT r; GetWindowRect(hw, &r); int S = r.bottom - r.top, gap = S / 16 < 2 ? 2 : S / 16, bw = S / 7 < 6 ? 6 : S / 7;
+    int W = n ? 2 * (gap + 1) + n * bw + (n - 1) * gap : 0;
+    int GS = S * 72 / 100; if (GS < 32) GS = 32;
+    int XS = S * 34 / 100; if (XS < 12) XS = 12;
+    MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoW(MonitorFromWindow(hw, MONITOR_DEFAULTTONEAREST), &mi);
+    int need = r.right + gap + W + (W ? gap : 0) + GS;                                   // справа: кнопка, столбики, шестерёнка
+    bSide = need > mi.rcMonitor.right ? -1 : 1;                                          // не влезает - всё левее кнопки (шестерёнка дальше всех)
+    bGX = bSide > 0 ? r.right + gap + (W ? W + gap : 0) : r.left - gap - GS;
+    bGY = r.top + S / 2 - (GS - XS) / 2;                                                 // шестерёнка с крестиком над ней по центру кнопки записи
+    if (!n) { if (lvw) DestroyWindow(lvw); MiniSync(); return; }
     if (lstrcmpW(sig, lvSig)) {
         LvFree(); lstrcpyW(lvSig, sig);
         IMMDeviceEnumerator *en = NULL;
@@ -7787,15 +7808,13 @@ static void LvSync(void) {
             en->Release();
         }
     }
-    RECT r; GetWindowRect(hw, &r); int S = r.bottom - r.top, gap = S / 16 < 2 ? 2 : S / 16, bw = S / 7 < 6 ? 6 : S / 7, W = 2 * (gap + 1) + n * bw + (n - 1) * gap;
-    MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoW(MonitorFromWindow(hw, MONITOR_DEFAULTTONEAREST), &mi);
-    int x = r.right + gap + 2; if (x + W > mi.rcMonitor.right) x = r.left - gap - 2 - W;
-    if (!IsWindowVisible(hw)) { if (lvw) ShowWindow(lvw, SW_HIDE); return; }
+    int x = bSide > 0 ? r.right + gap : bGX - gap - W;                                  // столбики сразу у кнопки, шестерёнка дальше
+    if (!IsWindowVisible(hw)) { if (lvw) ShowWindow(lvw, SW_HIDE); MiniSync(); return; }
     BOOL fresh = !lvw;
     if (fresh) {
         RegClass(L"DKRecLvl", LvProc, 0);
         lvw = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"DKRecLvl", L"", WS_POPUP, x, r.top, W, S, NULL, NULL, g_inst, NULL);
-        if (!lvw) return;
+        if (!lvw) { MiniSync(); return; }
         SetWindowDisplayAffinity(lvw, 0x11);                     // в видео не попадает
         SetWindowRgn(lvw, CreateRoundRectRgn(0, 0, W + 1, S + 1, 8, 8), TRUE);
         SetTimer(lvw, 1, 40, NULL);
@@ -7805,6 +7824,99 @@ static void LvSync(void) {
     }
     SetWindowPos(lvw, HWND_TOPMOST, x, r.top, W, S, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     InvalidateRect(lvw, NULL, FALSE);
+    MiniSync();
+}
+/* --- шестерёнка (меню настроек) и крестик (выход) у кнопки записи: свои окна, в запись не попадают --- */
+static ULONG_PTR mtok; static BOOL mtokOn;
+static void MiniGp(void) { if (!mtokOn) { GdiplusStartupInput in; if (GdiplusStartup(&mtok, &in, NULL) == Ok) mtokOn = TRUE; } }
+static LRESULT CALLBACK MiniProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    int k = (int)GetWindowLongPtrW(h, GWLP_USERDATA);
+    switch (m) {
+    case WM_ERASEBKGND: return 1;
+    case WM_SETCURSOR: SetCursor(LoadCursorW(NULL, IDC_HAND)); return TRUE;
+    case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
+    case WM_PAINT: {
+        PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); RECT r; GetClientRect(h, &r); int W = r.right, H = r.bottom, c = W / 2;
+        HBRUSH bg = CreateSolidBrush(RGB(32, 33, 36)); FillRect(dc, &r, bg); DeleteObject(bg);
+        HPEN pb = CreatePen(PS_SOLID, 1, RGB(80, 82, 88)), pw = CreatePen(PS_SOLID, 2, RGB(240, 240, 240));
+        HGDIOBJ op = SelectObject(dc, pb), ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+        Ellipse(dc, 0, 0, W, H);                                                     // ободок
+        SelectObject(dc, pw);
+        if (k == 2) {                                                                // крестик
+            int a = W / 4;
+            MoveToEx(dc, a, a, NULL); LineTo(dc, W - a, H - a);
+            MoveToEx(dc, W - a - 1, a, NULL); LineTo(dc, a - 1, H - a);
+        } else {                                                                     // шестерёнка: контур из 8 зубьев, как в настройках Windows
+            static const short gp[][2] = {
+                { 231, 96 }, { 240, 69 }, { 305, 54 }, { 305, -54 },
+                { 240, -69 }, { 231, -96 }, { 219, -121 }, { 254, -178 },
+                { 178, -254 }, { 121, -219 }, { 96, -231 }, { 69, -240 },
+                { 54, -305 }, { -54, -305 }, { -69, -240 }, { -96, -231 },
+                { -121, -219 }, { -178, -254 }, { -254, -178 }, { -219, -121 },
+                { -231, -96 }, { -240, -69 }, { -305, -54 }, { -305, 54 },
+                { -240, 69 }, { -231, 96 }, { -219, 121 }, { -254, 178 },
+                { -178, 254 }, { -121, 219 }, { -96, 231 }, { -69, 240 },
+                { -54, 305 }, { 54, 305 }, { 69, 240 }, { 96, 231 },
+                { 121, 219 }, { 178, 254 }, { 254, 178 }, { 219, 121 } };
+            MiniGp();
+            GpGraphics *mg = NULL;
+            if (mtokOn && GdipCreateFromHDC(dc, &mg) == Ok && mg) {
+                GdipSetSmoothingMode(mg, SmoothingModeAntiAlias);
+                GpPen *mp = NULL;
+                if (GdipCreatePen1(0xFFF2F2F2, 1.5f, UnitPixel, &mp) == Ok && mp) {
+                    GdipSetPenLineJoin(mp, LineJoinRound);
+                    int IS = W * 85 / 100;                                   // значок мельче кружка
+                    PointF q[40];
+                    for (int i = 0; i < 40; i++) { q[i].X = (float)(c + MulDiv(gp[i][0], IS, 1000)); q[i].Y = (float)(c + MulDiv(gp[i][1], IS, 1000)); }
+                    GdipDrawPolygon(mg, mp, q, 40);
+                    float rh = IS * 0.125f;
+                    GdipDrawEllipse(mg, mp, c - rh, c - rh, rh * 2, rh * 2);
+                    GdipDeletePen(mp);
+                }
+                GdipDeleteGraphics(mg);
+            }
+        }
+        SelectObject(dc, op); SelectObject(dc, ob); DeleteObject(pb); DeleteObject(pw);
+        EndPaint(h, &ps); return 0;
+    }
+    case WM_LBUTTONUP:
+        if (k == 2) { if (hw) DestroyWindow(hw); }                                   // выход из записи/диктофона
+        else if (hw) PopupMenu(hw);
+        return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+static void MiniSync(void) {
+    if (!hw) {
+        if (gwh) { HWND t = gwh; gwh = NULL; DestroyWindow(t); }
+        if (xwh) { HWND t = xwh; xwh = NULL; DestroyWindow(t); }
+        return;
+    }
+    RECT r; if (!GetWindowRect(hw, &r)) return;
+    int S = r.bottom - r.top;
+    int GS = S * 72 / 100; if (GS < 32) GS = 32;                         // шестерёнка на 60% крупнее прежней
+    int XS = S * 34 / 100; if (XS < 12) XS = 12;
+    if ((gwh || xwh) && (GS != mGS || XS != mXS)) { if (gwh) { HWND t = gwh; gwh = NULL; DestroyWindow(t); } if (xwh) { HWND t = xwh; xwh = NULL; DestroyWindow(t); } }
+    if (!gwh || !xwh) {
+        RegClass(L"DKRecMini", MiniProc, 0);
+        if (!gwh) {
+            gwh = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"DKRecMini", L"", WS_POPUP, 0, 0, GS, GS, NULL, NULL, g_inst, NULL);
+            if (gwh) { SetWindowLongPtrW(gwh, GWLP_USERDATA, 1); SetWindowDisplayAffinity(gwh, 0x11); SetWindowRgn(gwh, CreateEllipticRgn(0, 0, GS + 1, GS + 1), TRUE); }
+        }
+        if (!xwh) {
+            xwh = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"DKRecMini", L"", WS_POPUP, 0, 0, XS, XS, NULL, NULL, g_inst, NULL);
+            if (xwh) { SetWindowLongPtrW(xwh, GWLP_USERDATA, 2); SetWindowDisplayAffinity(xwh, 0x11); SetWindowRgn(xwh, CreateEllipticRgn(0, 0, XS + 1, XS + 1), TRUE); }
+        }
+        mGS = GS; mXS = XS;
+    }
+    BOOL vis = IsWindowVisible(hw) != FALSE;
+    MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoW(MonitorFromWindow(hw, MONITOR_DEFAULTTONEAREST), &mi);
+    int gx = bGX, gy = bGY;
+    int xx = gx + GS - XS, xy = gy - XS;                                 // крестик над шестерёнкой
+    if (xy < mi.rcMonitor.top) xy = mi.rcMonitor.top;
+    UINT fl = SWP_NOACTIVATE | SWP_NOZORDER | (vis ? SWP_SHOWWINDOW : SWP_HIDEWINDOW);
+    if (gwh) SetWindowPos(gwh, NULL, gx, gy, GS, GS, fl);
+    if (xwh) SetWindowPos(xwh, NULL, xx, xy, XS, XS, fl);
 }
 static void OpenMode(BOOL a) {                                    // a: диктофон; повторный вызов - старт, потом стоп; другой режим - переключает кнопку
     if (recording) { Stop(); return; }
@@ -7999,14 +8111,14 @@ static HMENU Menu(void) {
     AppendMenuW(m, MF_STRING | (g_rCur ? MF_CHECKED : 0), 21, Tr(L_REC_CUR));
     AppendMenuW(m, MF_STRING | (g_fxAll ? MF_CHECKED : 0), 67, Tr(L_REC_FX));
     AppendMenuW(m, MF_STRING, 68, Tr(L_REC_FXCFG));
-    AppendMenuW(m, MF_STRING | (g_rScr == 0 ? MF_CHECKED : 0), 27, Tr(L_REC_BTN));
-    { HMONITOR hm[8]; int n = Mons(hm);
+    AppendMenuW(m, MF_STRING | (!areaOn && g_rScr == 0 ? MF_CHECKED : 0), 27, Tr(L_REC_BTN));
+    { HMONITOR hm[8]; int n = Mons(hm), am = AreaMon();                    // при выбранной области отмечаем её монитор, а не кнопку/прошлый выбор
       for (int i = 0; i < n; i++) {
           MONITORINFO m2; m2.cbSize = sizeof m2; wchar_t e[80]; if (!GetMonitorInfoW(hm[i], &m2)) continue;
           wsprintfW(e, Tr(L_REC_MON), i + 1, m2.rcMonitor.right - m2.rcMonitor.left, m2.rcMonitor.bottom - m2.rcMonitor.top);
-          AppendMenuW(m, MF_STRING | (g_rScr == i + 1 ? MF_CHECKED : 0), 50 + i, e);
+          AppendMenuW(m, MF_STRING | ((areaOn ? am == i + 1 : g_rScr == i + 1) ? MF_CHECKED : 0), 50 + i, e);
       } }
-    AppendMenuW(m, MF_STRING | (g_rScr < 0 ? MF_CHECKED : 0), 26, Tr(L_REC_ALL));
+    AppendMenuW(m, MF_STRING | (!areaOn && g_rScr < 0 ? MF_CHECKED : 0), 26, Tr(L_REC_ALL));
     AppendMenuW(m, MF_STRING | (areaOn ? MF_CHECKED : 0) | (aud || recording ? MF_GRAYED : 0), 28, Tr(L_REC_AREA));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_POPUP, (UINT_PTR)MicMenu(), Tr(L_REC_MIC));
@@ -8041,6 +8153,7 @@ static void Cmd(int c) {
     else if (c == 28) SelectArea();
     else if (c == 26 || c == 27 || (c >= 50 && c < 58)) {
         g_rScr = c == 26 ? -1 : c == 27 ? 0 : c - 49; wsprintfW(v, L"%d", g_rScr); IniSet(L"Record", L"Screen", c == 26 ? L"all" : v);
+        areaOn = FALSE; Repaint(); ShowSync();                       // другой экран - область, её индикатор на кнопке и места оверлеев сбрасываются
     }
     else if (c >= 30 && c < 48) {
         if (c == 30) g_rMic[0] = 0; else if (c == 31) { g_rMic[0] = L'-'; g_rMic[1] = 0; } else lstrcpynW(g_rMic, micList[c - 32], 80);
