@@ -34,6 +34,9 @@ DEFINE_GUID(IID_IAudioClient,0x1CB9AD4C, 0xDBFA, 0x4C32, 0xB1, 0x78, 0xC2, 0xF5,
 DEFINE_GUID(IID_IAudioRenderClient, 0xF294ACFC, 0x3146, 0x4483, 0xA7, 0xBF, 0xAD, 0xDC, 0xA7, 0xC2, 0x60, 0xE2);
 DEFINE_GUID(IID_IAudioCaptureClient, 0xC8ADBD64, 0xE71E, 0x48A0, 0xA4, 0xDE, 0x18, 0x5C, 0x39, 0x5C, 0xD3, 0x17);
 #include <stdarg.h>
+#include <mfplay.h>
+#include "cutter.h"
+#pragma comment(lib, "mfplay.lib")
 
 #pragma comment(lib, "kernel32.lib")
 #pragma comment(lib, "user32.lib")
@@ -81,7 +84,7 @@ X(A_RUN, "run", AK_CMD) X(A_ADMIN, "admin", AK_CMD) X(A_PY, "py", AK_CMD) X(A_PY
 X(A_TOTRAY, "totray", AK_NONE) X(A_LAYOUT, "layout", AK_NONE) X(A_PAUSE, "pause", AK_NONE) X(A_WEBCAM, "webcam", AK_NONE) X(A_STOPWATCH, "stopwatch", AK_NONE) \
 X(A_TIMER, "timer", AK_DUR) X(A_DRAW, "draw", AK_NONE) X(A_PICKER, "picker", AK_NONE) X(A_RECORD, "record", AK_NONE) X(A_SCRIPTS, "scripts", AK_NONE) \
 X(A_VOL, "volume", AK_NONE) X(A_VOLSET, "volumeset", AK_NONE) X(A_DUP, "duplicate", AK_NONE) X(A_MACRO, "macro", AK_NONE) X(A_RECORDS, "records", AK_NONE) \
-X(A_AUDIO, "audio", AK_NONE) X(A_VOICE, "voice", AK_NONE) X(A_SCRIPTN, "script", AK_SCRN) X(A_VOICECMD, "voicecmd", AK_NONE) X(A_TRAYMENU, "traymenu", AK_NONE) X(A_TAKE, "take", AK_NONE) X(A_CALENDAR, "calendar", AK_CMD) X(A_EXIT, "exit", AK_NONE)
+X(A_AUDIO, "audio", AK_NONE) X(A_CUTTER, "cutter", AK_CMD) X(A_VOICE, "voice", AK_NONE) X(A_SCRIPTN, "script", AK_SCRN) X(A_VOICECMD, "voicecmd", AK_NONE) X(A_TRAYMENU, "traymenu", AK_NONE) X(A_TAKE, "take", AK_NONE) X(A_CALENDAR, "calendar", AK_CMD) X(A_EXIT, "exit", AK_NONE)
 #define ACT_ID(id, nm, k) id,
 enum { A_NONE, ACTION_LIST(ACT_ID) A_COUNT };
 #undef ACT_ID
@@ -117,7 +120,7 @@ static IUnknown *CamObj(int k);
 static void TmToggle(int mode);
 static void DrawOpen(void);
 static void PickerOpen(void);
-static void RecOpen(void), RecAudioOpen(void), VoiceToggle(void), VoiceCmdToggle(void), VoiceCmdInit(void), VoiceCmd(const wchar_t *), TmStartFor(int), RunScriptN(int);
+static void RecOpen(void), RecAudioOpen(void), CutOpen(const wchar_t *), VoiceToggle(void), VoiceCmdToggle(void), VoiceCmdInit(void), VoiceCmd(const wchar_t *), TmStartFor(int), RunScriptN(int);
 static BOOL RegClass(const wchar_t *name, WNDPROC proc, UINT style);
 struct BB { BYTE *p; DWORD n, cap; };
 
@@ -299,6 +302,47 @@ X(L_REC_SAVED, "rec.saved", L"Видео сохранено: %s") \
 X(L_REC_AUDSAVED, "rec.audio_saved", L"Звук сохранён: %s") \
 X(L_REC_AUDKB, "rec.audio_kbps", L"Диктофон: %d кбит/с") \
 X(L_TRAY_AUD, "tray.dictaphone", L"Диктофон") \
+X(L_TRAY_CUT, "tray.cut", L"Обрезать запись…") \
+X(L_CUT_TITLE, "cut.title", L"Обрезка записи") \
+X(L_CUT_OPEN, "cut.open", L"Файл…") \
+X(L_CUT_PLAY, "cut.play", L"Играть") \
+X(L_CUT_PLAYALL, "cut.play_all", L"Играть всё") \
+X(L_CUT_PAUSE, "cut.pause", L"Пауза") \
+X(L_CUT_MARKA, "cut.mark_start2", L"Начало") \
+X(L_CUT_MARKB, "cut.mark_end2", L"Конец") \
+X(L_CUT_CUT, "cut.cut2", L"Удалить") \
+X(L_CUT_EDIT, "cut.edit", L"Правка") \
+X(L_CUT_UNDO, "cut.undo", L"Отменить") \
+X(L_CUT_REDO, "cut.redo", L"Повтор") \
+X(L_CUT_RESET, "cut.reset", L"Сбросить") \
+X(L_CUT_SAVE, "cut.save", L"Сохранить") \
+X(L_CUT_NOTHING, "cut.nothing2", L"Нечего сохранять: нет вырезанных кусков") \
+X(L_CUT_SAVING, "cut.saving", L"Сохранение…") \
+X(L_CUT_SAVING_PCT, "cut.saving_pct", L"Сохранение… %d%%") \
+X(L_CUT_SAVED, "cut.saved", L"Сохранено: %s") \
+X(L_CUT_CANCELLED, "cut.cancelled", L"Сохранение отменено") \
+X(L_CUT_FAIL, "cut.fail", L"Не удалось сохранить обрезанный файл") \
+X(L_CUT_OPENFAIL, "cut.open_fail", L"Не удалось открыть файл: %s") \
+X(L_CUT_READY, "cut.ready2", L"Отметьте «Начало» и «Конец» выделения и нажмите «Удалить»") \
+X(L_CUT_HINT, "cut.hint2", L"Мышью - выделить, «Начало»/«Конец» - границы, Esc - сброс выделения. Delete - удалить, Ctrl+Z/Ctrl+Shift+Z - отмена/повтор, ←/→ - по ключевым кадрам, Space - играть. «Правка» - вернуть кусок из-под курсора.") \
+X(L_CUT_NONE, "cut.no_cuts", L"Нет вырезанных кусков") \
+X(L_CUT_CUTS, "cut.cuts", L"Вырезано:") \
+X(L_CUT_NOFILE, "cut.no_file", L"Файл не открыт") \
+X(L_CUT_LEN, "cut.len", L"Длительность") \
+X(L_CUT_STREAMS, "cut.video", L"Видео") \
+X(L_CUT_AUDIO, "cut.audio", L"Звук") \
+X(L_CUT_KEYS, "cut.keys", L"Ключевых кадров") \
+X(L_CUT_FILTER_MEDIA, "cut.filter_media", L"Видео и звук") \
+X(L_CUT_FILTER_ALL, "cut.filter_all", L"Все файлы") \
+X(L_CUT_CONFIRM, "cut.confirm_reset", L"Сбросить все вырезанные куски?") \
+X(L_CUT_NOSEL, "cut.no_selection", L"Сначала отметьте «Начало» и «Конец» выделения") \
+X(L_CUT_MANY, "cut.too_many", L"Слишком много вырезанных кусков") \
+X(L_CUT_DELETED, "cut.deleted", L"Кусок удалён из записи; Ctrl+Z - отменить") \
+X(L_CUT_NOZONE, "cut.no_zone", L"Курсор не внутри вырезанного куска") \
+X(L_CUT_EDITING, "cut.editing", L"Кусок возвращён в выделение - поправьте границы и нажмите «Удалить»") \
+X(L_CUT_UNDONE, "cut.undone", L"Отменено") \
+X(L_CUT_REDONE, "cut.redone", L"Повторено") \
+X(L_CUT_RESETDONE, "cut.reset_done", L"Все вырезанные куски сброшены") \
 X(L_TRAY_VOICE, "tray.voice", L"Голосовой набор") \
 X(L_VOICE_ASK, "voice.ask2", L"Для голосового набора нужно скачать распознаватель речи Whisper (около 3 МБ, github.com) и модель «%s» (huggingface.co; small - около 465 МБ). Файлы сохранятся в папку whisper рядом с программой, дальше всё работает без интернета. Скачать сейчас?") \
 X(L_VOICE_REC, "voice.rec", L"Говорите... Ещё раз - закончить") \
@@ -465,7 +509,7 @@ X(L_TAB_HIST, "popup.tab_history", L"История") \
 X(L_TAB_LAUNCH, "popup.tab_launch", L"Запуск") \
 X(L_TAB_SCR, "popup.tab_scripts", L"Скрипты") \
 X(L_TAB_REC, "popup.tab_records", L"Записи") \
-X(L_INFO_REC, "popup.info_records2", L"Enter - запустить   Ctrl+Enter - править   Shift+Enter - папка   Num+ - \u2605   Tab - режим   Esc - закрыть") \
+X(L_INFO_REC, "popup.info_records3", L"Enter - запустить   Ctrl+Enter - править   Ctrl+E - обрезать   Shift+Enter - папка   Num+ - \u2605   Tab - режим   Esc - закрыть") \
 X(L_EMPTY_REC, "popup.records_empty", L"В папке records нет записей. Win+Shift+M - записать действия клавиатуры и мыши") \
 X(L_TRAY_MACRO, "tray.macro", L"Запись действий") \
 X(L_TRAY_RECS, "tray.records", L"Записи…") \
@@ -2775,7 +2819,7 @@ static void PopupPaint(HWND h) {
         wchar_t info[128];
         if (g_pmode == PM_LAUNCH) lstrcpynW(info, Tr(L_INFO_LAUNCH), 128);
         else if (g_pmode == PM_SCRIPTS) lstrcpynW(info, Tr(L_INFO_SCR), 128);
-        else if (g_pmode == PM_RECORDS) lstrcpynW(info, Tr(L_INFO_REC), 128);
+        else if (g_pmode == PM_RECORDS) lstrcpynW(info, Tr(L_INFO_REC), 220);
         else if (g_pmode == PM_BUF) wsprintfW(info, Tr(L_INFO_BUF), tl);
         else wsprintfW(info, Tr(L_INFO_HIST), tl);
         SetTextColor(dc, P.dim);
@@ -3576,6 +3620,7 @@ static void ExecBind(const Bind *b) {
     case A_MACRO: MacroToggle(b->mods); break;
     case A_RECORDS: OpenPopup(PM_RECORDS, 0); break;
     case A_AUDIO: RecAudioOpen(); break;
+    case A_CUTTER: CutOpen(b->arg[0] ? b->arg : NULL); break;
     case A_VOICE: VoiceToggle(); break;
     case A_VOICECMD: VoiceCmdToggle(); break;
     case A_CALENDAR: CalAction(b->arg); break;
@@ -3995,6 +4040,13 @@ static void PopupChoose(int vi) {
     else PasteText(text);
     Free(text);
 }
+static void PopupCutSelected(void) {                                                 // Ctrl+E в «Записях»: открыть запись в редакторе
+    if (g_sel < 0 || g_sel >= g_nvis) return;
+    Row *r = &g_rows[g_vis[g_sel]];
+    if (r->act) return;
+    wchar_t path[MAX_PATH]; lstrcpynW(path, g_recDir, MAX_PATH); Cat(path, MAX_PATH, g_scrNames[r->ref]);
+    PopupClose(); CutOpen(path);
+}
 static BOOL FindTarget(const wchar_t *cmd, const wchar_t *dir, BOOL script, wchar_t *out) {   // файл, который запускает команда (для Shift+Enter)
     wchar_t *s = Dup(SkipNotify(cmd)), *file, *par; SplitCmd(s, &file, &par);
     if (script) {                                                                     // python x.py / powershell -File x.ps1: берём сам скрипт, а не интерпретатор
@@ -4217,6 +4269,7 @@ static void PopupKey(UINT key, UINT mods, WCHAR ch) {
     int dig = -1;
     if (key >= L'0' && key <= L'9') dig = key - L'0'; else if (key >= VK_NUMPAD0 && key <= VK_NUMPAD9) dig = key - VK_NUMPAD0;
     BOOL buf = g_pmode == PM_BUF, plain = !(mods & (DM_CTRL | DM_ALT | DM_WIN));
+    if (g_pmode == PM_RECORDS && (mods & DM_CTRL) && key == L'E') { PopupCutSelected(); return; }
     switch (key) {
     case VK_ESCAPE: PopupClose(); return;
     case VK_RETURN:
@@ -8171,6 +8224,505 @@ static void Cmd(int c) {
 }
 }   // namespace RecNs
 
+/* ---------- обрезка записи: предпросмотр, таймлайн, вырезание кусков (перепаковка, без перекодирования) ---------- */
+namespace CutNs {
+using namespace CutCore;
+enum { CMD_FILE = 1, CMD_PLAYALL, CMD_PLAY, CMD_MARKA, CMD_MARKB, CMD_DEL, CMD_EDIT, CMD_UNDO, CMD_REDO, CMD_RESET, CMD_SAVE };
+enum { WM_CUT_PCT = WM_APP + 40, WM_CUT_DONE };
+static const int CLW = 900, CLH = 680;
+static HWND hw, pv, tl, bFile, bPlayAll, bPlay, bA, bB, bDel, bEdit, bUndo, bRedo, bReset, bSave;
+static IMFPMediaPlayer *pl; static BOOL mfOn;
+static wchar_t file[MAX_PATH] = {0}, outFile[MAX_PATH] = {0}, status[240] = {0};
+static Info info;
+static long long pos, selA, selB; static BOOL hasA, hasB;
+static BOOL dragging, dragMoved, playing, saving; static int playMode;                // режим: 1 - весь файл, 2 - только оставшееся
+static long long dragFrom; static int dragX; static int dragMode; static long long dragOrigA, dragOrigB;
+static Seg cuts[32]; static int ncuts;
+static unsigned char wave[1200]; static BOOL waveOk;
+static Seg gKeep[40]; static int gKeepN;
+static struct Undo { Seg c[32]; int n; } und[24], red[24]; static int nund, nred;
+static HANDLE th; static volatile LONG stopF;
+static RECT rcPv = {12, 12, 888, 352}, rcTl = {12, 364, 888, 484};
+
+static void Fmt(long long t, wchar_t *b) {
+    if (t < 0) t = 0;
+    long long s = (t + 5000000) / 10000000;
+    wsprintfW(b, L"%d:%02d", (int)(s / 60), (int)(s % 60));
+}
+static void Fmt10(long long t, wchar_t *b) {
+    if (t < 0) t = 0;
+    long long r = t + 500000, s = r / 10000000;
+    wsprintfW(b, L"%d:%02d.%d", (int)(s / 60), (int)(s % 60), (int)((r / 1000000) % 10));
+}
+static long long Snap(long long t) {                              // ближайший ключевой кадр
+    long long best = t, bd = -1;
+    for (int i = 0; i < info.nkeys; i++) {
+        long long d = info.keys[i].pts - t; if (d < 0) d = -d;
+        if (bd < 0 || d < bd) { bd = d; best = info.keys[i].pts; }
+    }
+    return best;
+}
+static long long SnapUp(long long t) {                            // первый ключевой кадр не раньше t (резать назад нельзя)
+    if (info.nkeys <= 0) return t;
+    for (int i = 0; i < info.nkeys; i++) if (info.keys[i].pts >= t) return info.keys[i].pts;
+    return info.dur;
+}
+static long long KeyAfter(long long t) {
+    if (info.nkeys <= 0) return t;
+    for (int i = 0; i < info.nkeys; i++) if (info.keys[i].pts > t) return info.keys[i].pts;
+    return info.dur;
+}
+static int XOf(long long t) { int w = rcTl.right - rcTl.left; if (info.dur <= 0) return 14; long long x = 14 + (w - 28) * t / info.dur; return (int)x; }
+static long long TOf(int x) {
+    int w = rcTl.right - rcTl.left; if (w <= 28 || info.dur <= 0) return 0;
+    long long t = (long long)(x - 14) * info.dur / (w - 28);
+    if (t < 0) t = 0; if (t > info.dur) t = info.dur; return t;
+}
+static BOOL SelOK(void) { return hasA && hasB && selB > selA + 100000; }
+static void Seek(long long t) {
+    if (!pl) return;
+    PROPVARIANT p; PropVariantInit(&p); p.vt = VT_I8; p.hVal.QuadPart = t;
+    pl->SetPosition(GUID_NULL, &p); PropVariantClear(&p);
+}
+static long long PlayerPos(void) {
+    long long r = pos; PROPVARIANT p; PropVariantInit(&p);
+    if (pl && SUCCEEDED(pl->GetPosition(GUID_NULL, &p)) && p.vt == VT_I8) r = p.hVal.QuadPart;
+    PropVariantClear(&p); return r;
+}
+static long long SkipCuts(long long t) {                          // перескочить вырезанные куски
+    for (;;) {
+        BOOL ch = FALSE;
+        for (int i = 0; i < ncuts; i++) if (t >= cuts[i].a && t < cuts[i].b) { t = cuts[i].b; ch = TRUE; }
+        if (!ch) return t;
+    }
+}
+static void PlayBtn(void) {
+    if (bPlayAll) SetWindowTextW(bPlayAll, Tr(playing && playMode == 1 ? L_CUT_PAUSE : L_CUT_PLAYALL));
+    if (bPlay) SetWindowTextW(bPlay, Tr(playing && playMode == 2 ? L_CUT_PAUSE : L_CUT_PLAY));
+}
+static void StopPlay(void) { if (playing && pl) pl->Pause(); playing = FALSE; playMode = 0; PlayBtn(); }
+static int CutAt(long long t) { for (int i = 0; i < ncuts; i++) if (t >= cuts[i].a && t < cuts[i].b) return i; return -1; }
+static void SetBtns(void) {
+    BOOL on = !saving;
+    HWND bs[] = {bFile, bPlayAll, bPlay, bA, bB, bDel, bEdit, bUndo, bRedo, bReset, bSave};
+    for (int i = 0; i < 11; i++) if (bs[i]) EnableWindow(bs[i], on);
+    if (!on) return;
+    EnableWindow(bPlayAll, file[0] != 0); EnableWindow(bPlay, file[0] != 0);
+    EnableWindow(bDel, SelOK()); EnableWindow(bEdit, file[0] && CutAt(pos) >= 0); EnableWindow(bUndo, nund > 0); EnableWindow(bRedo, nred > 0);
+    EnableWindow(bSave, file[0] && ncuts > 0);
+    EnableWindow(bReset, ncuts > 0); EnableWindow(bA, file[0] != 0); EnableWindow(bB, file[0] != 0);
+}
+static void SetStatus(const wchar_t *s) { lstrcpynW(status, s, 240); if (hw) InvalidateRect(hw, NULL, TRUE); }
+static void Title(void) {
+    if (!hw) return;
+    wchar_t t[300], nm[MAX_PATH]; lstrcpynW(nm, file, MAX_PATH);
+    wchar_t *p = nm; for (wchar_t *q = nm; *q; q++) if (*q == L'\\') p = q + 1;
+    wsprintfW(t, L"%s — %s", Tr(L_CUT_TITLE), p);
+    SetWindowTextW(hw, t);
+}
+static void MakeOut(void) {
+    wchar_t base[MAX_PATH], ext[16] = {0};
+    lstrcpynW(base, file, MAX_PATH);
+    wchar_t *bs = base; for (wchar_t *q = base; *q; q++) if (*q == L'\\') bs = q + 1;
+    wchar_t *dot = NULL; for (wchar_t *q = bs; *q; q++) if (*q == L'.') dot = q;
+    if (dot) { lstrcpynW(ext, dot, 16); *dot = 0; }
+    for (int k = 1; k < 10; k++) {
+        if (k == 1) wsprintfW(outFile, L"%s_cut%s", base, ext);
+        else wsprintfW(outFile, L"%s_cut%d%s", base, k, ext);
+        if (lstrcmpiW(outFile, file) && GetFileAttributesW(outFile) == INVALID_FILE_ATTRIBUTES) return;
+    }
+}
+static void InvalidateAll(void) { if (hw) InvalidateRect(hw, NULL, TRUE); if (tl) InvalidateRect(tl, NULL, TRUE); }
+static void SaveUndo(void) {
+    if (nund == 24) { memmove(und, und + 1, 23 * sizeof und[0]); nund = 23; }
+    und[nund].n = ncuts; memcpy(und[nund].c, cuts, sizeof(Seg) * ncuts); nund++;
+}
+static void SaveRedo(void) {
+    if (nred == 24) { memmove(red, red + 1, 23 * sizeof red[0]); nred = 23; }
+    red[nred].n = ncuts; memcpy(red[nred].c, cuts, sizeof(Seg) * ncuts); nred++;
+}
+static void PushUndo(void) { SaveUndo(); nred = 0; }                  // новое действие обнуляет «повтор»
+static void UndoAct(void) {
+    if (!nund) return;
+    SaveRedo();
+    nund--; ncuts = und[nund].n; memcpy(cuts, und[nund].c, sizeof(Seg) * ncuts);
+    hasA = hasB = FALSE; SetStatus(Tr(L_CUT_UNDONE)); InvalidateAll(); SetBtns();
+}
+static void RedoAct(void) {
+    if (!nred) return;
+    SaveUndo();
+    nred--; ncuts = red[nred].n; memcpy(cuts, red[nred].c, sizeof(Seg) * ncuts);
+    hasA = hasB = FALSE; SetStatus(Tr(L_CUT_REDONE)); InvalidateAll(); SetBtns();
+}
+static void DeleteSel(void) {
+    if (!SelOK()) { Toast(Tr(L_CUT_NOSEL)); return; }
+    if (ncuts >= 32) { Toast(Tr(L_CUT_MANY)); return; }
+    long long a = selA, b = selB;
+    if (a > b) { long long t = a; a = b; b = t; }
+    b = SnapUp(b); if (b > info.dur) b = info.dur;                    // продолжение - с ключевого кадра
+    if (b - a < 100000) { Toast(Tr(L_CUT_NOSEL)); return; }
+    PushUndo();
+    cuts[ncuts].a = a; cuts[ncuts].b = b; ncuts++;
+    hasA = hasB = FALSE;
+    SetStatus(Tr(L_CUT_DELETED)); InvalidateAll(); SetBtns();
+}
+static void EditCut(void) {                                       // вернуть кусок из-под курсора в выделение и поправить границы
+    int i = CutAt(pos);
+    if (i < 0) { Toast(Tr(L_CUT_NOZONE)); return; }
+    StopPlay();
+    PushUndo();
+    selA = cuts[i].a; selB = cuts[i].b; hasA = hasB = TRUE;
+    for (int k = i; k < ncuts - 1; k++) cuts[k] = cuts[k + 1];
+    ncuts--;
+    SetStatus(Tr(L_CUT_EDITING)); InvalidateAll(); SetBtns();
+}
+static void Step(int dir) {                                       // переход по ключевым кадрам
+    if (info.dur <= 0) return;
+    long long t = pos;
+    if (info.nkeys > 0) {
+        if (dir > 0) {
+            t = info.dur;
+            for (int i = 0; i < info.nkeys; i++) if (info.keys[i].pts > pos + 1000) { t = info.keys[i].pts; break; }
+        } else {
+            t = 0;
+            for (int i = info.nkeys - 1; i >= 0; i--) if (info.keys[i].pts < pos - 1000) { t = info.keys[i].pts; break; }
+        }
+    } else t += dir * 1000000LL;
+    if (t < 0) t = 0; if (t > info.dur) t = info.dur;
+    pos = t; Seek(pos); if (tl) InvalidateRect(tl, NULL, FALSE); SetBtns();
+}
+static void StartPlay(int mode) {
+    if (!pl || info.dur <= 0) return;
+    if (playing && playMode == mode) { pl->Pause(); playing = FALSE; playMode = 0; PlayBtn(); return; }
+    if (pos >= info.dur - 1000000) pos = 0;
+    if (mode == 2) { pos = SkipCuts(pos); if (pos >= info.dur) pos = 0; }
+    Seek(pos); pl->Play(); playing = TRUE; playMode = mode; PlayBtn();
+}
+static void Load(const wchar_t *p);
+static void OpenFileDialog(void) {
+    wchar_t f[MAX_PATH] = {0};
+    OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = hw;
+    wchar_t flt[260]; int o2 = 0;
+    const wchar_t *lab = Tr(L_CUT_FILTER_MEDIA), *pat = L"*.mp4;*.m4a;*.mov;*.m4v;*.wmv;*.avi;*.mp3;*.wav;*.aac", *all = Tr(L_CUT_FILTER_ALL);
+    for (const wchar_t *s = lab; *s && o2 < 250; s++) flt[o2++] = *s; flt[o2++] = 0;
+    for (const wchar_t *s = pat; *s && o2 < 250; s++) flt[o2++] = *s; flt[o2++] = 0;
+    for (const wchar_t *s = all; *s && o2 < 250; s++) flt[o2++] = *s; flt[o2++] = 0;
+    flt[o2++] = '*'; flt[o2++] = '.'; flt[o2++] = '*'; flt[o2++] = 0; flt[o2++] = 0;
+    o.lpstrFilter = flt; o.lpstrFile = f; o.nMaxFile = MAX_PATH;
+    o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    if (g_recDir[0]) o.lpstrInitialDir = g_recDir;
+    if (GetOpenFileNameW(&o)) Load(f);
+}
+static void Load(const wchar_t *p) {
+    StopPlay();
+    Info ni; memset(&ni, 0, sizeof ni);
+    HCURSOR old = SetCursor(LoadCursorW(NULL, IDC_WAIT));
+    int rc = Scan(p, &ni);
+    waveOk = rc == CUT_OK ? (Waveform(p, ni.dur, wave, 1200) == CUT_OK) : FALSE;
+    SetCursor(old);
+    if (rc != CUT_OK) { FreeInfo(&ni); wchar_t t[400]; wsprintfW(t, Tr(L_CUT_OPENFAIL), p); Toast(t); if (!file[0]) DestroyWindow(hw); return; }
+    FreeInfo(&info); info = ni;
+    lstrcpynW(file, p, MAX_PATH);
+    if (!pl) MFPCreateMediaPlayer(NULL, FALSE, MFP_OPTION_NONE, NULL, pv, &pl);
+    if (pl) {
+        IMFPMediaItem *it = NULL;
+        if (SUCCEEDED(pl->CreateMediaItemFromURL(p, TRUE, 0, &it)) && it) { pl->SetMediaItem(it); it->Release(); pl->Play(); pl->Pause(); }
+    }
+    ncuts = 0; nund = 0; hasA = hasB = FALSE; selA = selB = 0; pos = 0;
+    Seek(0); Title(); SetStatus(Tr(L_CUT_READY)); SetBtns(); InvalidateAll();
+}
+/* --- таймлайн: ключевые кадры, вырезанные куски, выделение, курсор --- */
+/* --- курсор на таймлайне: у краёв выделения - двусторонняя стрелка, внутри - "переместить" --- */
+static void TlCursor(HWND h) {
+    if (info.dur <= 0) { SetCursor(LoadCursorW(NULL, IDC_ARROW)); return; }
+    if (dragging) {
+        LPCWSTR id = dragMode == 2 || dragMode == 3 ? (LPCWSTR)IDC_SIZEWE : dragMode == 4 ? (LPCWSTR)IDC_SIZEALL : (LPCWSTR)IDC_CROSS;
+        SetCursor(LoadCursorW(NULL, id)); return;
+    }
+    if (SelOK()) {
+        POINT p; GetCursorPos(&p); ScreenToClient(h, &p);
+        int xa = XOf(selA), xb = XOf(selB);
+        if ((p.x >= xa - 5 && p.x <= xa + 5) || (p.x >= xb - 5 && p.x <= xb + 5)) { SetCursor(LoadCursorW(NULL, IDC_SIZEWE)); return; }
+        if (p.x > xa && p.x < xb) { SetCursor(LoadCursorW(NULL, IDC_SIZEALL)); return; }
+    }
+    SetCursor(LoadCursorW(NULL, IDC_ARROW));
+}
+static LRESULT CALLBACK TlProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    switch (m) {
+    case WM_ERASEBKGND: return 1;
+    case WM_SETCURSOR: if (LOWORD(l) == HTCLIENT) { TlCursor(h); return TRUE; } break;
+    case WM_KEYDOWN:
+        if (w == VK_LEFT) Step(-1);
+        else if (w == VK_RIGHT) Step(1);
+        else if (w == VK_DELETE) DeleteSel();
+        else if (w == VK_HOME) { pos = 0; Seek(0); InvalidateAll(); }
+        else if (w == VK_END) { pos = info.dur; Seek(pos); InvalidateAll(); }
+        else if ((w | 32) == L'z' && (GetKeyState(VK_CONTROL) & 0x8000)) { if (GetKeyState(VK_SHIFT) & 0x8000) RedoAct(); else UndoAct(); }
+        else if (w == VK_SPACE) StartPlay(playMode == 1 ? 1 : 2);
+        else if (w == VK_ESCAPE) { hasA = hasB = FALSE; InvalidateAll(); SetBtns(); }
+        return 0;
+    case WM_PAINT: {
+        PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); RECT r; GetClientRect(h, &r);
+        HDC md = CreateCompatibleDC(dc); HBITMAP hb = CreateCompatibleBitmap(dc, r.right, r.bottom); HGDIOBJ ob = SelectObject(md, hb);
+        HBRUSH bg = CreateSolidBrush(RGB(26, 28, 33)); FillRect(md, &r, bg); DeleteObject(bg);
+        int w = r.right, hh = r.bottom, pad = 14;
+        RECT rail = {pad, 26, w - pad, hh - 20};
+        if (info.dur <= 0) { HGDIOBJ of = SelectObject(md, GetStockObject(DEFAULT_GUI_FONT)); SetBkMode(md, TRANSPARENT); SetTextColor(md, RGB(150, 150, 150)); const wchar_t *t = Tr(L_CUT_NOFILE); TextOutW(md, pad, 40, t, lstrlenW(t)); SelectObject(md, of); }
+        else {
+            HBRUSH kept = CreateSolidBrush(RGB(48, 52, 61)), out = CreateSolidBrush(RGB(20, 21, 24)), red = CreateSolidBrush(RGB(133, 54, 54)), rb = CreateSolidBrush(RGB(44, 88, 168));
+            FillRect(md, &rail, kept);
+            if (waveOk && info.naudio > 0) {                                   // форма волны первого звукового потока
+                HPEN pw = CreatePen(PS_SOLID, 1, RGB(108, 112, 122)); HGDIOBJ ow = SelectObject(md, pw);
+                int cy = (rail.top + rail.bottom) / 2, hw = (rail.bottom - rail.top) / 2 - 3, rw = rail.right - rail.left;
+                for (int x = rail.left; x < rail.right; x++) {
+                    int b = rw > 0 ? (x - rail.left) * 1200 / rw : 0; if (b < 0) b = 0; if (b >= 1200) b = 1199;
+                    int hh = wave[b] * hw / 255; MoveToEx(md, x, cy - hh, NULL); LineTo(md, x, cy + hh + 1);
+                }
+                SelectObject(md, ow); DeleteObject(pw);
+            }
+            for (int i = 0; i < ncuts; i++) { RECT c = {XOf(cuts[i].a), rail.top, XOf(cuts[i].b), rail.bottom}; if (c.right > c.left) FillRect(md, &c, red); }
+            if (SelOK()) { RECT s = {XOf(selA), rail.top, XOf(selB), rail.bottom}; if (s.right > s.left) FillRect(md, &s, rb); }
+            DeleteObject(kept); DeleteObject(out); DeleteObject(red); DeleteObject(rb);
+            HPEN pk = CreatePen(PS_SOLID, 1, RGB(92, 96, 108)); HGDIOBJ op = SelectObject(md, pk);
+            { int kstep = info.nkeys > (w - 28) / 3 ? info.nkeys / ((w - 28) / 3) + 1 : 1; for (int i = 0; i < info.nkeys; i += kstep) { int x = XOf(info.keys[i].pts); MoveToEx(md, x, rail.bottom - 7, NULL); LineTo(md, x, rail.bottom); } }
+            SelectObject(md, op); DeleteObject(pk);
+            long long step = 1; for (;;) { int n = (int)(info.dur / (step * 10000000)); if (n <= 10) break; step = step < 5 ? 5 : step < 10 ? 10 : step < 30 ? 30 : step < 60 ? 60 : step * 2; if (step > 3600) break; }
+            HFONT of = (HFONT)SelectObject(md, GetStockObject(DEFAULT_GUI_FONT));
+            SetBkMode(md, TRANSPARENT); SetTextColor(md, RGB(150, 153, 160));
+            HPEN pt = CreatePen(PS_SOLID, 1, RGB(70, 74, 84)); HGDIOBJ op2 = SelectObject(md, pt);
+            for (long long t = 0; t <= info.dur; t += step * 10000000) {
+                int x = XOf(t); MoveToEx(md, x, rail.top, NULL); LineTo(md, x, rail.top - 4);
+                wchar_t b[24]; Fmt(t, b); if (x < w - 150) TextOutW(md, x + 2, 2, b, lstrlenW(b));
+            }
+            SelectObject(md, op2); DeleteObject(pt);
+            wchar_t cur[48], tot[24]; Fmt(pos, cur); Fmt(info.dur, tot);
+            wchar_t tt[80]; wsprintfW(tt, L"%s / %s", cur, tot);
+            SetTextColor(md, RGB(235, 238, 244)); TextOutW(md, w - pad - 100, 2, tt, lstrlenW(tt));
+            int px = XOf(pos); HPEN pp = CreatePen(PS_SOLID, 1, RGB(255, 255, 255)); op = SelectObject(md, pp);
+            MoveToEx(md, px, 16, NULL); LineTo(md, px, rail.bottom + 2);
+            POINT tri[3] = {{px - 5, 14}, {px + 5, 14}, {px, 22}}; HBRUSH wb = CreateSolidBrush(RGB(255, 255, 255));
+            HGDIOBJ obr = SelectObject(md, wb); Polygon(md, tri, 3); SelectObject(md, obr);
+            SelectObject(md, op); DeleteObject(pp); DeleteObject(wb);
+            if (hasA) { int x = XOf(selA); HPEN pm = CreatePen(PS_SOLID, 2, RGB(52, 199, 89)); op = SelectObject(md, pm); MoveToEx(md, x, rail.top, NULL); LineTo(md, x, rail.bottom); SelectObject(md, op); DeleteObject(pm); }
+            if (hasB) { int x = XOf(selB); HPEN pm = CreatePen(PS_SOLID, 2, RGB(255, 159, 10)); op = SelectObject(md, pm); MoveToEx(md, x, rail.top, NULL); LineTo(md, x, rail.bottom); SelectObject(md, op); DeleteObject(pm); }
+            SelectObject(md, of);
+        }
+        BitBlt(dc, 0, 0, r.right, r.bottom, md, 0, 0, SRCCOPY);
+        SelectObject(md, ob); DeleteObject(hb); DeleteDC(md); EndPaint(h, &ps); return 0;
+    }
+    case WM_LBUTTONDOWN:
+        if (info.dur <= 0) return 0;
+        SetFocus(h); SetCapture(h); StopPlay(); dragging = TRUE; dragMoved = FALSE;
+        dragX = (short)LOWORD(l); dragFrom = TOf(dragX); dragMode = 1;     // 1 - новое выделение, 2/3 - левая/правая граница, 4 - всё выделение
+        if (SelOK()) {
+            int xa = XOf(selA), xb = XOf(selB), da = dragX > xa ? dragX - xa : xa - dragX, db = dragX > xb ? dragX - xb : xb - dragX;
+            if (da <= 5) dragMode = 2;
+            else if (db <= 5) dragMode = 3;
+            else if (dragX > xa && dragX < xb) { dragMode = 4; dragOrigA = selA; dragOrigB = selB; }
+        }
+        return 0;
+    case WM_MOUSEMOVE:
+        if (dragging) {
+            int x = (short)LOWORD(l);
+            if (!dragMoved && (x > dragX + 2 || x < dragX - 2)) dragMoved = TRUE;
+            if (dragMoved) {
+                long long t = TOf(x);
+                if (dragMode == 1) {
+                    if (t == dragFrom) { selA = selB = t; hasA = hasB = FALSE; }
+                    else { selA = dragFrom < t ? dragFrom : t; selB = dragFrom < t ? t : dragFrom; hasA = hasB = TRUE; }
+                } else if (dragMode == 2) {
+                    selA = t < selB ? t : selB - 10000; hasA = hasB = TRUE;
+                } else if (dragMode == 3) {
+                    selB = t > selA ? t : selA + 10000; hasA = hasB = TRUE;
+                } else {
+                    long long d = t - dragFrom, na = dragOrigA + d, nb = dragOrigB + d;
+                    if (na < 0) { nb -= na; na = 0; }
+                    if (nb > info.dur) { na -= nb - info.dur; nb = info.dur; if (na < 0) na = 0; }
+                    selA = na; selB = nb; hasA = hasB = TRUE;
+                }
+                InvalidateAll(); SetBtns();
+            }
+        }
+        return 0;
+    case WM_LBUTTONUP:
+        if (dragging) {
+            ReleaseCapture(); dragging = FALSE;
+            if (dragMoved) {
+                if (!SelOK()) hasA = hasB = FALSE;                    // границы двигаются свободно; к ключевому кадру их приводим при удалении
+            } else {                                                    // простой клик - перейти, ничего не выделяя
+                pos = dragFrom; Seek(pos);
+            }
+            InvalidateAll(); SetBtns();
+        }
+        return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+static LRESULT CALLBACK PvProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    if (m == WM_ERASEBKGND) { HDC dc = (HDC)w; RECT r; GetClientRect(h, &r); HBRUSH b = CreateSolidBrush(RGB(0, 0, 0)); FillRect(dc, &r, b); DeleteObject(b); return 1; }
+    if (m == WM_PAINT) {
+        PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); RECT r; GetClientRect(h, &r);
+        HBRUSH b = CreateSolidBrush(RGB(0, 0, 0)); FillRect(dc, &r, b); DeleteObject(b);
+        if (hw && !info.nvideo) {
+            HGDIOBJ of = SelectObject(dc, GetStockObject(DEFAULT_GUI_FONT)); SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(140, 143, 150));
+            const wchar_t *t = Tr(L_CUT_AUDIO); int n = lstrlenW(t); SIZE sz; GetTextExtentPoint32W(dc, t, n, &sz);
+            TextOutW(dc, (r.right - sz.cx) / 2, (r.bottom - sz.cy) / 2, t, n); SelectObject(dc, of);
+        }
+        EndPaint(h, &ps); return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+static void DrawCutsText(HDC dc) {
+    wchar_t s[600]; int o = 0;
+    if (!ncuts) { lstrcpynW(s, Tr(L_CUT_NONE), 600); }
+    else {
+        o = wsprintfW(s, L"%s ", Tr(L_CUT_CUTS));
+        for (int i = 0; i < ncuts && i < 4 && o < 500; i++) { wchar_t a[24], b[24]; Fmt10(cuts[i].a, a); Fmt10(cuts[i].b, b); o += wsprintfW(s + o, L"%d) %s–%s   ", i + 1, a, b); }
+        if (ncuts > 4 && o < 520) wsprintfW(s + o, L"… +%d", ncuts - 4);
+    }
+    RECT r = {12, 600, 888, 618}; SetBkMode(dc, TRANSPARENT); SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));
+    DrawTextW(dc, s, -1, &r, DT_LEFT | DT_TOP | DT_WORDBREAK);
+}
+static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    switch (m) {
+    case WM_ERASEBKGND: { RECT r; GetClientRect(h, &r); HBRUSH b = CreateSolidBrush(GetSysColor(COLOR_BTNFACE)); FillRect((HDC)w, &r, b); DeleteObject(b); return 1; }
+    case WM_KEYDOWN:
+        if (w == VK_LEFT) Step(-1);
+        else if (w == VK_RIGHT) Step(1);
+        else if (w == VK_DELETE) DeleteSel();
+        else if ((w | 32) == L'z' && (GetKeyState(VK_CONTROL) & 0x8000)) { if (GetKeyState(VK_SHIFT) & 0x8000) RedoAct(); else UndoAct(); }
+        else if (w == VK_SPACE) StartPlay(playMode == 1 ? 1 : 2);
+        else if (w == VK_ESCAPE) { hasA = hasB = FALSE; InvalidateAll(); SetBtns(); }
+        return 0;
+    case WM_ACTIVATE: if (LOWORD(w) != WA_INACTIVE && tl) SetFocus(tl); return 0;
+    case WM_PAINT: {
+        PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps);
+        HGDIOBJ of = SelectObject(dc, GetStockObject(DEFAULT_GUI_FONT)); SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));
+        wchar_t t[600], d[24], e[24];
+        RECT r = {12, 536, 440, 596};
+        if (file[0]) {
+            const wchar_t *nm = file; for (const wchar_t *q = file; *q; q++) if (*q == L'\\') nm = q + 1;
+            Fmt(info.dur, d);
+            int o = wsprintfW(t, L"%s\r\n%s: %s   %s: %d, %s: %d\r\n%s: %d", nm, Tr(L_CUT_LEN), d, Tr(L_CUT_STREAMS), info.nvideo, Tr(L_CUT_AUDIO), info.naudio, Tr(L_CUT_KEYS), info.nkeys);
+            if (hasA) { Fmt10(selA, e); o += wsprintfW(t + o, L"   %s: %s", Tr(L_CUT_MARKA), e); }
+            if (hasB) { Fmt10(selB, e); o += wsprintfW(t + o, L"   %s: %s", Tr(L_CUT_MARKB), e); }
+        } else lstrcpynW(t, Tr(L_CUT_NOFILE), 600);
+        DrawTextW(dc, t, -1, &r, DT_LEFT | DT_TOP | DT_WORDBREAK);
+        RECT hr = {450, 536, 888, 596};
+        SetTextColor(dc, RGB(90, 94, 102));
+        DrawTextW(dc, Tr(L_CUT_HINT), -1, &hr, DT_LEFT | DT_TOP | DT_WORDBREAK);
+        DrawCutsText(dc);
+        RECT sr = {12, 622, 888, 672};
+        SetTextColor(dc, RGB(90, 94, 102));
+        DrawTextW(dc, status, -1, &sr, DT_LEFT | DT_TOP | DT_WORDBREAK);
+        SelectObject(dc, of); EndPaint(h, &ps); return 0;
+    }
+    case WM_COMMAND: {
+        int id = LOWORD(w);
+        if (id == CMD_FILE) OpenFileDialog();
+        else if (!saving) {
+            if (id == CMD_PLAYALL) StartPlay(1);
+            else if (id == CMD_PLAY) StartPlay(2);
+            else if (id == CMD_MARKA) { selA = pos; hasA = TRUE; if (hasB && selB <= selA) hasB = FALSE; SetStatus(Tr(L_CUT_READY)); InvalidateAll(); SetBtns(); }
+            else if (id == CMD_MARKB) { selB = pos; hasB = TRUE; if (hasA && selB <= selA) hasB = FALSE; SetStatus(Tr(L_CUT_READY)); InvalidateAll(); SetBtns(); }
+            else if (id == CMD_DEL) DeleteSel();
+            else if (id == CMD_EDIT) EditCut();
+            else if (id == CMD_UNDO) UndoAct();
+            else if (id == CMD_REDO) RedoAct();
+            else if (id == CMD_RESET) {
+                if (ncuts && MessageBoxW(hw, Tr(L_CUT_CONFIRM), Tr(L_CUT_TITLE), MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND) == IDYES) {
+                    PushUndo(); ncuts = 0; hasA = hasB = FALSE; SetStatus(Tr(L_CUT_RESETDONE)); InvalidateAll(); SetBtns();
+                }
+            } else if (id == CMD_SAVE) {
+                gKeepN = MakeSegs(0, info.dur, cuts, ncuts, gKeep, 40);
+                if (!ncuts || gKeepN <= 0) { Toast(Tr(L_CUT_NOTHING)); return 0; }
+                MakeOut();
+                saving = TRUE; stopF = 0; SetBtns(); SetStatus(Tr(L_CUT_SAVING));
+                th = CreateThread(NULL, 0, [](LPVOID) -> DWORD {
+                    Job j; j.stop = &stopF; j.ctx = NULL;
+                    j.progress = [](void *, int pct) { if (hw) PostMessageW(hw, WM_CUT_PCT, (WPARAM)pct, 0); };
+                    int rc = Remux(file, outFile, gKeep, gKeepN, &j);
+                    if (hw) PostMessageW(hw, WM_CUT_DONE, (WPARAM)rc, 0);
+                    return 0;
+                }, NULL, 0, NULL);
+                if (!th) { saving = FALSE; SetBtns(); Toast(Tr(L_CUT_FAIL)); }
+            }
+        }
+        if (tl) SetFocus(tl);
+        return 0;
+    }
+    case WM_CUT_PCT: { wchar_t t[128]; wsprintfW(t, Tr(L_CUT_SAVING_PCT), (int)w); SetStatus(t); return 0; }
+    case WM_CUT_DONE: {
+        if (th) { WaitForSingleObject(th, 5000); CloseHandle(th); th = NULL; }
+        saving = FALSE; SetBtns();
+        if ((int)w == CUT_OK) { wchar_t t[400]; wsprintfW(t, Tr(L_CUT_SAVED), outFile); Toast(t); SetStatus(t); }
+        else if ((int)w == CUT_CANCEL) SetStatus(Tr(L_CUT_CANCELLED));
+        else { Toast(Tr(L_CUT_FAIL)); SetStatus(Tr(L_CUT_FAIL)); }
+        return 0;
+    }
+    case WM_TIMER:
+        if (w == 1 && playing) {
+            pos = PlayerPos();
+            if (playMode == 2) { long long s = SkipCuts(pos); if (s != pos) { pos = s; Seek(pos); } }
+            if (pos >= info.dur) { playing = FALSE; playMode = 0; if (pl) pl->Pause(); PlayBtn(); }
+            if (tl) InvalidateRect(tl, NULL, FALSE);
+            SetBtns();
+        }
+        return 0;
+    case WM_CLOSE:
+        if (saving) { stopF = 1; if (th) { WaitForSingleObject(th, 15000); CloseHandle(th); th = NULL; } }
+        DestroyWindow(h);
+        return 0;
+    case WM_DESTROY:
+        KillTimer(h, 1);
+        if (pl) { pl->Stop(); pl->ClearMediaItem(); pl->Release(); pl = NULL; }
+        FreeInfo(&info); file[0] = 0; hw = NULL;
+        if (mfOn) { MFShutdown(); mfOn = FALSE; }
+        return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+static HWND Btn(HWND p, int id, const wchar_t *t, int x, int y, int w) {
+    HWND b = CreateWindowExW(0, L"BUTTON", t, WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, x, y, w, 30, p, (HMENU)(INT_PTR)id, g_inst, NULL);
+    if (b) SendMessageW(b, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+    return b;
+}
+static void Open(const wchar_t *path) {
+    if (hw) { ForceFg(hw); SetForegroundWindow(hw); if (path) Load(path); return; }
+    RegClass(L"DKRecCut", Proc, 0); RegClass(L"DKRecCutPv", PvProc, 0); RegClass(L"DKRecCutTl", TlProc, 0);
+    if (!mfOn) { if (SUCCEEDED(MFStartup(MF_VERSION))) mfOn = TRUE; }
+    RECT wr = {0, 0, CLW, CLH}; AdjustWindowRect(&wr, WS_CAPTION | WS_SYSMENU, FALSE);
+    int W = wr.right - wr.left, H = wr.bottom - wr.top;
+    POINT pt; GetCursorPos(&pt);
+    MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoW(MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST), &mi);
+    hw = CreateWindowExW(WS_EX_TOPMOST, L"DKRecCut", Tr(L_CUT_TITLE), WS_POPUP | WS_CAPTION | WS_SYSMENU,
+        (mi.rcWork.left + mi.rcWork.right - W) / 2, (mi.rcWork.top + mi.rcWork.bottom - H) / 2, W, H, NULL, NULL, g_inst, NULL);
+    if (!hw) return;
+    pv = CreateWindowExW(0, L"DKRecCutPv", L"", WS_CHILD | WS_VISIBLE, rcPv.left, rcPv.top, rcPv.right - rcPv.left, rcPv.bottom - rcPv.top, hw, NULL, g_inst, NULL);
+    tl = CreateWindowExW(0, L"DKRecCutTl", L"", WS_CHILD | WS_VISIBLE, rcTl.left, rcTl.top, rcTl.right - rcTl.left, rcTl.bottom - rcTl.top, hw, NULL, g_inst, NULL);
+    int by = 496;
+    bFile = Btn(hw, CMD_FILE, Tr(L_CUT_OPEN), 12, by, 62);
+    bPlayAll = Btn(hw, CMD_PLAYALL, Tr(L_CUT_PLAYALL), 78, by, 86);
+    bPlay = Btn(hw, CMD_PLAY, Tr(L_CUT_PLAY), 168, by, 62);
+    bA = Btn(hw, CMD_MARKA, Tr(L_CUT_MARKA), 234, by, 68);
+    bB = Btn(hw, CMD_MARKB, Tr(L_CUT_MARKB), 306, by, 68);
+    bDel = Btn(hw, CMD_DEL, Tr(L_CUT_CUT), 378, by, 76);
+    bEdit = Btn(hw, CMD_EDIT, Tr(L_CUT_EDIT), 458, by, 68);
+    bUndo = Btn(hw, CMD_UNDO, Tr(L_CUT_UNDO), 530, by, 76);
+    bRedo = Btn(hw, CMD_REDO, Tr(L_CUT_REDO), 610, by, 68);
+    bReset = Btn(hw, CMD_RESET, Tr(L_CUT_RESET), 682, by, 76);
+    bSave = Btn(hw, CMD_SAVE, Tr(L_CUT_SAVE), 762, by, 96);
+    SetStatus(Tr(L_CUT_READY));
+    SetBtns();
+    SetTimer(hw, 1, 100, NULL);
+    ShowWindow(hw, SW_SHOW); ForceFg(hw); SetFocus(tl);
+    if (path) Load(path); else OpenFileDialog();
+    if (!file[0] && hw) DestroyWindow(hw);
+}
+}   // namespace CutNs
+static void CutOpen(const wchar_t *p) { CutNs::Open(p); }
+
 /* ---------- запись действий клавиатуры и мыши -> python-скрипт в records\ ---------- */
 namespace MacroNs {
 struct Ui { wchar_t win[170], name[160], aid[100]; int type; };                       // элемент под курсором в момент клика (UI Automation)
@@ -11320,6 +11872,7 @@ static void TrayMenuAt(POINT pt, int again) {
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AddHk(m, MF_STRING, 7, RecNs::recording && !RecNs::aud ? Tr(L_TRAY_RECSTOP) : Tr(L_TRAY_REC), A_RECORD);
     AddHk(m, MF_STRING | (RecNs::recording && RecNs::aud ? MF_CHECKED : 0), 70, Tr(L_TRAY_AUD), A_AUDIO);
+    AddHk(m, MF_STRING, 76, Tr(L_TRAY_CUT), A_CUTTER);
     AddHk(m, MF_STRING | (g_voiceSt == 1 ? MF_CHECKED : 0), 71, Tr(L_TRAY_VOICE), A_VOICE);
     AppendMenuW(m, MF_POPUP, (UINT_PTR)RecNs::Menu(), Tr(L_TRAY_RECSET));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
@@ -11387,6 +11940,7 @@ static void TrayMenuAt(POINT pt, int again) {
     case 6: Sleep(150); PickerOpen(); break;
     case 7: Sleep(150); RecOpen(); break;
     case 70: Sleep(150); RecAudioOpen(); break;
+    case 76: Sleep(150); CutOpen(NULL); break;
     case 71: Sleep(150); VoiceToggle(); break;
     case 10: SetHistory(!g_histOn); break;
     case 9: g_selCopy = !g_selCopy; IniSet(L"AutoCopy", L"Enabled", g_selCopy ? L"1" : L"0"); break;
@@ -11398,7 +11952,7 @@ static void TrayMenuAt(POINT pt, int again) {
     case 13: ShellExecuteW(NULL, L"open", g_memDir, NULL, NULL, SW_SHOWNORMAL); break;
     case 14: Reload(); break;
     case 18: {
-        wchar_t t[1200]; wsprintfW(t, Tr(L_ABOUT_TXT), L"1.8"); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_BODY)); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_AUTH)); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_ASK));
+        wchar_t t[1200]; wsprintfW(t, Tr(L_ABOUT_TXT), L"1.9"); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_BODY)); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_AUTH)); lstrcatW(t, L"\n\n"); lstrcatW(t, Tr(L_ABOUT_ASK));
         MSGBOXPARAMSW mp; memset(&mp, 0, sizeof mp);                                  // со значком программы (ресурс 1)
         mp.cbSize = sizeof mp; mp.hwndOwner = g_hwnd; mp.hInstance = GetModuleHandleW(NULL); mp.lpszText = t; mp.lpszCaption = Tr(L_TRAY_ABOUT);
         mp.dwStyle = MB_YESNO | MB_USERICON | MB_SETFOREGROUND | MB_TOPMOST; mp.lpszIcon = MAKEINTRESOURCEW(1);
@@ -11628,3 +12182,30 @@ static int Run(void) {
 }
 
 extern "C" void start(void) { ExitProcess(Run()); }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
