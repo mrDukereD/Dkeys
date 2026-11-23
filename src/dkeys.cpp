@@ -152,7 +152,7 @@ static BOOL g_rDummy, g_rFx = TRUE, g_ringOn = TRUE, g_ringUp = TRUE, g_fxAll = 
 static int g_hlR = 22, g_hlA = 24, g_ringMs = 450, g_ringSz = 34;                    // радиус и яркость (%) подсветки, длительность (мс) и размер кольца
 static DWORD g_hlCol = 0xFFD60A, g_clL = 0x0A84FF, g_clR = 0xFF453A;                 // цвета 0xRRGGBB: подсветка, левый и правый клик
 struct OvCfg { wchar_t stem[64]; int mode, x, y, sc; };      // mode: 0 выкл, 1 на видео, 2 отдельный файл; x,y - доля кадра в ‰; sc - масштаб в %
-static OvCfg g_ovc[24]; static int g_novc; static BOOL g_rPwd = TRUE, g_rShow;
+static OvCfg g_ovc[24]; static int g_novc; static BOOL g_rPwd = TRUE, g_rShow, g_rOvOn = TRUE;   // g_rOvOn: оверлеи включены (общий выключатель: и запись, и показ на экране; режимы пресетов не трогает)
 static void RecShowSync(void); static BOOL RecBusy(void); static void RecMark(void);
 static volatile LONG g_vOn; static int g_vLim = 50, g_vCeil, g_vBoost; static wchar_t g_vDev[80];     // стабильная громкость: вкл, порог пика %, потолок громкости %, подтяжка тихого %, устройство
 static void VolToggle(void); static void VolOpen(void); static void VolSync(void);
@@ -362,6 +362,7 @@ X(L_VOICE_CONFIRM, "voice.cmd_confirm", L"Выполнить команду «%s
 X(L_VOICE_BUSY, "voice.busy", L"Голосовой набор сейчас недоступен (идёт запись, распознавание или загрузка)") \
 X(L_REC_FAIL, "rec.fail", L"Не удалось начать запись") \
 X(L_REC_OV, "rec.ov", L"Оверлей ввода (клавиши, мышь)") \
+X(L_REC_OV_ON, "rec.ov_on", L"Включить") \
 X(L_REC_OV_OFF, "rec.ov_off", L"Выключен") \
 X(L_REC_OV_VID, "rec.ov_video", L"На видео") \
 X(L_REC_OV_FILE, "rec.ov_file", L"Отдельным файлом (зелёный фон)") \
@@ -373,7 +374,7 @@ X(L_REC_OV_PWD, "rec.ov_pwd", L"Не показывать клавиши в по
 X(L_REC_OV_DIR, "rec.ov_dir", L"Папка overlays") \
 X(L_REC_OV_NONE, "rec.ov_none", L"Пресетов нет (папка overlays)") \
 X(L_REC_OV_BAD, "rec.ov_bad", L"Не удалось загрузить пресет") \
-X(L_REC_OV_HINT, "rec.ov_hint2", L"Тянуть - перенос, углы или колесо - масштаб, Enter или правый клик - готово, Esc - отмена. Все включённые оверлеи показаны сразу") \
+X(L_REC_OV_HINT, "rec.ov_hint3", L"Тянуть - перенос, углы или колесо - масштаб, Enter или средний клик - готово, Esc - отмена. Все включённые оверлеи показаны сразу") \
 X(L_REC_OV_WARN, "rec.ov_warn", L"Внимание: нажатые клавиши видны в видео - не вводите пароли") \
 X(L_PK_COPIED, "picker.copied", L"Цвет %s скопирован в буфер") \
 X(L_TRAY_TIMER, "tray.timer", L"Секундомер и таймер") \
@@ -516,6 +517,9 @@ X(L_TRAY_RECS, "tray.records", L"Записи…") \
 X(L_DPY_ERR, "dpy.error", L"Скрипт .dpy завершился с ошибкой (код %d)") \
 X(L_M_START, "macro.start", L"Запись действий пошла: повторное нажатие или кнопка - стоп") \
 X(L_M_SAVED, "macro.saved", L"Записано: records\\%s") \
+X(L_M_FOLDER, "macro.folder", L"Папка записей") \
+X(L_M_HOVER, "macro.hover", L"Остановка курсора") \
+X(L_M_MS, "macro.ms", L"%d мс") \
 X(L_M_EMPTY, "macro.empty", L"Запись пуста: ни одного действия") \
 X(L_M_STOPPED, "macro.stopped", L"Воспроизведение остановлено") \
 X(L_M_UIA, "macro.uia_install", L"Ставлю python-пакет uiautomation (для клика по кнопке)…") \
@@ -1099,6 +1103,7 @@ Enabled=0
 
 [Macro]
 ; Запись действий (действие macro). HoverMs - сколько мс курсор должен стоять на месте, чтобы это положение попало в запись (100-5000)
+;   Кнопка: левый клик - старт/пауза, Ctrl+левый - стоп, правый - меню настроек, средний - закрыть
 HoverMs=300
 
 [Scripts]
@@ -1220,7 +1225,9 @@ PowerShell=powershell.exe
 ;   x,y и масштаб задаются в меню "Настроить положение и размер всех" (все включённые оверлеи сразу)
 ;   для каждого монитора положение хранится отдельно: секция [OverlayPos], имя_пресета|DISPLAYn=x,y,масштаб (создаётся при настройке)
 ;имя_пресета=1,700,650,100
-; Show: 1 пока на экране кнопка записи, показывать на экране оверлеи "на видео" (в запись не попадают) - видно, что они перекрывают | 0 нет
+; Record: 1 оверлеи включены (пишутся по режиму пресета, а при Show=1 видны на экране) | 0 выключены все: ни в записи, ни на экране (режимы пресетов сохраняются)
+;Record=1
+; Show: 1 пока на экране кнопка записи, показывать на экране оверлеи "на видео" (в запись не попадают) - видно, что они перекрывают | 0 нет (нужен ещё Record=1)
 ;Show=0
 ; HidePasswords: 1 не показывать клавиши в поле пароля | 0 показывать. ВНИМАНИЕ: нажатые клавиши видны в видео - не вводите пароли
 ;HidePasswords=1
@@ -1586,7 +1593,7 @@ static void CfgDefaults(void) {
     g_pyPause = 1; g_toasts = 1; g_editor[0] = 0; g_bufMax = 10; g_layoutWord = 0; g_layoutSwitch = 1;
     g_dLive = FALSE; g_dCol = 0; g_dWid = 1; g_dSaveDir[0] = 0;
     g_rNoTb = TRUE; g_rCur = TRUE; g_rFx = TRUE; g_ringOn = TRUE; g_ringUp = TRUE; g_fxAll = TRUE; g_hlR = 22; g_hlA = 24; g_ringMs = 450; g_ringSz = 34; g_hlCol = 0xFFD60A; g_clL = 0x0A84FF; g_clR = 0xFF453A; g_rScr = 0; g_rMic[0] = 0; g_rDir[0] = 0; g_rTrk[0][0] = g_rTrk[1][0] = g_rTrk[2][0] = 0; g_rBeep = TRUE; g_rLvl = TRUE; g_rBeepHz = 15000; g_rAk = 128; g_rFps = 30; g_rPos[0] = g_rPos[1] = -99999;
-    g_rPwd = TRUE; g_rShow = FALSE; g_novc = 0; g_nopos = 0;
+    g_rPwd = TRUE; g_rShow = FALSE; g_rOvOn = TRUE; g_novc = 0; g_nopos = 0;
     memset(&g_aud, 0, sizeof g_aud); g_aud.vLim = 50; g_aud.dLat = 20;
     g_tmFg = RGB(255, 255, 255); g_tmBg = RGB(0, 0, 0); g_tmAlpha = 60; g_tmSize = 48; g_tmNFav = 0;
     for (int i = 0; i < 5; i++) {
@@ -1678,6 +1685,7 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
     } else if (!lstrcmpiW(s, L"Overlay")) {
         if (!lstrcmpiW(k, L"HidePasswords")) g_rPwd = ToInt(v) != 0;
         else if (!lstrcmpiW(k, L"Show")) g_rShow = ToInt(v) != 0;
+        else if (!lstrcmpiW(k, L"Record")) g_rOvOn = ToInt(v) != 0;
         else { OvCfg *c = OvCfgGet(k, TRUE); if (c) { const wchar_t *q = v; c->mode = ToInt(q) & 3; if (c->mode == 3) c->mode = 1; int *f[3] = {&c->x, &c->y, &c->sc};
             for (int i = 0; i < 3; i++) { while (*q && *q != L',') q++; if (!*q) break; q++; *f[i] = ToInt(q); }
             if (c->sc < 10) c->sc = 10; if (c->sc > 600) c->sc = 600; } }
@@ -6784,7 +6792,7 @@ static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_SETCURSOR: SetCursor(NULL); return TRUE;           // курсор скрыт: его место занимает центр лупы
     case WM_MOUSEMOVE: Update(); return 0;
     case WM_LBUTTONDOWN: Pick(); return 0;
-    case WM_RBUTTONDOWN: Close(); return 0;
+    case WM_MBUTTONDOWN: Close(); return 0;                                             // закрыть - средняя кнопка (правая - меню/настройки)
     case WM_KEYDOWN: {
         if (w == VK_ESCAPE) { Close(); return 0; }
         if (w == VK_RETURN) { Pick(); return 0; }
@@ -7255,7 +7263,7 @@ static DWORD WINAPI Worker(LPVOID) {
             if (audio) AudStreams(16000);                                // звук - дорожки AAC (микрофон и доп. источники); не получилось - пишем без звука
             started = SUCCEEDED(swr->BeginWriting());
         }
-        for (int k = 0; started && k < nov; k++) if (ov[k].c->mode & 2) {   // оверлей отдельным файлом на зелёном фоне (хромакей)
+        for (int k = 0; started && g_rOvOn && k < nov; k++) if (ov[k].c->mode & 2) {   // оверлей отдельным файлом на зелёном фоне (хромакей); при выключенном общем выключателе файлов нет
             OvOut *o = &oo[k]; float s = ov[k].c->sc / 100.f;
             o->w = (int)(ov[k].cw * s + 0.5f) & ~1; o->h = (int)(ov[k].ch * s + 0.5f) & ~1; if (o->w < 16) o->w = 16; if (o->h < 16) o->h = 16;
             wchar_t p2[MAX_PATH]; lstrcpynW(p2, path, MAX_PATH); p2[lstrlenW(p2) - 4] = 0; Cat(p2, MAX_PATH, L"_"); Cat(p2, MAX_PATH, ov[k].pr->stem); Cat(p2, MAX_PATH, L".mp4");
@@ -7293,7 +7301,7 @@ static DWORD WINAPI Worker(LPVOID) {
                 }
                 long long ts = ToU(tn - t0.QuadPart - pauseAcc); int hk = pwdNow && g_rPwd ? 1 : 0;
                 GdiFlush();
-                if (fg) {
+                if (fg && g_rOvOn) {
                     for (int k = 0; k < nov; k++) if (ov[k].c->mode & 1) DrawOv(fg, &ov[k], w * ov[k].c->x / 1000.f, h * ov[k].c->y / 1000.f, ov[k].c->sc / 100.f, hk);
                     GdipFlush(fg, FlushIntentionSync);
                 }
@@ -7502,7 +7510,8 @@ static LRESULT CALLBACK SelProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             DestroyWindow(h);
         }
         return 0;
-    case WM_KEYDOWN: case WM_RBUTTONUP: if (m == WM_RBUTTONUP || w == VK_ESCAPE) DestroyWindow(h); return 0;
+    case WM_KEYDOWN: if (w == VK_ESCAPE) DestroyWindow(h); return 0;
+    case WM_MBUTTONUP: DestroyWindow(h); return 0;                    // отмена выбора области - средняя кнопка
     case WM_DESTROY: selw = NULL; if (hw) { ShowWindow(hw, SW_SHOWNOACTIVATE); Repaint(); } MiniSync(); ShowSync(); return 0;     // область выбрана/сброшена - оверлеи пересчитываются
     }
     return DefWindowProcW(h, m, w, l);
@@ -7596,7 +7605,7 @@ static void ShowSync(void) {                                  // пересоз�
     ShowFree(); DimSync();
     if (ow || !hw) return;                                    // только пока кнопка записи на экране
     LiveStart();
-    if (!g_rShow) return;
+    if (!g_rOvOn || !g_rShow) return;
     ScanOv();
     GdiplusStartupInput in; if (GdiplusStartup(&stok, &in, NULL) != Ok) return;
     stokOn = TRUE;
@@ -7702,7 +7711,7 @@ static LRESULT CALLBACK OvProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         for (int k = 0; k < ncw; k++) if (ocw[k].h == uh) j = k;
         OvWin *q = &ocw[j]; q->sc *= (short)HIWORD(w) > 0 ? 1.05f : 1.f / 1.05f; if (q->sc < 0.2f) q->sc = 0.2f; if (q->sc > 6.f) q->sc = 6.f; OvPaint(j); return 0;
     }
-    case WM_RBUTTONUP: OvSave(); OvClose(); return 0;
+    case WM_MBUTTONUP: OvSave(); OvClose(); return 0;                    // готово - средняя кнопка (или Enter)
     case WM_KEYDOWN: if (w == VK_RETURN) { OvSave(); OvClose(); } else if (w == VK_ESCAPE) OvClose(); return 0;
     }
     return DefWindowProcW(h, m, w, l);
@@ -7772,13 +7781,13 @@ static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
             else if ((w & MK_SHIFT) && !aud) SelectArea(); else Start();
         }
         return 0;
-    case WM_RBUTTONUP: if (!recording) DestroyWindow(h); return 0;
-    case WM_MBUTTONUP: PopupMenu(h); return 0;                        // средний клик - настройки записи
+    case WM_RBUTTONUP: PopupMenu(h); return 0;                       // правый клик - меню настроек записи
+    case WM_MBUTTONUP: DestroyWindow(h); return 0;                   // средний клик - закрыть (стоп и выход)
     case WM_DESTROY: Stop(); aud = FALSE; SavePos(); hw = NULL; LvSync(); ShowFree(); return 0;
     }
     return DefWindowProcW(h, m, w, l);
 }
-static void PopupMenu(HWND h) {                                       // меню настроек записи: средний клик и шестерёнка
+static void PopupMenu(HWND h) {                                       // меню настроек записи: правый клик и шестерёнка
     POINT p; GetCursorPos(&p); ForceFg(h);
     HMENU mn = Menu(); int c = (int)TrackPopupMenu(mn, TPM_RETURNCMD | TPM_RIGHTBUTTON, p.x, p.y, 0, h, NULL);
     DestroyMenu(mn); PostMessageW(h, WM_NULL, 0, 0); if (c) Cmd(c);
@@ -8133,6 +8142,8 @@ static void FxOpen(void) {
 }
 static HMENU OvMenu(void) {
     HMENU m = CreatePopupMenu(); ScanOv(); BOOL done[24]; memset(done, 0, sizeof done);
+    AppendMenuW(m, MF_STRING | (g_rOvOn ? MF_CHECKED : 0), 69, Tr(L_REC_OV_ON));     // общий выключатель оверлеев: и в записи, и на экране; режимы пресетов не меняет
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     if (!npre) AppendMenuW(m, MF_STRING | MF_GRAYED, 0, Tr(L_REC_OV_NONE));
     for (int g = 0; g < npre; g++) {
         if (done[g]) continue;
@@ -8214,6 +8225,7 @@ static void Cmd(int c) {
     }
     else if (c == 60) { g_rPwd = !g_rPwd; IniSet(L"Overlay", L"HidePasswords", g_rPwd ? L"1" : L"0"); }
     else if (c == 62) { g_rShow = !g_rShow; IniSet(L"Overlay", L"Show", g_rShow ? L"1" : L"0"); ShowSync(); }
+    else if (c == 69) { g_rOvOn = !g_rOvOn; IniSet(L"Overlay", L"Record", g_rOvOn ? L"1" : L"0"); ShowSync(); }
     else if (c == 63) OvConfig();
     else if (c == 61) { wchar_t d[MAX_PATH]; lstrcpynW(d, g_dir, MAX_PATH); Cat(d, MAX_PATH, L"\\overlays"); CreateDirectoryW(d, NULL); ShellExecuteW(NULL, L"open", d, NULL, NULL, SW_SHOWNORMAL); }
     else if (c >= 300 && c < 500) {
@@ -9072,6 +9084,27 @@ static void Pause(void) {
     else { pauseAcc += GetTickCount64() - pauseStart; paused = FALSE; GetCursorPos(&lastRec); }
     if (hw) InvalidateRect(hw, NULL, FALSE);
 }
+static void MenuCmd(int c) {                                                          // пункты меню настроек записи действий
+    if (c == 1) { CreateDirectoryW(g_recDir, NULL); ShellExecuteW(NULL, L"open", g_recDir, NULL, NULL, SW_SHOWNORMAL); }
+    else if (c >= 10 && c < 15) {
+        static const int ms[5] = {100, 200, 300, 500, 1000};
+        g_mHover = ms[c - 10]; wchar_t v[8]; wsprintfW(v, L"%d", g_mHover); IniSet(L"Macro", L"HoverMs", v);
+    }
+}
+static HMENU MacroMenu(void) {
+    HMENU m = CreatePopupMenu(), s = CreatePopupMenu();
+    static const int ms[5] = {100, 200, 300, 500, 1000};
+    for (int i = 0; i < 5; i++) { wchar_t t[32]; wsprintfW(t, Tr(L_M_MS), ms[i]); AppendMenuW(s, MF_STRING | (g_mHover == ms[i] ? MF_CHECKED : 0), 10 + i, t); }
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)s, Tr(L_M_HOVER));
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(m, MF_STRING, 1, Tr(L_M_FOLDER));
+    return m;
+}
+static void PopupMenu(HWND h) {                                                       // меню настроек: правый клик по кнопке
+    POINT p; GetCursorPos(&p); ForceFg(h);
+    HMENU mn = MacroMenu(); int c = (int)TrackPopupMenu(mn, TPM_RETURNCMD | TPM_RIGHTBUTTON, p.x, p.y, 0, h, NULL);
+    DestroyMenu(mn); PostMessageW(h, WM_NULL, 0, 0); if (c) MenuCmd(c);
+}
 static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
     case WM_ERASEBKGND: return 1;
@@ -9103,7 +9136,8 @@ static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
             else Start();
         }
         return 0;
-    case WM_RBUTTONUP: if (!rec) DestroyWindow(h); return 0;
+    case WM_RBUTTONUP: PopupMenu(h); return 0;                                        // правый клик - меню настроек
+    case WM_MBUTTONUP: DestroyWindow(h); return 0;                                    // средний клик - закрыть (стоп и выход)
     case WM_DESTROY: Stop(0); SavePos(); hw = NULL; return 0;
     }
     return DefWindowProcW(h, m, w, l);
