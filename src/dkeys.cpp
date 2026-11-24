@@ -5,7 +5,10 @@
 #define _UNICODE
 #define WINVER 0x0A00
 #define _WIN32_WINNT 0x0A00
+#include <winsock2.h>
 #include <windows.h>
+#include <iphlpapi.h>
+#include <tlhelp32.h>
 #include <objbase.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -54,6 +57,7 @@ DEFINE_GUID(IID_IAudioCaptureClient, 0xC8ADBD64, 0xE71E, 0x48A0, 0xA4, 0xDE, 0x1
 #pragma comment(lib, "mfreadwrite.lib")
 #pragma comment(lib, "mfuuid.lib")
 #pragma comment(lib, "winmm.lib")
+#pragma comment(lib, "iphlpapi.lib")
 
 #pragma optimize("", off)
 extern "C" {
@@ -84,7 +88,7 @@ X(A_RUN, "run", AK_CMD) X(A_ADMIN, "admin", AK_CMD) X(A_PY, "py", AK_CMD) X(A_PY
 X(A_TOTRAY, "totray", AK_NONE) X(A_LAYOUT, "layout", AK_NONE) X(A_PAUSE, "pause", AK_NONE) X(A_WEBCAM, "webcam", AK_NONE) X(A_STOPWATCH, "stopwatch", AK_NONE) \
 X(A_TIMER, "timer", AK_DUR) X(A_DRAW, "draw", AK_NONE) X(A_PICKER, "picker", AK_NONE) X(A_RECORD, "record", AK_NONE) X(A_SCRIPTS, "scripts", AK_NONE) \
 X(A_VOL, "volume", AK_NONE) X(A_VOLSET, "volumeset", AK_NONE) X(A_DUP, "duplicate", AK_NONE) X(A_MACRO, "macro", AK_NONE) X(A_RECORDS, "records", AK_NONE) \
-X(A_AUDIO, "audio", AK_NONE) X(A_CUTTER, "cutter", AK_CMD) X(A_VOICE, "voice", AK_NONE) X(A_SCRIPTN, "script", AK_SCRN) X(A_VOICECMD, "voicecmd", AK_NONE) X(A_TRAYMENU, "traymenu", AK_NONE) X(A_TAKE, "take", AK_NONE) X(A_CALENDAR, "calendar", AK_CMD) X(A_EXIT, "exit", AK_NONE)
+X(A_AUDIO, "audio", AK_NONE) X(A_CUTTER, "cutter", AK_CMD) X(A_VOICE, "voice", AK_NONE) X(A_SCRIPTN, "script", AK_SCRN) X(A_VOICECMD, "voicecmd", AK_NONE) X(A_TRAYMENU, "traymenu", AK_NONE) X(A_TAKE, "take", AK_NONE) X(A_CALENDAR, "calendar", AK_CMD) X(A_EXIT, "exit", AK_NONE) X(A_KILL, "kill", AK_CMD)
 #define ACT_ID(id, nm, k) id,
 enum { A_NONE, ACTION_LIST(ACT_ID) A_COUNT };
 #undef ACT_ID
@@ -486,6 +490,7 @@ X(L_TRAY_SELCOPY, "tray.selcopy", L"Автокопирование выделе�
 X(L_TRAY_AUTO, "tray.autostart", L"Автозапуск") \
 X(L_TRAY_PAUSE, "tray.pause", L"Пауза") \
 X(L_TRAY_SCHED, "tray.schedule", L"Расписание") \
+X(L_TRAY_GUARD, "tray.guard", L"Сторож VPN") \
 X(L_SCH_ON, "schedule.on", L"Включено") \
 X(L_SCH_NONE, "schedule.none", L"Нет заданий (секция [Schedule] в ini)") \
 X(L_SCH_RUN, "schedule.run", L"Расписание: %s") \
@@ -502,7 +507,7 @@ X(L_TRAY_RELOAD, "tray.reload", L"Перечитать настройки") \
 X(L_TRAY_EXIT, "tray.exit", L"Выход") \
 X(L_TRAY_ABOUT, "tray.about", L"О программе") \
 X(L_ABOUT_TXT, "about.title", L"DKeys %s — твои самые горячие клавиши!") \
-X(L_ABOUT_BODY, "about.body6", L"Помнит всё, что ты копировал (а выделенное мышкой может копировать само), и не осуждает. Набрал «ghbdtn» вместо «привет» — починит. Умеет печатать под диктовку, слушаться голосовых команд и приказов извне — хоть от ИИ-агента. А главное — на хоткей можно повесить что угодно: запуск программы или скрипта, рисование прямо на экране, захват цвета пикселя, запись видео и звука, запись и повтор своих действий мышью и клавиатурой, веб-камеру, секундомер и таймер, укрощение громких звуков и дублирование звука на второе устройство. А ещё всё это умеет срабатывать само — по расписанию, в нужный день и час.") \
+X(L_ABOUT_BODY, "about.body7", L"Помнит всё, что ты копировал (а выделенное мышкой может копировать само), и не осуждает. Набрал «ghbdtn» вместо «привет» — починит. Умеет печатать под диктовку, слушаться голосовых команд и приказов извне — хоть от ИИ-агента. А главное — на хоткей можно повесить что угодно: запуск программы или скрипта, рисование прямо на экране, захват цвета пикселя, запись видео и звука, запись и повтор своих действий мышью и клавиатурой, веб-камеру, секундомер и таймер, укрощение громких звуков и дублирование звука на второе устройство. А ещё всё это умеет срабатывать само — по расписанию, в нужный день и час. А сторож VPN закроет указанные программы, как только трафик пойдёт мимо туннеля, и не даст запустить их без ВПН.") \
 X(L_ABOUT_AUTH, "about.authors", L"Придумал DukereD, написал Claude. Ни одна клавиша не пострадала.") \
 X(L_ABOUT_ASK, "about.ask", L"Открыть страницу проекта на GitHub?") \
 X(L_TRAY_TIPADM, "tray.tip_admin", L"DKeys (администратор)") \
@@ -971,6 +976,7 @@ Language=ru
 ;     audio (или dictaphone)    диктофон: запись звука с микрофона в .m4a; те же кнопка и управление, что у записи экрана (микрофон, папка, качество - в «Настройки записи»)
 ;     voice (или dictation), voicecmd (голосовая команда)     голосовой набор: 1-е нажатие - запись с микрофона, 2-е - распознавание (whisper.cpp, без интернета), текст вставляется в место курсора; язык - по раскладке (секция [Voice])
 ;     take                      метка дубля во время записи экрана / диктофона (сигнал на дорожках и строка в одноимённом .txt); traymenu во время записи делает то же
+;     kill ПРОЦЕСС [, ПРОЦЕСС]      убить процессы (имя exe или часть пути) вместе с дочерними: kill claude.exe. То же делает сторож [Guard]
 ;     exit                          закрыть DKeys (например, DKeys.exe do exit перед заменой exe)
 ; Win+цифры буферов перекрывают запуск закреплённых программ на панели задач.
 ; В меню буфера: Del - удалить, F2 - править, Ins - новая запись, Ctrl+Вверх/Вниз - переставить,
@@ -1062,6 +1068,21 @@ static const char *kIni2 = u8R"INI(
 ;   Курс=every 30m from 09:00 to 18:00 on weekdays | notify usd_nbrb.dpy yes run https://myfin.by     (окно с текстом; Да - выполнить yes)
 Проверка обновлений=every 1w at 12:00 catchup delay 2m | py check_update.py
 Enabled=1
+
+[Guard]
+; Сторож VPN: пока трафик к адресам из Check идёт мимо туннеля, процессы из Kill убиваются (вместе с дочерними),
+; а run/admin их не запускают (в том числе AppX-приложения: run explorer.exe shell:AppsFolder\Claude_...!Claude).
+; Пункт «Сторож VPN» в меню значка включает и выключает (Enabled).
+; Проверка без сети: VPN-адаптер поднят, у него есть IPv4 (не 169.254.*), и лучший маршрут к Check идёт через него.
+;   Check=1.1.1.1, 8.8.8.8        адреса, до которых трафик должен идти через ВПН (полный туннель)
+;   Kill=claude.exe               что убить: имя exe или часть пути (claude-code\), несколько через запятую
+;   Adapter=OpenVPN               часть имени или описания адаптера ВПН; пусто - OpenVPN, TAP-Windows, Wintun, WireGuard, DCO
+;   Interval=250                  как часто проверять маршрут, мс (50-5000): дёшево, можно 50
+;   Scan=250                      как часто искать процессы для убийства на виду, мс (50-5000): дороже, 50 - это заметная нагрузка
+Enabled=0
+Check=1.1.1.1, 8.8.8.8
+Kill=
+;Adapter=OpenVPN
 
 [Voice]
 ; Голосовой набор (Win+G, действие voice): первое нажатие - запись с микрофона, второе - распознавание, текст вставляется в место курсора.
@@ -1553,6 +1574,274 @@ static void AudCommit(void) {
     if (lstrcmpW(g_dDst, g_aud.dDst)) lstrcpynW(g_dDst, g_aud.dDst, 80);
     InterlockedExchange(&g_vOn, g_aud.vOn); InterlockedExchange(&g_dOn, g_aud.dOn);
 }
+/* ---------- сторож VPN ([Guard]): трафик идёт мимо туннеля - убить процессы ----------
+   Проверка без сети и пингов: у VPN-адаптера есть IPv4 (не 169.254.*), адаптер поднят, и лучший
+   маршрут к адресам из Check идёт через него. Это ровно то, что важно: попадёт ли трафик в туннель.
+   Сторож живёт в своём потоке: открытый диалог, меню или пауза хоткеев ему не мешают. */
+static BOOL g_guardOn;
+static wchar_t g_guardKill[512], g_guardCheck[256], g_guardAdapter[80];
+static DWORD g_guardTargets[8]; static int g_nGuardTargets;
+static int g_guardMs = 250, g_guardScan = 250;                                          // мс: проверка маршрута, обход процессов (обход дороже)
+static DWORD g_guardIf, g_guardIfAt;                                                    // кэш ifIndex VPN-адаптера: такт без обхода адаптеров стоит ~0,03 мс
+static HANDLE g_guardEvt, g_guardTh;
+static void GuardSync(void), GuardStop(void), GuardToggle(void);
+static void GuardKillSpec(const wchar_t *spec);
+static BOOL VpnUp(void), GuardBlocksRun(const wchar_t *cmd);
+static DWORD WINAPI GuardThread(LPVOID);
+static BOOL GuardIp4(const wchar_t *s, DWORD *o) {                                     // 10.8.0.1 -> сетевым порядком (как у GetBestRoute)
+    int oct[4], n = 0, cur = 0; BOOL dig = FALSE;
+    for (;; s++) {
+        if (*s >= L'0' && *s <= L'9') { cur = cur * 10 + (*s - L'0'); if (cur > 255) return FALSE; dig = TRUE; }
+        else if (*s == L'.' && dig && n < 3) { oct[n++] = cur; cur = 0; dig = FALSE; }
+        else break;
+    }
+    if (!dig || n != 3) return FALSE;
+    oct[3] = cur;
+    *o = (DWORD)oct[0] | ((DWORD)oct[1] << 8) | ((DWORD)oct[2] << 16) | ((DWORD)oct[3] << 24);
+    return TRUE;
+}
+static void GuardTargetsParse(void) {
+    g_nGuardTargets = 0;
+    const wchar_t *p = g_guardCheck;
+    while (*p && g_nGuardTargets < 8) {
+        while (*p == L' ' || *p == L',' || *p == L';' || *p == L'\t') p++;
+        if (!*p) break;
+        const wchar_t *st = p;
+        while (*p && *p != L' ' && *p != L',' && *p != L';' && *p != L'\t') p++;
+        wchar_t b[40]; int n = (int)(p - st); if (n > 39) n = 39;
+        memcpy(b, st, n * sizeof(wchar_t)); b[n] = 0;
+        DWORD ip; if (GuardIp4(b, &ip)) g_guardTargets[g_nGuardTargets++] = ip;
+    }
+    if (!g_nGuardTargets) { g_guardTargets[0] = 0x01010101; g_guardTargets[1] = 0x08080808; g_nGuardTargets = 2; }   // 1.1.1.1, 8.8.8.8
+}
+static const wchar_t *const kGuardVpn[] = {L"OpenVPN", L"TAP-Windows", L"Wintun", L"WireGuard", L"Data Channel Offload", L"Amnezia"};
+static BOOL GuardAdapterHit(const IP_ADAPTER_ADDRESSES *a) {
+    const wchar_t *desc = a->Description ? a->Description : L"";
+    if (g_guardAdapter[0]) return (a->FriendlyName && ContainsI(a->FriendlyName, g_guardAdapter)) || ContainsI(desc, g_guardAdapter);
+    for (int i = 0; i < (int)(sizeof kGuardVpn / sizeof kGuardVpn[0]); i++)
+        if ((a->FriendlyName && ContainsI(a->FriendlyName, kGuardVpn[i])) || ContainsI(desc, kGuardVpn[i])) return TRUE;
+    return FALSE;
+}
+static BOOL GuardRouteVia(DWORD ifx) {                                                  // трафик к адресам Check идёт через адаптер ifx
+    for (int i = 0; i < g_nGuardTargets; i++) {
+        MIB_IPFORWARDROW row; memset(&row, 0, sizeof row);
+        if (GetBestRoute(g_guardTargets[i], 0, &row) != NO_ERROR || row.dwForwardIfIndex != ifx) return FALSE;
+    }
+    return TRUE;
+}
+static DWORD GuardVpnIf(void) {                                                         // ifIndex поднятого VPN-адаптера с IPv4 (0 - нет)
+    ULONG sz = 24 * 1024;
+    IP_ADAPTER_ADDRESSES *ad = (IP_ADAPTER_ADDRESSES *)Alloc(sz);
+    if (!ad) return 0;
+    ULONG r = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER, NULL, ad, &sz);
+    if (r == ERROR_BUFFER_OVERFLOW) { Free(ad); ad = (IP_ADAPTER_ADDRESSES *)Alloc(sz); if (ad) r = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER, NULL, ad, &sz); }
+    DWORD vpnIf = 0;
+    if (r == NO_ERROR && ad) {
+        for (IP_ADAPTER_ADDRESSES *a = ad; a && !vpnIf; a = a->Next) {
+            if (!GuardAdapterHit(a) || a->OperStatus != IfOperStatusUp) continue;
+            for (IP_ADAPTER_UNICAST_ADDRESS *u = a->FirstUnicastAddress; u; u = u->Next) {
+                SOCKADDR *sa = u->Address.lpSockaddr;
+                if (!sa || sa->sa_family != AF_INET) continue;
+                DWORD ip = ((SOCKADDR_IN *)sa)->sin_addr.S_un.S_addr;
+                if ((ip & 0x0000FFFF) == 0x0000FEA9) continue;                        // 169.254.* - адрес не от ВПН
+                vpnIf = a->IfIndex; break;
+            }
+        }
+    }
+    Free(ad);
+    return vpnIf;
+}
+static BOOL VpnUp(void) {                                                              // TRUE - трафик к адресам Check пойдёт в туннель
+    if (g_guardIf && GuardRouteVia(g_guardIf)) return TRUE;                            // обычный такт: только GetBestRoute
+    DWORD now = GetTickCount();                                                        // адаптеры (2-3 мс) - не чаще раза в секунду
+    if (now - g_guardIfAt < 1000) return FALSE;
+    g_guardIfAt = now;
+    g_guardIf = GuardVpnIf();
+    return g_guardIf && GuardRouteVia(g_guardIf);
+}
+static BOOL GuardNameEq(const wchar_t *a, const wchar_t *b) {                          // claude.exe == claude
+    wchar_t x[260], y[260];
+    lstrcpynW(x, a, 260); lstrcpynW(y, b, 260);
+    int n = lstrlenW(x); if (n > 4 && CompareStringOrdinal(x + n - 4, 4, L".exe", 4, TRUE) == CSTR_EQUAL) x[n - 4] = 0;
+    n = lstrlenW(y); if (n > 4 && CompareStringOrdinal(y + n - 4, 4, L".exe", 4, TRUE) == CSTR_EQUAL) y[n - 4] = 0;
+    return !lstrcmpiW(x, y);
+}
+static int GuardKillList(const wchar_t *spec) {                                        // убить процессы из списка вместе с их детьми
+    wchar_t tok[16][260]; int np = 0;
+    const wchar_t *p = spec;
+    while (*p && np < 16) {
+        while (*p == L' ' || *p == L',' || *p == L';') p++;
+        if (!*p) break;
+        const wchar_t *st = p;
+        while (*p && *p != L',' && *p != L';') p++;
+        const wchar_t *en = p; while (en > st && en[-1] == L' ') en--;
+        int n = (int)(en - st); if (n <= 0) continue; if (n > 259) n = 259;
+        memcpy(tok[np], st, n * sizeof(wchar_t)); tok[np][n] = 0; np++;
+    }
+    if (!np) return 0;
+    struct PEnt { DWORD pid, ppid; BOOL hit; };
+    const int maxp = 4096;
+    PEnt *pe = (PEnt *)Alloc(maxp * sizeof(PEnt));
+    if (!pe) return 0;
+    int npe = 0;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) { Free(pe); return 0; }
+    DWORD me = GetCurrentProcessId();
+    PROCESSENTRY32W e; memset(&e, 0, sizeof e); e.dwSize = sizeof e;
+    if (Process32FirstW(snap, &e)) do {
+        if (npe >= maxp) break;
+        if (e.th32ProcessID == me || e.th32ProcessID < 8) continue;
+        PEnt *x = &pe[npe]; x->pid = e.th32ProcessID; x->ppid = e.th32ParentProcessID; x->hit = FALSE;
+        for (int k = 0; k < np && !x->hit; k++) {
+            const wchar_t *nm = tok[k]; for (const wchar_t *q = tok[k]; *q; q++) if (*q == L'\\' || *q == L'/') nm = q + 1;
+            BOOL hasSep = nm != tok[k], dirTok = hasSep && !*nm;                   // токен-папка: ...\claude-code
+            if (!dirTok && !GuardNameEq(e.szExeFile, nm)) continue;
+            if (!hasSep) { x->hit = TRUE; break; }                                 // только имя - путь не нужен
+            wchar_t path[MAX_PATH]; path[0] = 0; DWORD pn = MAX_PATH;
+            HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, e.th32ProcessID);
+            if (h) { QueryFullProcessImageNameW(h, 0, path, &pn); CloseHandle(h); }
+            if (path[0] && ContainsI(path, tok[k])) x->hit = TRUE;
+        }
+        npe++;
+    } while (Process32NextW(snap, &e));
+    CloseHandle(snap);
+    BOOL any = FALSE; for (int i = 0; i < npe && !any; i++) any = pe[i].hit;
+    if (any) for (int pass = 0; pass < 8; pass++) {                                 // дети найденных (MCP-серверы и т.п.)
+        BOOL ch = FALSE;
+        for (int i = 0; i < npe; i++) if (!pe[i].hit)
+            for (int j = 0; j < npe; j++) if (pe[j].hit && pe[i].ppid == pe[j].pid) { pe[i].hit = TRUE; ch = TRUE; break; }
+        if (!ch) break;
+    }
+    int nk = 0;
+    for (int i = 0; i < npe; i++) if (pe[i].hit) {
+        HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, pe[i].pid);
+        if (h) { if (TerminateProcess(h, 1)) nk++; CloseHandle(h); }
+    }
+    Free(pe);
+    return nk;
+}
+static void GuardKillSpec(const wchar_t *spec) { if (spec && *spec) Log(L"kill %s: %d", spec, GuardKillList(spec)); }
+static DWORD WINAPI GuardThread(LPVOID) {
+    DWORD lastScan = 0;
+#ifdef DKDEBUG
+    LARGE_INTEGER q1, q2, qf; QueryPerformanceFrequency(&qf);
+    LONG nTicks = 0, nScan = 0; LONGLONG tVpn = 0, tScan = 0;
+    for (;;) {
+        QueryPerformanceCounter(&q1);
+#else
+    for (;;) {
+#endif
+        BOOL up = VpnUp();
+#ifdef DKDEBUG
+        QueryPerformanceCounter(&q2); nTicks++; tVpn += q2.QuadPart - q1.QuadPart;
+#endif
+        if (!up) {
+            DWORD now = GetTickCount();
+            if (!lastScan || now - lastScan >= (DWORD)g_guardScan) {                    // обход процессов дороже проверки маршрута - реже
+                lastScan = now;
+                for (int i = 0; i < 3; i++) {                                          // дети успевают появиться - добить
+#ifdef DKDEBUG
+                    QueryPerformanceCounter(&q1);
+#endif
+                    int n = GuardKillList(g_guardKill);
+#ifdef DKDEBUG
+                    QueryPerformanceCounter(&q2); nScan++; tScan += q2.QuadPart - q1.QuadPart;
+#endif
+                    if (n) Log(L"guard: vpn down, killed %d", n);
+                    if (!n || VpnUp()) break;
+                    Sleep(30);
+                }
+            }
+        } else lastScan = 0;
+        if (WaitForSingleObject(g_guardEvt, (DWORD)g_guardMs) != WAIT_TIMEOUT) break;
+    }
+#ifdef DKDEBUG
+    Log(L"guard stats: ticks=%d vpn=%d us (%d us/tick), scans=%d scan=%d us (%d us/scan)",
+        (int)nTicks, (int)(tVpn * 1000000 / qf.QuadPart), (int)(nTicks ? tVpn * 1000000 / qf.QuadPart / nTicks : 0),
+        (int)nScan, (int)(tScan * 1000000 / qf.QuadPart), (int)(nScan ? tScan * 1000000 / qf.QuadPart / nScan : 0));
+#endif
+    return 0;
+}
+static void GuardStop(void) {
+    if (g_guardEvt) SetEvent(g_guardEvt);
+    if (g_guardTh) { WaitForSingleObject(g_guardTh, 3000); CloseHandle(g_guardTh); g_guardTh = NULL; }
+    if (g_guardEvt) { CloseHandle(g_guardEvt); g_guardEvt = NULL; }
+}
+static void GuardPriv(void) {                                                          // SeDebugPrivilege: убивать чужие процессы наверняка
+    HANDLE t;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES, &t)) return;
+    LUID l;
+    if (LookupPrivilegeValueW(NULL, SE_DEBUG_NAME, &l)) {
+        TOKEN_PRIVILEGES tp; tp.PrivilegeCount = 1; tp.Privileges[0].Luid = l; tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+        AdjustTokenPrivileges(t, FALSE, &tp, 0, NULL, NULL);
+    }
+    CloseHandle(t);
+}
+static void GuardSync(void) {                                                          // перечитать настройки и (пере)запустить поток
+    GuardStop();
+    GuardTargetsParse();
+    if (!g_guardOn || !g_guardKill[0]) return;
+    GuardPriv();
+    g_guardEvt = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (!g_guardEvt) return;
+    g_guardMs = Clamp(g_guardMs, 50, 5000);
+    g_guardScan = Clamp(g_guardScan, 50, 5000);
+    g_guardIf = 0; g_guardIfAt = 0;                                                    // адаптеры перечитать при первом такте
+    g_guardTh = CreateThread(NULL, 0, GuardThread, NULL, 0, NULL);
+    if (!g_guardTh) { CloseHandle(g_guardEvt); g_guardEvt = NULL; }
+}
+static void GuardToggle(void) {
+    g_guardOn = !g_guardOn;
+    IniSet(L"Guard", L"Enabled", g_guardOn ? L"1" : L"0");
+    GuardSync();
+}
+static BOOL GuardBlocksRun(const wchar_t *cmd) {                                       // запуск того, что в Kill, пока ВПН нет - не начинать
+    if (!g_guardOn || !g_guardTh || !g_guardKill[0]) return FALSE;
+    wchar_t b[300]; int i = 0;
+    const wchar_t *p = cmd; while (*p == L' ') p++;
+    if (*p == L'"') p++;
+    while (*p && *p != L' ' && *p != L'"' && i < 299) b[i++] = *p++;
+    b[i] = 0;
+    if (!lstrcmpiW(b, L"noadmin")) {                                                   // run noadmin claude.exe
+        while (*p == L' ') p++;
+        if (*p == L'"') p++;
+        i = 0; while (*p && *p != L' ' && *p != L'"' && i < 299) b[i++] = *p++;
+        b[i] = 0;
+    }
+    if (!b[0]) return FALSE;
+    const wchar_t *nm = b; for (const wchar_t *q = b; *q; q++) if (*q == L'\\' || *q == L'/') nm = q + 1;
+    BOOL hit = FALSE;
+    const wchar_t *s = g_guardKill;
+    while (*s && !hit) {
+        while (*s == L' ' || *s == L',' || *s == L';') s++;
+        if (!*s) break;
+        const wchar_t *st = s;
+        while (*s && *s != L',' && *s != L';') s++;
+        const wchar_t *en = s; while (en > st && en[-1] == L' ') en--;
+        wchar_t t[300]; int n = (int)(en - st); if (n > 299) n = 299;
+        memcpy(t, st, n * sizeof(wchar_t)); t[n] = 0;
+        const wchar_t *tn = t; for (const wchar_t *q = t; *q; q++) if (*q == L'\\' || *q == L'/') tn = q + 1;
+        if (GuardNameEq(nm, tn)) hit = TRUE;
+    }
+    if (!hit) {                                                                        // AppX: run explorer.exe shell:AppsFolder\Claude_...!Claude
+        const wchar_t *s2 = g_guardKill;
+        while (*s2 && !hit) {
+            while (*s2 == L' ' || *s2 == L',' || *s2 == L';') s2++;
+            if (!*s2) break;
+            const wchar_t *st = s2;
+            while (*s2 && *s2 != L',' && *s2 != L';') s2++;
+            const wchar_t *en = s2; while (en > st && en[-1] == L' ') en--;
+            wchar_t t[300]; int n = (int)(en - st); if (n > 299) n = 299;
+            memcpy(t, st, n * sizeof(wchar_t)); t[n] = 0;
+            const wchar_t *tn = t; for (const wchar_t *q = t; *q; q++) if (*q == L'\\' || *q == L'/') tn = q + 1;
+            wchar_t base[300]; lstrcpynW(base, tn, 300);
+            n = lstrlenW(base);
+            if (n > 4 && CompareStringOrdinal(base + n - 4, 4, L".exe", 4, TRUE) == CSTR_EQUAL) base[n - 4] = 0;
+            if (lstrlenW(base) >= 3 && ContainsI(cmd, base)) hit = TRUE;
+        }
+    }
+    return hit && !VpnUp();
+}
 // Источники-скрипты календаря: calendars\<имя>.py; секции calendars\<имя>.ini - профили (источник имя:секция). Подключён - есть ini или папка .state;
 // иначе источник виден в списке, но не синхронизируется, пока не нажато «Подключить…». Вспомогательные (_*.py, dkcal.py) и тестовый stub.py без ini - не источники.
 static wchar_t g_calUnc[8][24]; static int g_nUnc;                           // скрипты без ini и .state: в списке не показываются, но доступны в «Подключить…»
@@ -1608,6 +1897,7 @@ static void CfgDefaults(void) {
     memset(g_calSrc, 0, sizeof g_calSrc); g_ncalSrc = 1; lstrcpyW(g_calSrc[0].id, L"local"); g_calSrc[0].col = RGB(66, 133, 244); g_calSrc[0].show = TRUE;
     g_calSyncMin = 15; CalDiscover();
     g_remote = FALSE; g_selCopy = FALSE; g_selIgn[0] = 0;
+    g_guardOn = FALSE; g_guardKill[0] = 0; g_guardAdapter[0] = 0; lstrcpyW(g_guardCheck, L"1.1.1.1, 8.8.8.8"); g_guardMs = 250; g_guardScan = 250;
     lstrcpyW(g_vcModel, L"small"); g_vcLang[0] = 0; g_vcThr = 0; g_vcPause = 600; g_vcMaxChunk = 15; g_vcSil = 300; g_vcStream = FALSE; g_vcLive = TRUE; g_vcDebug = FALSE; g_vcPrompt[0] = 0; g_vcCmdModel[0] = 0; g_cmdDirty = TRUE;
     // [Cam:*] не сбрасываются: их читает поток регистратора; убранная секция остаётся до перезапуска
 }
@@ -1753,6 +2043,13 @@ static void CfgCb(const wchar_t *s, const wchar_t *k, const wchar_t *v) {
         else if (!lstrcmpiW(k, L"Threads")) { g_vcThr = ToInt(v); if (g_vcThr < 0 || g_vcThr > 64) g_vcThr = 0; }
     } else if (!lstrcmpiW(s, L"Remote")) {
         if (!lstrcmpiW(k, L"Enabled")) g_remote = ToInt(v) != 0;
+    } else if (!lstrcmpiW(s, L"Guard")) {
+        if (!lstrcmpiW(k, L"Enabled")) g_guardOn = ToInt(v) != 0;
+        else if (!lstrcmpiW(k, L"Kill")) lstrcpynW(g_guardKill, v, 512);
+        else if (!lstrcmpiW(k, L"Check")) lstrcpynW(g_guardCheck, v, 256);
+        else if (!lstrcmpiW(k, L"Adapter")) lstrcpynW(g_guardAdapter, v, 80);
+        else if (!lstrcmpiW(k, L"Interval")) { g_guardMs = ToInt(v); if (g_guardMs < 50) g_guardMs = 50; if (g_guardMs > 5000) g_guardMs = 5000; }
+        else if (!lstrcmpiW(k, L"Scan")) { g_guardScan = ToInt(v); if (g_guardScan < 50) g_guardScan = 50; if (g_guardScan > 5000) g_guardScan = 5000; }
     } else if (!lstrcmpiW(s, L"AutoCopy")) {
         if (!lstrcmpiW(k, L"Enabled")) g_selCopy = ToInt(v) != 0;
         else if (!lstrcmpiW(k, L"Ignore")) { int n = lstrlenW(g_selIgn); if (n && n < 2047) g_selIgn[n++] = L','; lstrcpynW(g_selIgn + n, v, 2048 - n); }
@@ -1850,6 +2147,7 @@ static void LoadLang(void) {
     Free(all.p);
 }
 static void LoadConfig(void) {
+    GuardStop();                                                                         // поток сторожа не должен читать строки, пока их меняет разбор ini
     DWORD sz = 0; BYTE *raw = ReadAll(g_ini, &sz);
     if (!raw) {
         BB d = {0}; BBAdd(&d, kIni1, lstrlenA(kIni1)); BBAdd(&d, kIni2, lstrlenA(kIni2));
@@ -1869,6 +2167,7 @@ static void LoadConfig(void) {
     IniParse(t, CfgCb);
     Free(t);
     AudCommit();
+    GuardSync();
     SchFinish();
     Bind *old = g_bind; int oldn = g_nbind;
     AcquireSRWLockExclusive(&g_bindLock);
@@ -3206,6 +3505,7 @@ static BOOL NoAdminWord(wchar_t **file, wchar_t **par) {                        
     SplitCmd(*par, file, par); return TRUE;
 }
 static void RunShell(const wchar_t *spec, const wchar_t *dir, BOOL admin) {
+    if (GuardBlocksRun(spec)) { Log(L"guard: run blocked: %s", spec); return; }        // ВПН нет: то, что сторож убивает, не запускать
     wchar_t *s = Dup(spec), *file, *par;
     SplitCmd(s, &file, &par);
     BOOL user = NoAdminWord(&file, &par) && g_elev;
@@ -3635,6 +3935,7 @@ static void ExecBind(const Bind *b) {
     case A_TRAYMENU: if (g_trayOpen) { EndMenu(); break; } if (RecBusy()) { RecMark(); break; } g_trayAlign = TPM_CENTERALIGN | TPM_VCENTERALIGN; TrayMenu(); break;     // во время записи этот хоткей ставит метку дубля
     case A_TAKE: RecMark(); break;
     case A_EXIT: DestroyWindow(g_hwnd); break;
+    case A_KILL: GuardKillSpec(b->arg); break;
     case A_SCRIPTN: RunScriptN(b->n); break;
     case A_PAUSE: InterlockedExchange(&g_paused, !g_paused); Toast(g_paused ? Tr(L_T_PAUSED) : Tr(L_T_WORKING)); break;
     }
@@ -11920,6 +12221,7 @@ static void TrayMenuAt(POINT pt, int again) {
     AppendMenuW(m, MF_STRING | (AutoGet() ? MF_CHECKED : 0), 11, Tr(L_TRAY_AUTO));
     AddHk(m, MF_STRING | (g_paused ? MF_CHECKED : 0), 15, Tr(L_TRAY_PAUSE), A_PAUSE);
     AppendMenuW(m, MF_POPUP | (g_schOn && g_nsch ? MF_CHECKED : 0), (UINT_PTR)SchMenu(), Tr(L_TRAY_SCHED));
+    AppendMenuW(m, MF_STRING | (g_guardOn ? MF_CHECKED : 0) | (g_guardKill[0] ? 0 : MF_GRAYED), 77, Tr(L_TRAY_GUARD));
     if (!g_elev) AppendMenuW(m, MF_STRING, 17, Tr(L_TRAY_ELEV));
     else AppendMenuW(m, MF_STRING, 75, Tr(L_TRAY_UNELEV));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
@@ -11980,6 +12282,7 @@ static void TrayMenuAt(POINT pt, int again) {
     case 9: g_selCopy = !g_selCopy; IniSet(L"AutoCopy", L"Enabled", g_selCopy ? L"1" : L"0"); break;
     case 11: AutoSet(!AutoGet()); break;
     case 15: InterlockedExchange(&g_paused, !g_paused); break;
+    case 77: GuardToggle(); break;
     case 17: RestartElevated(); break;
     case 75: RestartUnelevated(); break;
     case 12: OpenEditor(g_ini); break;
@@ -12072,7 +12375,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         return TRUE;
     case WM_QUERYENDSESSION: return TRUE;
     case WM_ENDSESSION: if (w) { for (int i = 0; i < g_nhid; i++) if (IsWindow(g_hid[i])) ShowWindow(g_hid[i], SW_SHOW); } return 0;
-    case WM_DESTROY: CalClose(); if (RecNs::hw) DestroyWindow(RecNs::hw); VolNs::Stop(); DupNs::Stop(); CamRecNs::Stop(); PostQuitMessage(0); return 0;     // запись корректно дописывается
+    case WM_DESTROY: GuardStop(); CalClose(); if (RecNs::hw) DestroyWindow(RecNs::hw); VolNs::Stop(); DupNs::Stop(); CamRecNs::Stop(); PostQuitMessage(0); return 0;     // запись корректно дописывается
     }
     if (m == g_msgTaskbar && m) { TrayAdd(); return 0; }
     return DefWindowProcW(h, m, w, l);
